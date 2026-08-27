@@ -1,0 +1,77 @@
+{
+  "db": {
+    "server": "localhost",
+    "port": 1433,
+    "database": "YOUR_SAGE100_DB_NAME",
+    "user": "sa",
+    "password": "",
+    "trusted_connection": false,
+    "encrypt": false,
+    "trust_server_certificate": true,
+    "pool_max": 10,
+    "pool_min": 2,
+    "pool_idle_timeout_ms": 30000,
+    "connection_timeout_ms": 15000,
+    "request_timeout_ms": 30000,
+    "polling_interval_ms": 30000,
+    "polling_enabled": true
+  },
+  "sfec": {
+    "enabled": true,
+    "api_key": "YOUR_SFEC_API_KEY",
+    "base_url": "https://api.sfec.gouv.cg",
+    "sandbox_url": "https://sandbox.api.sfec.gouv.cg",
+    "use_sandbox": true,
+    "certify_status": "A COMPTABILISER"
+  },
+  "company": {
+    "name": "YOUR_COMPANY_NAME",
+    "address": "YOUR_ADDRESS",
+    "city": "Brazzaville",
+    "country": "Congo",
+    "phone": "",
+    "email": "",
+    "tax_number": "YOUR_NIU",
+    "currency": "XAF",
+    "bank_name": "",
+    "bank_account": "",
+    "invoice_prefix": "INV-",
+    "invoice_next_number": 1
+  },
+  "queue": {
+    "max_concurrent": 5,
+    "max_retries": 4,
+    "retry_base_delay_ms": 2000,
+    "max_queue_size": 10000,
+    "job_timeout_ms": 60000
+  },
+  "validation": {
+    "strict_mode": true,
+    "tolerance_amount": 0.01
+  },
+  "notifications": {
+    "enabled": true,
+    "events": [
+      "invoice:synced",
+      "invoice:validation_error",
+      "queue:dlq_added",
+      "db:connection_failed",
+      "db:polling_error"
+    ]
+  },
+  "rate_limit": {
+    "daily_max": 2500,
+    "per_minute_max": 100,
+    "alert_threshold_percent": 80
+  },
+  "dashboard": {
+    "port": 3000,
+    "host": "0.0.0.0",
+    "auth_enabled": true,
+    "session_secret": "CHANGE-THIS-TO-A-RANDOM-SECRET",
+    "login_email": "admin",
+    "login_password": "CHANGE-THIS",
+    "session_max_age_hours": 24
+  },
+  "log_level": "info"
+}
