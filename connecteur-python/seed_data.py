@@ -105,6 +105,7 @@ CLIENTS = [
     {"code": "FOU-001", "nom": "DISTRIBUTOR AFRIQUE", "type": "fournisseur", "email": "ventes@distafrique.cg", "telephone": "+242065543210", "niu": "CG111222333", "adresse": "Zone franche", "ville": "Pointe-Noire", "pays": "CG"},
     {"code": "FOU-002", "nom": "IMPORT-EXPORT BRAZZA", "type": "fournisseur", "email": "import@iebrazza.cg", "telephone": "+242056677889", "niu": "CG444555666", "adresse": "Marché Mikalou", "ville": "Brazzaville", "pays": "CG"},
     {"code": "FOU-003", "nom": "GROSSISTE GENERAL", "type": "fournisseur", "email": "info@grossegen.cg", "telephone": "+242067890123", "niu": "CG777888999", "adresse": "Quartier Kinkole", "ville": "Brazzaville", "pays": "CG"},
+    {"code": "CLI-CPT", "nom": "Client comptoir", "type": "client", "email": "", "telephone": "", "niu": "", "adresse": "Comptoir", "ville": "", "pays": "CG"},
 ]
 
 
@@ -139,10 +140,6 @@ def seed_clients():
     with sqlite_db.get_cursor() as cur:
         cur.execute("SELECT COUNT(*) as c FROM contacts")
         existing = cur.fetchone()["c"]
-        if existing >= len(CLIENTS):
-            print("Contacts existants: {} (deja genere)".format(existing))
-            return existing
-
         for c in CLIENTS:
             cur.execute("""
                 INSERT OR IGNORE INTO contacts (code, nom, type, email, telephone, niu, adresse, ville, pays)
@@ -150,7 +147,10 @@ def seed_clients():
             """, (c["code"], c["nom"], c["type"], c["email"], c["telephone"], c["niu"], c["adresse"], c["ville"], c["pays"]))
             if cur.rowcount > 0:
                 count += 1
-    print("Clients/Fournisseurs generes: {}".format(count))
+    if count:
+        print("Clients/Fournisseurs generes ou mis a jour: {}".format(count))
+    elif existing:
+        print("Contacts existants: {} (deja genere)".format(existing))
     return count
 
 

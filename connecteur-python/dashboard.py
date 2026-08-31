@@ -2,8 +2,10 @@ import html
 import logging
 import functools
 import hashlib
+import hmac
 import json
 import os
+import secrets
 import threading
 from datetime import timedelta
 from flask import (
@@ -11,6 +13,7 @@ from flask import (
     session, redirect, url_for
 )
 from config_manager import get_config, save_config
+import user_auth
 from sync_engine import (
     get_cache, get_metrics, sync_all, certify_single, sync_sfec_invoices,
     apply_config, get_retry_queue
@@ -53,16 +56,238 @@ def _get_secret_key():
 app.secret_key = _get_secret_key()
 
 
+def _auth_enabled():
+    return get_config().get("dashboard", {}).get("auth_enabled", True)
+
+
+_applied = False
+
+
+def _apply_session_security():
+    global _applied
+    if _applied:
+        return
+    _applied = True
+    from user_auth import get_auth_config
+    acfg = get_auth_config()
+    app.config.update(
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_SECURE=acfg.get("https_only", False),
+        PERMANENT_SESSION_LIFETIME=timedelta(hours=acfg.get("session_max_age_hours", 24)),
+        SESSION_REFRESH_EACH_REQUEST=True,
+    )
+
+
+_apply_session_security()
+
+
+def _get_csrf_token():
+    if not session.get("_csrf"):
+        session["_csrf"] = secrets.token_urlsafe(32)
+    return session["_csrf"]
+
+
+def _csrf_valid():
+    token = (request.headers.get("X-CSRF-Token") or request.form.get("_csrf")
+             or (request.get_json(silent=True) or {}).get("_csrf") or "")
+    stored = session.get("_csrf") or ""
+    return bool(stored) and hmac.compare_digest(stored, token)
+
+
+def _current_identity():
+    if not session.get("user_id"):
+        return None
+    return {
+        "user_id": session.get("user_id"),
+        "email": session.get("user_email", ""),
+        "role": session.get("user_role", ""),
+        "nom": session.get("user_nom", ""),
+        "prenom": session.get("user_prenom", ""),
+    }
+
+
+def _is_sage_connected_user():
+    """Compte dont le mot de passe est gere par Sage (provider sage)."""
+    return get_config().get("auth", {}).get("provider", "local") == "sage"
+
+
 def _login_required(f):
     @functools.wraps(f)
     def decorated(*args, **kwargs):
-        cfg = get_config()
-        if not cfg.get("dashboard", {}).get("auth_enabled", True):
+        if not _auth_enabled():
             return f(*args, **kwargs)
-        if session.get("authenticated"):
-            return f(*args, **kwargs)
-        return redirect(url_for("login_page"))
+        identity = _current_identity()
+        if not identity:
+            return redirect(url_for("login_page"))
+        try:
+            live = user_auth.get_user(identity["user_id"])
+        except Exception:
+            live = None
+        if not live or not live.get("est_actif"):
+            session.clear()
+            return redirect(url_for("login_page"))
+        return f(*args, **kwargs)
     return decorated
+
+
+# ── Controle des droits : chemin -> permission ──
+
+_ACCESS_RULES = [
+    (("config",), "config.gerer"),
+    (("api", "config"), "config.gerer"),
+    (("utilisateurs",), "utilisateurs.gerer"),
+    (("api", "utilisateurs"), "utilisateurs.gerer"),
+    (("api", "audit"), "utilisateurs.gerer"),
+    (("api", "auth"), "utilisateurs.gerer"),
+    (("pos",), "pos.vente"),
+    (("api", "pos"), "pos.vente"),
+    (("api", "products"), "pos.vente"),
+    (("api", "articles"), "pos.vente"),
+    (("api", "sfec"), "sfec.certifier"),
+    (("api", "sync"), "sage.sync"),
+    (("invoices",), "factures.voir"),
+    (("billing",), "factures.voir"),
+    (("sales",), "factures.voir"),
+    (("pending",), "factures.voir"),
+    (("certified",), "factures.voir"),
+    (("api", "certified"), "factures.voir"),
+    (("api", "retry-queue"), "factures.voir"),
+    (("api", "billing"), "factures.voir"),
+    (("clients",), "clients.gerer"),
+    (("api", "clients"), "clients.voir"),
+    (("api", "contacts"), "clients.voir"),
+    (("vendeurs",), "vendeurs.gerer"),
+    (("api", "vendeurs"), "vendeurs.voir"),
+    (("api", "invoices", "stats"), "factures.voir"),
+    (("api", "invoices"), "factures.voir"),
+]
+
+_MUTATE_PERMS = {
+    ("/api/clients", "POST"): "clients.gerer",
+    ("/api/contacts", "POST"): "clients.gerer",
+    ("/api/vendeurs", "POST"): "vendeurs.gerer",
+    ("/api/products", "POST"): "pos.vente",
+}
+
+
+def _required_permission(path, method):
+    parts = [p for p in path.strip("/").lower().split("/")][:3]
+    role = session.get("user_role") or ""
+    if role == "admin":
+        return None, None
+    for key, perm in _MUTATE_PERMS.items():
+        if key == (path, method):
+            return perm, None
+    if path.endswith("/push-sage") and method == "POST":
+        return "sage.pousser", None
+    if path == "/api/invoices" and method == "POST":
+        return "factures.creer", None
+    if path.startswith("/api/invoices/") and method in ("PUT", "DELETE"):
+        return "factures.creer", None
+    for prefixes, perm in _ACCESS_RULES:
+        if len(prefixes) <= len(parts) and all(parts[i] == prefixes[i] for i in range(len(prefixes))):
+            return perm, None
+    return None, None
+
+
+def _deny(perm, label):
+    body = (_DENY_HTML.replace("{perm}", _esc(perm or "")).replace("{label}", _esc(label or ""))
+            .replace("{email}", _esc(session.get("user_email", ""))))
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "Acces refuse (droits insuffisants)", "permission": perm}), 403
+    return render_template_string(body), 403
+
+
+_DENY_HTML = """<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8"><title>Acces refuse</title>
+<style>
+body{font-family:'Segoe UI',Tahoma,sans-serif;background:#f1f5f9;min-height:100vh;display:flex;align-items:center;justify-content:center;color:#1e293b}
+.card{background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:40px;text-align:center;max-width:420px;box-shadow:0 10px 30px rgba(15,23,42,0.06)}
+.ico{width:56px;height:56px;margin:0 auto 16px;border-radius:14px;background:#fef2f2;color:#b91c1c;display:flex;align-items:center;justify-content:center;font-size:26px}
+h1{font-size:20px;margin-bottom:8px}.sub{font-size:13px;color:#64748b;margin-bottom:20px}
+.btn{display:inline-block;background:#3b82f6;color:#fff;text-decoration:none;padding:11px 22px;border-radius:10px;font-size:14px;font-weight:600}
+</style></head><body><div class="card"><div class="ico">&#128274;</div>
+<h1>Acces refuse</h1><p class="sub">Vous n'avez pas la permission <b>{label}</b> sur cette section.<br>Compte : {email}</p>
+<a class="btn" href="/">Retour au tableau de bord</a></div></body></html>"""
+
+
+@app.before_request
+def _auth_before_request():
+    if not _auth_enabled():
+        return None
+    _apply_session_security()
+    path = request.path
+
+    if session.get("user_id") and not session.get("_login_checked"):
+        live = None
+        try:
+            live = user_auth.get_user(session.get("user_id"))
+        except Exception:
+            pass
+        if not live or not live.get("est_actif"):
+            session.clear()
+            return redirect(url_for("login_page"))
+        session["user_email"] = live["email"]
+        session["user_role"] = live["role"]
+        session["user_nom"] = live["nom"]
+        session["user_prenom"] = live["prenom"]
+        session["_login_checked"] = True
+
+    if session.get("user_id") and not session.get("authenticated"):
+        session["authenticated"] = True
+
+    acfg = user_auth.get_auth_config()
+    idle_min = acfg.get("session_idle_minutes", 0)
+    if idle_min > 0 and session.get("user_id") and not path.startswith("/api/connectivity"):
+        import time as _time
+        last = session.get("_last_activity")
+        now = _time.time()
+        if last is None:
+            session["_last_activity"] = now
+        elif now - float(last) > idle_min * 60:
+            user_auth.audit("session.expiree", "Expiration pour inactivite",
+                            email=session.get("user_email", ""))
+            session.clear()
+            if path.startswith("/api/"):
+                return jsonify({"error": "Session expiree"}), 401
+            return redirect(url_for("login_page"))
+        else:
+            session["_last_activity"] = now
+
+    if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+        if session.get("user_id") and not _csrf_valid():
+            user_auth.audit("csrf.rejete", "Requete {} sans jeton CSRF valide".format(request.method),
+                            email=session.get("user_email", ""))
+            if path.startswith("/api/"):
+                return jsonify({"error": "Jeton CSRF invalide"}), 400
+            return render_template_string(
+                _DENY_HTML.replace("{perm}", "csrf").replace("{label}", "Jeton de securite invalide")
+                .replace("{email}", _esc(session.get("user_email", "")))
+            ), 400
+
+    if path in ("/login", "/logout") or path.startswith("/static/"):
+        return None
+    if not session.get("user_id"):
+        if path.startswith("/api/"):
+            return jsonify({"error": "Non authentifie"}), 401
+        return redirect(url_for("login_page"))
+    perm, _m = _required_permission(path, request.method)
+    if perm and not user_auth.has_perm(session.get("user_role", ""), perm):
+        return _deny(perm, user_auth.PERMISSIONS.get(perm, perm))
+    return None
+
+
+@app.after_request
+def _security_headers(resp):
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    resp.headers.setdefault("Content-Security-Policy",
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; connect-src 'self'; frame-ancestors 'self'")
+    if session.get("user_id"):
+        resp.headers.setdefault("Cache-Control", "no-store")
+    return resp
 
 
 CSS = """*{margin:0;padding:0;box-sizing:border-box}
@@ -168,11 +393,36 @@ textarea{resize:vertical;min-height:60px}
 .tab-btn.active{background:#fff;color:#3b82f6;border-color:#3b82f6;border-bottom:1px solid #fff}
 .tab-content{display:none;background:#fff;border:1px solid #e2e8f0;border-radius:0 8px 8px 8px;padding:20px;margin-bottom:16px}
 .tab-content.active{display:block}
-.toast{position:fixed;top:20px;right:20px;padding:12px 20px;border-radius:8px;font-size:13px;font-weight:600;z-index:9999;opacity:0;transition:opacity 0.3s;box-shadow:0 4px 12px rgba(0,0,0,0.15)}
-.toast.show{opacity:1}
-.toast-ok{background:#dcfce7;color:#166534;border:1px solid #86efac}
-.toast-err{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5}
-.toast-warn{background:#fef3c7;color:#92400e;border:1px solid #fcd34d}
+.alert-zone{position:fixed;top:64px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:10px;max-width:420px;min-width:260px;width:max-content}
+.alert-card{display:flex;align-items:flex-start;gap:10px;padding:12px 14px;border-radius:10px;font-size:13px;font-weight:600;box-shadow:0 4px 14px rgba(15,23,42,0.18);border:1px solid;animation:alertIn .22s ease-out}
+.alert-card .alert-icon{flex:none;margin-top:1px;width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff}
+.alert-card .alert-msg{flex:1;line-height:1.45;word-break:break-word}
+.alert-card .alert-x{cursor:pointer;flex:none;border:0;background:transparent;font-size:16px;line-height:1;opacity:.5;color:inherit;padding:2px;margin-left:2px}
+.alert-card .alert-x:hover{opacity:1}
+@keyframes alertIn{from{opacity:0;transform:translateX(14px)}to{opacity:1;transform:none}}
+.alert-card.alert-out{opacity:0;transform:translateX(14px);transition:opacity .25s,transform .25s}
+.alert-ok{border-color:#86efac;background:#f0fdf4;color:#166534}
+.alert-ok .alert-icon{background:#22c55e}
+.alert-err{border-color:#fca5a5;background:#fef2f2;color:#991b1b}
+.alert-err .alert-icon{background:#ef4444}
+.alert-warn{border-color:#fcd34d;background:#fffbeb;color:#92400e}
+.alert-warn .alert-icon{background:#f59e0b}
+.alert-info{border-color:#93c5fd;background:#eff6ff;color:#1e40af}
+.alert-info .alert-icon{background:#3b82f6}
+.alert-overlay{position:fixed;inset:0;z-index:10000;background:rgba(15,23,42,0.55);display:flex;align-items:center;justify-content:center;padding:16px;animation:fadeIn .18s ease-out;backdrop-filter:blur(2px)}
+.alert-overlay.alert-out{opacity:0;transition:opacity .2s}
+.alert-dialog{background:#fff;border-radius:14px;box-shadow:0 20px 60px rgba(15,23,42,0.45);width:100%;max-width:460px;border:1px solid #e2e8f0;overflow:hidden;animation:dlgIn .2s ease-out;text-align:left}
+.alert-dialog.alert-out{transform:scale(.96);transition:transform .2s}
+.alert-dialog-head{display:flex;align-items:center;gap:10px;padding:16px 18px 0;font-weight:700;font-size:15px;color:#0f172a}
+.alert-dialog-icon{flex:none;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;background:#64748b}
+.alert-dialog-msg{padding:12px 18px 4px;font-size:13px;color:#334155;line-height:1.55;white-space:pre-wrap;word-break:break-word}
+.alert-dialog-actions{display:flex;justify-content:flex-end;gap:8px;padding:16px 18px 18px}
+@keyframes dlgIn{from{opacity:0;transform:translateY(8px) scale(.97)}to{opacity:1;transform:none}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.alert-dialog.alert-err .alert-dialog-icon{background:#ef4444}
+.alert-dialog.alert-warn .alert-dialog-icon{background:#f59e0b}
+.alert-dialog.alert-ok .alert-dialog-icon{background:#22c55e}
+.alert-dialog.alert-info .alert-dialog-icon{background:#3b82f6}
 .net-indicator{display:flex;align-items:center;gap:6px;font-size:12px;color:#64748b}
 .form-row{margin-bottom:8px}
 .desc{font-size:11px;color:#64748b;margin-top:2px}
@@ -195,6 +445,12 @@ textarea{resize:vertical;min-height:60px}
 .line-item-actions{display:flex;gap:6px;align-items:center}
 .totals-panel{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:20px;position:sticky;top:24px;box-shadow:0 1px 3px rgba(0,0,0,0.04)}
 .totals-panel h3{color:#1e293b;font-size:14px;margin-bottom:16px;padding-bottom:10px;border-bottom:1px solid #e2e8f0}
+.niu-required input{border-color:#f59e0b!important;background:#fffbeb!important}
+.niu-required .niu-star{color:#f59e0b;font-weight:700}
+.niu-required-hint{color:#b45309;font-size:11px;margin-top:3px}
+.niu-opt-hint{color:#64748b;font-size:11px;margin-top:3px}
+.tiers-type-info{margin-top:6px;font-size:11px;color:#3b82f6}
+.contact-select-wrapper{position:relative}
 .total-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;font-size:13px;color:#64748b}
 .total-row.grand-total{border-top:2px solid #e2e8f0;margin-top:8px;padding-top:12px;font-size:18px;font-weight:700;color:#1e293b}
 .total-row .total-label{font-weight:600;text-transform:uppercase;letter-spacing:0.5px;font-size:11px}
@@ -251,8 +507,23 @@ SIDEBAR_ITEMS = [
     ("/vendeurs", "user", "Vendeurs"),
     ("/pending", "hourglass", "En attente"),
     ("/certified", "check", "Certifiees"),
+    ("/utilisateurs", "settings", "Utilisateurs"),
     ("/config", "settings", "Config"),
 ]
+
+SIDEBAR_PERM = {
+    "/": "dashboard.voir",
+    "/invoices": "factures.voir",
+    "/billing": "factures.voir",
+    "/pos": "pos.vente",
+    "/clients": "clients.gerer",
+    "/sales": "factures.voir",
+    "/vendeurs": "vendeurs.gerer",
+    "/pending": "factures.voir",
+    "/certified": "factures.voir",
+    "/utilisateurs": "utilisateurs.gerer",
+    "/config": "config.gerer",
+}
 
 
 def _sidebar(path="../.."):
@@ -265,17 +536,20 @@ def _sidebar(path="../.."):
             url=url, active=active, icon=SIDEBAR_ICONS[icon], label=label
         )
 
+    role = session.get("user_role", "")
+    items = SIDEBAR_ITEMS
+    if role:
+        items = [it for it in SIDEBAR_ITEMS
+                 if role == "admin" or user_auth.has_perm(role, SIDEBAR_PERM.get(it[0], "dashboard.voir"))]
+
     groups = [
-        ("Principal", SIDEBAR_ITEMS[:4]),
-        ("Gestion", SIDEBAR_ITEMS[4:]),
+        ("Principal", items[:4]),
+        ("Gestion", items[4:]),
     ]
     nav_parts = []
-    for gi, (group_name, items) in enumerate(groups):
-        if gi > 0:
-            nav_parts.append('<li class="nav-label">' + group_name + "</li>")
-        else:
-            nav_parts.append('<li class="nav-label">' + group_name + "</li>")
-        nav_parts.extend(_item(*item) for item in items)
+    for gi, (group_name, group_items) in enumerate(groups):
+        nav_parts.append('<li class="nav-label">' + group_name + "</li>")
+        nav_parts.extend(_item(*item) for item in group_items)
     nav = "".join(nav_parts)
     nav += ('<li><a href="/logout" class="logout-link"><span class="icon">{icon}</span> Deconnexion</a></li>').format(
         icon=SIDEBAR_ICONS["logout"]
@@ -301,13 +575,79 @@ def _sidebar(path="../.."):
 </div>
 """
 
-TOAST = """<div class="toast" id="toast"></div>
+ALERT_ZONE = """<div class="alert-zone" id="alert-zone" aria-live="polite"></div>
 <script>
+var _alertTimers = {};
 function showToast(msg, type) {
-  var t = document.getElementById("toast");
-  t.textContent = msg;
-  t.className = "toast show toast-" + (type || "ok");
-  setTimeout(function(){ t.className = "toast"; }, 3500);
+  type = type || "ok";
+  var scanFeed = (type === "err") && (msg.indexOf("Code-barres inconnu") === 0 || msg.indexOf("Erreur scan") === 0);
+  if (window.NATIVE_ALERTS && !scanFeed) { alert(msg); return; }
+  if (window.POS_DIALOG_ALERTS && type === "err" && !scanFeed) {
+    showDialog(msg, "err");
+    return;
+  }
+  var zone = document.getElementById("alert-zone");
+  if (!zone) return;
+  var key = type + "::" + msg;
+  var prev = null;
+  for (var i = 0; i < zone.children.length; i++) {
+    if (zone.children[i].getAttribute("data-key") === key) { prev = zone.children[i]; break; }
+  }
+  if (prev) { clearTimeout(_alertTimers[key]); zone.removeChild(prev); }
+  var card = document.createElement("div");
+  card.className = "alert-card alert-" + type;
+  card.setAttribute("data-key", key);
+  var icon = "\u2714";
+  if (type === "info") icon = "i";
+  else if (type === "warn") icon = "!";
+  else if (type === "err") icon = "\u2716";
+  card.innerHTML = '<span class="alert-icon">' + icon + '</span><span class="alert-msg"></span><button class="alert-x" role="button" aria-label="Fermer">\u00d7</button>';
+  card.querySelector(".alert-msg").textContent = msg;
+  var close = card.querySelector(".alert-x");
+  close.onclick = function() { dismissAlert(card, key); };
+  zone.appendChild(card);
+  var delay = type === "warn" ? 7000 : (type === "err" ? 12000 : 3800);
+  _alertTimers[key] = setTimeout(function() { dismissAlert(card, key); }, delay);
+  while (zone.children.length > 4) {
+    var old = zone.children[0];
+    dismissAlert(old, old.getAttribute("data-key"));
+  }
+}
+function dismissAlert(card, key) {
+  if (!card) return;
+  if (_alertTimers[key]) clearTimeout(_alertTimers[key]);
+  delete _alertTimers[key];
+  card.classList.add("alert-out");
+  setTimeout(function() { if (card.parentNode) card.parentNode.removeChild(card); }, 260);
+}
+function showDialog(msg, type, title) {
+  type = type || "info";
+  var root = document.getElementById("dialog-root");
+  if (!root) { root = document.createElement("div"); root.id = "dialog-root"; document.body.appendChild(root); }
+  var icons = {ok: "\u2714", info: "i", warn: "!", err: "\u2716"};
+  var t = title || (type === "err" ? "Erreur" : type === "warn" ? "Attention" : type === "ok" ? "Succes" : "Information");
+  root.innerHTML = '<div class="alert-overlay" id="dlg-overlay">'
+    + '<div class="alert-dialog alert-' + type + '" role="dialog" aria-modal="true">'
+    + '<div class="alert-dialog-head"><span class="alert-dialog-icon">' + (icons[type] || "i") + '</span><span class="alert-dialog-title"></span></div>'
+    + '<div class="alert-dialog-msg"></div>'
+    + '<div class="alert-dialog-actions"><button class="btn" id="dlg-ok">OK</button></div>'
+    + '</div></div>';
+  root.querySelector(".alert-dialog-title").textContent = t;
+  root.querySelector(".alert-dialog-msg").textContent = msg;
+  var overlay = root.querySelector("#dlg-overlay");
+  var dialog = root.querySelector(".alert-dialog");
+  function close() {
+    if (document.getElementById("dlg-ok")) document.removeEventListener("keydown", onKey);
+    overlay.classList.add("alert-out");
+    dialog.classList.add("alert-out");
+    setTimeout(function() { if (root.parentNode) root.parentNode.removeChild(root); }, 200);
+  }
+  function onKey(e) { if (e.key === "Escape") close(); }
+  document.addEventListener("keydown", onKey);
+  root.querySelector("#dlg-ok").onclick = close;
+  overlay.addEventListener("click", function(e) { if (e.target === overlay) close(); });
+  var ok = root.querySelector("#dlg-ok");
+  if (ok) ok.focus();
 }
 function checkConnectivity() {
   fetch("/api/connectivity").then(function(r){return r.json()}).then(function(d){
@@ -330,9 +670,9 @@ setInterval(checkConnectivity, 15000);
 </script>"""
 
 FOOTER = """</div>
-""" + TOAST + """
+""" + ALERT_ZONE + """
 <script>
-function api(m,u,b){return fetch(u,{method:m,headers:{"Content-Type":"application/json"},body:b?JSON.stringify(b):undefined}).then(function(r){return r.json()})}
+function api(m,u,b){function call(t){var h={"Content-Type":"application/json"};if(t){window.CSRF_TOKEN=t;h["X-CSRF-Token"]=t}return fetch(u,{method:m,headers:h,body:b?JSON.stringify(b):undefined}).then(function(r){return r.json().then(function(d){if((r.status===400||r.status===403)&&d&&d.error&&d.error.indexOf("CSRF")>=0&&!t){return fetch("/api/csrf").then(function(r){return r.json()}).then(function(x){return call(x.token)})}return d})})}if(window.CSRF_TOKEN)return call(window.CSRF_TOKEN);return fetch("/api/csrf").then(function(r){return r.json()}).then(function(d){return call(d.token)})}
 function syncNow(){showToast("Sync en cours...","info");api("POST","/api/sync").then(function(d){showToast(d.message||"OK","ok");setTimeout(function(){location.reload()},2000)})}
 function switchTab(id){document.querySelectorAll(".tab-btn").forEach(function(b){b.classList.remove("active")});document.querySelectorAll(".tab-content").forEach(function(c){c.classList.remove("active")});document.getElementById("tab-btn-"+id).classList.add("active");document.getElementById("tab-"+id).classList.add("active")}
 function saveForm(formId, url, next){var f=document.getElementById(formId);var d=new FormData(f);var obj={};d.forEach(function(v,k){obj[k]=v});api("POST",url,obj).then(function(r){if(r.ok){showToast("Sauvegarde OK","ok");if(next)next()}else{showToast("Erreur: "+(r.error||"inconnue"),"err")}}).catch(function(e){showToast("Erreur reseau: "+e,"err")})}
@@ -353,23 +693,30 @@ def _current_page():
 
 def _page(body):
     page_key, page_label = _current_page()
-    email = session.get("login_email", "")
+    identity = _current_identity() or {}
+    email = identity.get("email", "")
     initial = (email[:1].upper() if email else "U")
+    role_label = user_auth.ROLE_LABELS.get(identity.get("role", ""), identity.get("role", ""))
     topbar = ('<div class="topbar"><div class="topbar-title">{title}</div>'
               '<div class="topbar-actions">'
               '{sync}'
-              '<span class="user-chip"><span class="ava">{initial}</span>{email}</span>'
+              '<span class="user-chip"><span class="ava">{initial}</span>'
+              '<span>{email}<span style="color:#64748b;font-weight:500"> &middot; {role_label}</span></span></span>'
+              '<a class="btn btn-sm btn-ghost no-print" href="/compte/mot-de-passe">Mot de passe</a>'
               '<a class="btn btn-sm btn-ghost no-print" href="/logout">Deconnexion</a>'
               '</div></div>').format(
         title=_esc(page_label),
         sync=('<button class="btn btn-sm btn-primary no-print" onclick="syncNow()">Synchroniser</button>' if page_key != "config" else ""),
-        initial=_esc(initial), email=_esc(email)
+        initial=_esc(initial), email=_esc(email), role_label=_esc(role_label)
     )
+    csrf_js = '<script>window.CSRF_TOKEN=' + _esc(_get_csrf_token()) + ';</script>'
     return "<!DOCTYPE html><html lang='fr'><head><meta charset='utf-8'>" \
            "<meta name='viewport' content='width=device-width,initial-scale=1'>" \
+           "<meta name='referrer' content='no-referrer'>" \
            "<title>T-CONNECTOR &middot; {title}</title><style>".format(title=_esc(page_label)) \
            + CSS + "</style></head><body>" \
-           + _sidebar(request.path) + '<div class="main-content">' + topbar + body + FOOTER
+           + _sidebar(request.path) + '<div class="main-content">' + topbar \
+           + csrf_js + body + FOOTER
 
 
 LOGIN_HTML = """<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
@@ -500,6 +847,7 @@ h1{
   {error}
 
   <form method="POST" action="/login">
+    {csrf}
     <div class="field">
       <label>Adresse email</label>
       <input type="email" name="email" placeholder="admin@example.com" required autofocus>
@@ -540,49 +888,63 @@ h1{
 
 @app.route("/login", methods=["GET", "POST"])
 def login_page():
-    if request.method == "GET":
-        if session.get("authenticated"):
+    if not _auth_enabled():
+        if request.method == "POST":
             return redirect("/")
-        return render_template_string(LOGIN_HTML.replace("{error}", ""))
-    email = request.form.get("email", "")
-    password = request.form.get("password", "")
-    cfg = get_config().get("dashboard", {})
-    if email == cfg.get("login_email") and password == cfg.get("login_password"):
-        session["authenticated"] = True
-        session["login_email"] = email
-        session.permanent = True
-        app.permanent_session_lifetime = timedelta(
-            hours=cfg.get("session_max_age_hours", 24)
-        )
-
-        try:
-            import sqlite_db
-            with sqlite_db.get_cursor() as cur:
-                cur.execute("SELECT id FROM vendeurs WHERE email = ? AND est_actif = 1", (email,))
-                row = cur.fetchone()
-                if row:
-                    session["vendeur_id"] = row["id"]
-                else:
-                    code = "VEN-{:04d}".format(1)
-                    cur.execute("SELECT COUNT(*) as c FROM vendeurs")
-                    cnt = cur.fetchone()["c"]
-                    code = "VEN-{:04d}".format(cnt + 1)
-                    cur.execute(
-                        "INSERT INTO vendeurs (code, nom, prenom, email, role) VALUES (?, ?, ?, ?, ?)",
-                        (code, "Admin", "", email, "responsable")
-                    )
-                    session["vendeur_id"] = cur.lastrowid
-        except Exception:
-            pass
-
         return redirect("/")
-    return render_template_string(
-        LOGIN_HTML.replace("{error}", '<div class="error">Identifiants incorrects</div>')
-    )
+    if request.method == "GET":
+        if session.get("user_id"):
+            return redirect("/")
+        token = _get_csrf_token()
+        csrf_field = ('<input type="hidden" name="_csrf" value="{}">').format(_esc(token))
+        html = LOGIN_HTML.replace("{error}", "").replace("{csrf}", csrf_field)
+        return render_template_string(html)
+
+    _apply_session_security()
+    email = request.form.get("email", "").strip()
+    password = request.form.get("password", "")
+    if not session.get("_csrf") or not _csrf_valid():
+        return render_template_string(
+            LOGIN_HTML.replace("{error}", '<div class="error">Session expirée - reessayez</div>')
+            .replace("{csrf}", '<input type="hidden" name="_csrf" value="{}">'.format(_esc(_get_csrf_token())))
+        ), 400
+    user, err = user_auth.authenticate(email, password, ip=request.remote_addr or "")
+    if not user:
+        return render_template_string(
+            LOGIN_HTML.replace("{error}", '<div class="error">{msg}</div>'.format(msg=_esc(err or "Erreur")))
+            .replace("{csrf}", '<input type="hidden" name="_csrf" value="{}">'.format(_esc(_get_csrf_token())))
+        ), 401
+
+    session.clear()
+    session["user_id"] = user["id"]
+    session["user_email"] = user["email"]
+    session["user_role"] = user["role"]
+    session["user_nom"] = user.get("nom", "")
+    session["user_prenom"] = user.get("prenom", "")
+    session["authenticated"] = True
+    session["_login_checked"] = True
+    import time as _time
+    session["_last_activity"] = _time.time()
+    session.permanent = True
+    app.permanent_session_lifetime = timedelta(hours=user_auth.get_auth_config().get("session_max_age_hours", 24))
+    session["_csrf"] = secrets.token_urlsafe(32)
+
+    email_clean = user["email"]
+    session["vendeur_id"] = None
+    try:
+        with sqlite_db.get_cursor() as cur:
+            cur.execute("SELECT id FROM vendeurs WHERE email = ? AND est_actif = 1", (email_clean,))
+            row = cur.fetchone()
+            session["vendeur_id"] = row["id"] if row else None
+    except Exception:
+        session["vendeur_id"] = None
+    return redirect("/")
 
 
 @app.route("/logout")
 def logout():
+    user_auth.audit("deconnexion", "Deconnexion", email=session.get("user_email", ""),
+                    ip=request.remote_addr or "")
     session.clear()
     return redirect("/login")
 
@@ -762,47 +1124,161 @@ showToast("Erreur: "+d.error,"err");
 @_login_required
 def certified_page():
     cache = get_cache()
-    sfec_invoices = cache.get("sfec_invoices", [])
     last_sfec = cache.get("last_sfec_sync_at", "")
-
-    rows = ""
-    for inv in sfec_invoices:
-        invoice_num = inv.get("invoice_number", "")
-        cert_date = (inv.get("certification_date") or "")[:10]
-        short_sig = inv.get("certification_short_signature", "")
-        buyer = inv.get("buyer_name", "")
-        amount = inv.get("total_ttc", "0")
-        try:
-            amount_fmt = "{:,.0f}".format(float(amount))
-        except (ValueError, TypeError):
-            amount_fmt = str(amount)
-        sfec_id = inv.get("id", "")
-        rows += "<tr><td>{}</td><td>{}</td><td>{}</td><td style='text-align:right'>{}</td><td class='no-print'><a href='/certified/{}/print' class='btn btn-sm btn-primary' target='_blank'>Imprimer</a></td></tr>".format(
-            _esc(invoice_num), _esc(short_sig), _esc(buyer), _esc(amount_fmt), sfec_id
-        )
-    empty = '<tr><td colspan="5" style="text-align:center;color:#64748b">Aucune facture certifiee - clique sur Sync</td></tr>' if not rows else ""
-    loading = ""
-    if not sfec_invoices and not last_sfec:
-        loading = '<p style="color:#f59e0b">Chargement en cours... ( Rafraichir dans quelques secondes )</p>'
-    body = """
-<div class="card"><h2>Factures certifiees SFEC ({count})</h2>
-<button class="btn btn-sm btn-success no-print" onclick="refreshSfec()" id="sfec-refresh">Sync SFEC</button>
-<span id="sfec-status" style="margin-left:8px;font-size:12px;color:#64748b">Derniere sync: {last_sfec}</span>
-{loading}
-<table style="margin-top:12px"><thead><tr><th>Facture</th><th>N certif</th><th>Client</th><th style="text-align:right">Montant TTC</th><th class="no-print">Action</th></tr></thead>
-<tbody>{rows}{empty}</tbody></table></div>
+    body = r"""
+<div class="card"><h2>Factures certifiees SFEC</h2>
+<div class="stat-grid" style="margin-bottom:16px">
+<div class="stat"><div class="value" id="c-tot">-</div><div class="label">Factures SFEC</div></div>
+<div class="stat"><div class="value" id="c-aff">-</div><div class="label">Affichées</div></div>
+</div>
+<button class="btn btn-sm btn-success no-print" id="sfec-refresh" onclick="refreshCert()">Sync SFEC</button>
+<span id="sfec-status" style="margin-left:8px;font-size:12px;color:#64748b">Derniere sync: @LAST@</span>
+<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:14px">
+<input id="c-search" placeholder="N° facture, client..." style="min-width:240px;padding:8px 10px;border:1px solid #334155;border-radius:8px;background:#0f172a;color:#e2e8f0">
+<select id="c-statut" style="height:38px;padding:0 8px;border:1px solid #334155;border-radius:8px;background:#0f172a;color:#e2e8f0"><option value="">Tous statuts</option></select>
+<input type="date" id="c-dfrom" title="Date certif depuis" style="height:38px;padding:0 8px;border:1px solid #334155;border-radius:8px;background:#0f172a;color:#e2e8f0;color-scheme:dark">
+<span style="color:#94a3b8">→</span>
+<input type="date" id="c-dto" title="Date certif jusqu'a" style="height:38px;padding:0 8px;border:1px solid #334155;border-radius:8px;background:#0f172a;color:#e2e8f0;color-scheme:dark">
+<button class="btn btn-sm no-print" onclick="resetCerts()">Reinitialiser</button>
+</div>
+</div>
+<div class="card"><h2>Liste des certifications</h2>
+<table><thead>
+<tr>
+<th data-sort="numero" onclick="toggleSortC('numero')">Numero<span id="so_numero"></span></th>
+<th data-sort="date" onclick="toggleSortC('date')">Date certif<span id="so_date"></span></th>
+<th data-sort="statut" onclick="toggleSortC('statut')">Statut<span id="so_statut"></span></th>
+<th data-sort="buyer" onclick="toggleSortC('buyer')">Client<span id="so_buyer"></span></th>
+<th data-sort="montant" onclick="toggleSortC('montant')" style="text-align:right">Montant TTC<span id="so_montant"></span></th>
+<th class="no-print">Action</th>
+</tr></thead>
+<tbody id="cert-body"><tr><td colspan="6" style="text-align:center;color:#64748b">Chargement...</td></tr></tbody>
+</table>
+<div class="no-print" id="cert-pag" style="margin-top:12px"></div>
+</div>
 <script>
-function refreshSfec(){{
-  document.getElementById("sfec-status").textContent="Chargement en cours...";
-  document.getElementById("sfec-refresh").disabled=true;
-  api("POST","/api/sfec/sync",{{}}).then(function(d){{
-    location.reload();
-  }}).catch(function(e){{ document.getElementById("sfec-status").textContent="Erreur: "+e; document.getElementById("sfec-refresh").disabled=false; }});
-}}
-setTimeout(function(){{ if(document.querySelector("td[colspan='5']")) location.reload(); }}, 5000);
-</script>""".format(count=len(sfec_invoices), rows=rows, empty=empty, loading=loading,
-                   last_sfec=last_sfec[:19].replace("T"," ") if last_sfec else "jamais")
-    return _page(body)
+var bsC={list:[],q:"",statut:"",dfrom:"",dto:"",sort:"date",dir:-1,page:1,limit:25,per:[25,50,100]};
+function normFr(v){return String(v==null?"":v).toLowerCase().replace(/[àâäã]/g,"a").replace(/[éèêë]/g,"e").replace(/[îï]/g,"i").replace(/[ôö]/g,"o").replace(/[ûüù]/g,"u").replace(/ç/g,"c");}
+function escC(v){return String(v==null?"":v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
+function fmtMoney(v){var x=parseFloat(v);if(isNaN(x))return String(v==null?"":v);return x.toLocaleString("fr-FR",{maximumFractionDigits:0});}
+function badgeStatut(st){
+  st=(st||"").trim();
+  if(!st)return '<span class="badge badge-info">-</span>';
+  var l=normFr(st);
+  if(/certif/.test(l)||l==="ok"||l==="valide")return '<span class="badge badge-ok">'+escC(st)+'</span>';
+  if(/pend|attent|brouillon|en cours/.test(l))return '<span class="badge badge-warn">'+escC(st)+'</span>';
+  if(/fail|err|rejet|refus|echec/.test(l))return '<span class="badge badge-err">'+escC(st)+'</span>';
+  return '<span class="badge badge-info">'+escC(st)+'</span>';
+}
+function filteredCert(){
+  var qs=bsC.q?normFr(bsC.q).split(/\s+/).filter(Boolean):[];
+  var r=bsC.list.filter(function(v){
+    var hay=normFr(v.numero+" "+v.buyer);
+    for(var i=0;i<qs.length;i++){if(hay.indexOf(qs[i])<0)return false;}
+    if(bsC.statut&&normFr(v.statut)!==bsC.statut)return false;
+    if(bsC.dfrom&&(v.date||"")<bsC.dfrom)return false;
+    if(bsC.dto&&(v.date||"")>bsC.dto)return false;
+    return true;
+  });
+  var ks={
+    numero:function(a,b){return a.numero.localeCompare(b.numero)},
+    date:function(a,b){return (a.date||"").localeCompare(b.date||"")},
+    statut:function(a,b){return normFr(a.statut).localeCompare(normFr(b.statut))},
+    buyer:function(a,b){return normFr(a.buyer).localeCompare(normFr(b.buyer))},
+    montant:function(a,b){return (parseFloat(a.montant)||0)-(parseFloat(b.montant)||0)}
+  };
+  r.sort(ks[bsC.sort]||ks.date);
+  if(bsC.dir<0)r.reverse();
+  return r;
+}
+function renderCert(){
+  var rows=filteredCert();
+  document.getElementById("c-tot").textContent=bsC.list.length;
+  document.getElementById("c-aff").textContent=rows.length;
+  var maxPage=Math.max(1,Math.ceil(rows.length/bsC.limit));
+  if(bsC.page>maxPage)bsC.page=maxPage;
+  var start=(bsC.page-1)*bsC.limit;
+  var slice=rows.slice(start,start+bsC.limit);
+  var html="";
+  for(var i=0;i<slice.length;i++){
+    var v=slice[i];
+    html+="<tr><td>"+escC(v.numero)+"</td><td>"+escC(v.date||"-")+"</td><td>"+badgeStatut(v.statut)+"</td><td>"+escC(v.buyer||"-")+"</td><td style='text-align:right'>"+fmtMoney(v.montant)+"</td><td class='no-print'><a class='btn btn-sm btn-primary' href='/certified/"+encodeURIComponent(v.id)+"/print' target='_blank'>Imprimer</a></td></tr>";
+  }
+  if(!slice.length)html='<tr><td colspan="6" style="text-align:center;color:#64748b">Aucune facture correspondante</td></tr>';
+  document.getElementById("cert-body").innerHTML=html;
+  setArrowsC();
+  pagC();
+}
+function setArrowsC(){
+  ["numero","date","statut","buyer","montant"].forEach(function(k){
+    var el=document.getElementById("so_"+k);
+    if(el)el.textContent=(k===bsC.sort?(bsC.dir>0?"▲":"▼"):"");
+  });
+}
+function toggleSortC(k){if(bsC.sort===k){bsC.dir=-bsC.dir;}else{bsC.sort=k;bsC.dir=1;}bsC.page=1;renderCert();}
+function pagC(){
+  var rows=filteredCert();
+  var maxPage=Math.max(1,Math.ceil(rows.length/bsC.limit));
+  var html='<span style="color:#94a3b8;margin-right:8px">'+rows.length+' facture(s)</span>';
+  html+='<select onchange="setLimitC(this.value)" style="height:32px;padding:0 8px;border:1px solid #334155;border-radius:8px;background:#0f172a;color:#e2e8f0">';
+  for(var i=0;i<bsC.per.length;i++){html+='<option value="'+bsC.per[i]+'"'+(bsC.limit===bsC.per[i]?' selected':'')+'>'+bsC.per[i]+'</option>';}
+  html+='</select>';
+  html+='<button class="btn btn-sm" onclick="pgC('+(bsC.page-1)+')"'+(bsC.page<=1?' disabled':'')+'>Prec</button>';
+  var jumped=false;
+  for(var p=1;p<=maxPage;p++){
+    if(maxPage>9&&p!==1&&p!==maxPage&&Math.abs(p-bsC.page)>2){
+      if(!jumped){html+='<span style="color:#64748b">…</span>';jumped=true;}
+      continue;
+    }
+    jumped=false;
+    html+='<button class="btn btn-sm'+(p===bsC.page?' btn-primary':'')+'" onclick="pgC('+p+')">'+p+'</button>';
+  }
+  html+='<button class="btn btn-sm" onclick="pgC('+(bsC.page+1)+')"'+(bsC.page>=maxPage?' disabled':'')+'>Suiv</button>';
+  document.getElementById("cert-pag").innerHTML=html;
+}
+function pgC(p){var maxPage=Math.max(1,Math.ceil(filteredCert().length/bsC.limit));if(p<1)p=1;if(p>maxPage)p=maxPage;bsC.page=p;renderCert();}
+function setLimitC(v){bsC.limit=parseInt(v,10);bsC.page=1;renderCert();}
+function resetCerts(){bsC.q="";bsC.statut="";bsC.dfrom="";bsC.dto="";bsC.page=1;
+  document.getElementById("c-search").value="";
+  document.getElementById("c-statut").value="";
+  document.getElementById("c-dfrom").value="";
+  document.getElementById("c-dto").value="";
+  renderCert();
+}
+function refreshCert(){
+  var st=document.getElementById("sfec-status");
+  var bt=document.getElementById("sfec-refresh");
+  st.textContent="Chargement en cours...";
+  bt.disabled=true;
+  api("POST","/api/sfec/sync",{}).then(function(){setTimeout(loadCerts,2500);})
+    .catch(function(e){st.textContent="Erreur: "+e;bt.disabled=false;});
+}
+function loadCerts(){
+  api("GET","/api/certified/list").then(function(d){
+    bsC.list=d.invoices||[];
+    var statuts={};
+    bsC.list.forEach(function(v){if(v.statut)statuts[normFr(v.statut)]=v.statut;});
+    var keys=Object.keys(statuts).sort();
+    var opts='<option value="">Tous statuts</option>';
+    for(var i=0;i<keys.length;i++){opts+='<option value="'+normFr(statuts[keys[i]])+'">'+escC(statuts[keys[i]])+'</option>';}
+    document.getElementById("c-statut").innerHTML=opts;
+    if(d.last_sfec)document.getElementById("sfec-status").textContent="Derniere sync: "+d.last_sfec.slice(0,19).replace("T"," ");
+    document.getElementById("sfec-refresh").disabled=false;
+    renderCert();
+  }).catch(function(e){
+    document.getElementById("cert-body").innerHTML='<tr><td colspan="6" style="text-align:center;color:#64748b">Erreur de chargement: '+e+'</td></tr>';
+    document.getElementById("c-tot").textContent="0";
+    document.getElementById("sfec-refresh").disabled=false;
+  });
+}
+document.getElementById("c-search").addEventListener("input",function(){bsC.q=this.value;bsC.page=1;renderCert();});
+document.getElementById("c-statut").addEventListener("change",function(){bsC.statut=normFr(this.value);bsC.page=1;renderCert();});
+document.getElementById("c-dfrom").addEventListener("change",function(){bsC.dfrom=this.value;bsC.page=1;renderCert();});
+document.getElementById("c-dto").addEventListener("change",function(){bsC.dto=this.value;bsC.page=1;renderCert();});
+loadCerts();
+</script>"""
+    out = body.replace("@LAST@", (last_sfec or "")[:19].replace("T", " ") or "jamais")
+    return _page(out)
 
 
 @app.route("/certified/<invoice_id>/print")
@@ -1307,6 +1783,9 @@ def api_sfec_certify():
 
         try:
             result = certify_sqlite_invoice(inv)
+            user_auth.audit("facture.certifiee", "Certification SFEC {} #{}".format(
+                result.get("sfec_statut", ""), result.get("numero", "")),
+                email=(_current_identity() or {}).get("email", ""))
             return jsonify(result)
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
@@ -1416,6 +1895,29 @@ def api_tables():
 @_login_required
 def api_certified():
     return jsonify(fetch_certified_invoices())
+
+
+@app.route("/api/certified/list")
+@_login_required
+def api_certified_list():
+    cache = get_cache()
+    out = []
+    for inv in cache.get("sfec_invoices", []):
+        cd = inv.get("certification_date") or ""
+        out.append({
+            "id": inv.get("id", ""),
+            "numero": inv.get("invoice_number", ""),
+            "date": cd[:10] if cd else "",
+            "statut": (inv.get("invoice_status") or inv.get("certification_status")
+                       or inv.get("status") or ""),
+            "buyer": inv.get("buyer_name", ""),
+            "montant": inv.get("total_ttc", "0"),
+        })
+    return jsonify({
+        "invoices": out,
+        "count": len(out),
+        "last_sfec": cache.get("last_sfec_sync_at", ""),
+    })
 
 
 @app.route("/api/retry-queue")
@@ -1697,49 +2199,203 @@ def api_config_import():
 def billing_page():
     stats = invoice_engine.count_invoices()
     bi_stats = sync_bidirectional.get_sync_stats()
-    inv_list = invoice_engine.list_invoices(limit=50)
-    rows = ""
-    for inv in inv_list["invoices"]:
-        s = inv.get("statut", "")
-        sb = "badge-ok" if s in ("valide", "a_comptabilise") else "badge-warn" if s in ("a_comptabiliser",) else ""
-        ss = inv.get("sfec_statut", "")
-        sfb = "badge-ok" if ss in ("CERTIFIE", "DEJA_CERTIFIE") else "badge-warn" if ss == "EN_COURS" else "badge-err" if ss == "ERREUR" else "badge-info" if ss else ""
-        sftxt = "Certifie" if ss == "CERTIFIE" else "Deja certifie" if ss == "DEJA_CERTIFIE" else "En cours" if ss == "EN_COURS" else "Erreur" if ss == "ERREUR" else "A certifier" if ss else "-"
-        src = "badge-info" if inv.get("source") == "sage" else ""
-        srctxt = inv.get("source", "web")
-        rows += "<tr><td><a href='/billing/invoice/{}' style='color:#38bdf8;text-decoration:none'>{}</a></td><td>{}</td><td>{}</td><td style='text-align:right'>{:,.0f}</td><td><span class='badge {}'>{}</span></td><td><span class='badge {}'>{}</span></td><td><span class='badge {}'>{}</span></td></tr>".format(
-            inv["id"], _esc(inv.get("numero", "")), _esc(inv.get("date_facture", "")),
-            _esc(inv.get("tiers_nom", "")), inv.get("montant_ttc", 0),
-            sb, _esc(s), sfb, _esc(sftxt), src, _esc(srctxt)
-        )
-    empty = '<tr><td colspan="7" style="text-align:center;color:#64748b">Aucune facture - <a href="/billing/invoice/new" style="color:#38bdf8">Creer une facture</a></td></tr>' if not rows else ""
-    body = """
-<div class="card"><h2>Facturation</h2><div class="stat-grid">
+
+    with sqlite_db.get_cursor() as cur:
+        cur.execute("SELECT COUNT(*) c FROM invoices WHERE sfec_statut IN ('CERTIFIE', 'DEJA_CERTIFIE')")
+        stats["certifiees"] = cur.fetchone()["c"]
+        cur.execute("SELECT COUNT(*) c FROM invoices WHERE sfec_statut = 'EN_COURS'")
+        stats["certif_en_cours"] = cur.fetchone()["c"]
+        cur.execute("SELECT COUNT(*) c FROM invoices WHERE sfec_statut = 'ERREUR'")
+        stats["certif_erreur"] = cur.fetchone()["c"]
+        cur.execute("SELECT COUNT(*) c FROM invoices WHERE statut != 'brouillon' AND sfec_statut NOT IN ('CERTIFIE', 'DEJA_CERTIFIE')")
+        stats["non_certifiees"] = cur.fetchone()["c"]
+        cur.execute("""
+            SELECT COUNT(*) c FROM invoices
+            WHERE source IN ('web', 'pos') AND synced_sage = 0 AND statut != 'brouillon'
+              AND (source != 'pos' OR (sfec_num_certif IS NOT NULL AND sfec_num_certif != ''))
+        """)
+        stats["pending_sage"] = cur.fetchone()["c"]
+        cur.execute("SELECT COALESCE(SUM(montant_restant), 0) t, COUNT(*) c FROM invoices WHERE statut != 'brouillon' AND montant_restant > 0")
+        m = cur.fetchone()
+        stats["impayes_total"] = m["t"]
+        stats["impayes_nb"] = m["c"]
+        cur.execute("""
+            SELECT COUNT(*) c, COALESCE(SUM(montant_ht), 0) ht, COALESCE(SUM(montant_tva), 0) tva,
+                   COALESCE(SUM(montant_ttc), 0) ttc
+            FROM invoices
+            WHERE statut != 'brouillon' AND strftime('%Y-%m', substr(date_facture, 1, 10)) = strftime('%Y-%m', 'now')
+        """)
+        m = cur.fetchone()
+        stats["mois_nb"] = m["c"]
+        stats["mois_ht"] = m["ht"]
+        stats["mois_tva"] = m["tva"]
+        stats["mois_ttc"] = m["ttc"]
+
+    statut_opts = ('<option value="">Tous</option><option value="brouillon">Brouillon</option>'
+                   '<option value="valide">Validee</option><option value="a_comptabiliser">A comptabiliser</option>'
+                   '<option value="a_comptabilise">A comptabilise</option>')
+    source_opts = ('<option value="">Toutes</option><option value="web">Web</option>'
+                   '<option value="pos">POS</option><option value="sage">Sage</option>')
+
+    stat_cards = """<div class="card"><h2>Facturation</h2><div class="stat-grid">
 <div class="stat"><div class="value">{total}</div><div class="label">Total factures</div></div>
 <div class="stat"><div class="value">{brouillons}</div><div class="label">Brouillons</div></div>
 <div class="stat"><div class="value">{validees}</div><div class="label">Validees</div></div>
 <div class="stat"><div class="value">{certifiees}</div><div class="label">Certifiees SFEC</div></div>
-<div class="stat"><div class="value">{ca:,.0f}</div><div class="label">CA Total (FCFA)</div></div>
+<div class="stat"><div class="value">{certif_en_cours}</div><div class="label">Certif en attente</div></div>
+<div class="stat"><div class="value">{certif_erreur}</div><div class="label">Certif en erreur</div></div>
+<div class="stat"><div class="value">{ca:,.0f}</div><div class="label">CA Total TTC</div></div>
+<div class="stat"><div class="value">{nb_imp:,.0f}</div><div class="label">Impayes (FCFA)</div></div>
+<div class="stat"><div class="value">{pending_sage}</div><div class="label">A pousser Sage</div></div>
 <div class="stat"><div class="value">{pushed}</div><div class="label">Sync Sage OK</div></div>
-</div></div>
-<div class="card no-print"><h2>Actions</h2>
-<a href="/billing/invoice/new" class="btn btn-primary">Nouvelle Facture</a>
-<button class="btn btn-success" onclick="syncBi()" style="margin-left:8px">Sync Sage</button>
-<span id="sync-status" style="margin-left:8px;font-size:12px;color:#64748b">Derniere sync: {last_sync}</span>
-</div>
-<div class="card"><h2>Factures ({count})</h2>
-<table><thead><tr><th>Numero</th><th>Date</th><th>Tiers</th><th style='text-align:right'>Montant TTC</th><th>Statut</th><th>SFEC</th><th>Source</th></tr></thead>
-<tbody>{rows}{empty}</tbody></table></div>
-<script>
-function syncBi(){{document.getElementById("sync-status").textContent="Sync en cours...";api("POST","/api/sync/bi",{{}}).then(function(d){{showToast("Sync: "+d.pushed+" poussees, "+d.pull_new+" tirees","ok");setTimeout(function(){{location.reload()}},1500)}}).catch(function(e){{showToast("Erreur: "+e,"err")}})}}
-</script>""".format(
+</div>""".format(
         total=stats.get("total", 0), brouillons=stats.get("brouillons", 0),
         validees=stats.get("validees", 0), certifiees=stats.get("certifiees", 0),
         ca=stats.get("ca_total", 0), pushed=bi_stats.get("pushed", 0),
-        last_sync=bi_stats.get("last_sync", "jamais")[:19].replace("T", " ") if bi_stats.get("last_sync") else "jamais",
-        count=inv_list.get("total", 0), rows=rows, empty=empty
+        certif_en_cours=stats.get("certif_en_cours", 0), certif_erreur=stats.get("certif_erreur", 0),
+        nb_imp=stats.get("impayes_total", 0), pending_sage=stats.get("pending_sage", 0)
     )
+
+    mois_cards = """<div class="card"><h2>Mois en cours</h2><div class="stat-grid">
+<div class="stat"><div class="value">{mois_nb}</div><div class="label">Factures du mois</div></div>
+<div class="stat"><div class="value">{mois_ht:,.0f}</div><div class="label">HT (FCFA)</div></div>
+<div class="stat"><div class="value">{mois_tva:,.0f}</div><div class="label">TVA (FCFA)</div></div>
+<div class="stat"><div class="value">{mois_ttc:,.0f}</div><div class="label">TTC (FCFA)</div></div>
+</div></div>""".format(
+        mois_nb=stats.get("mois_nb", 0), mois_ht=stats.get("mois_ht", 0),
+        mois_tva=stats.get("mois_tva", 0), mois_ttc=stats.get("mois_ttc", 0)
+    )
+
+    filters_card = """<div class="card no-print"><h2>Filtres</h2>
+<form id="filters-form" style="display:flex;gap:12px;flex-wrap:wrap;align-items:end">
+<div><label>Date debut</label><input type="date" id="f_date_from"></div>
+<div><label>Date fin</label><input type="date" id="f_date_to"></div>
+<div><label>Statut</label><select id="f_statut">{statut_opts}</select></div>
+<div><label>Source</label><select id="f_source">{source_opts}</select></div>
+<div><label>N facture</label><input type="text" id="f_search" placeholder="FA000002..." style="min-width:150px"></div>
+<div><button type="submit" class="btn btn-primary">Filtrer</button></div>
+<div><button type="button" class="btn btn-sm" onclick="resetFilters()">Reinitialiser</button></div>
+</form></div>""".format(statut_opts=statut_opts, source_opts=source_opts)
+
+    actions_card = """<div class="card no-print"><h2>Actions</h2>
+<a href="/billing/invoice/new" class="btn btn-primary">Nouvelle Facture</a>
+<button class="btn btn-success" onclick="syncBi()" style="margin-left:8px">Sync Sage</button>
+<span style="margin-left:8px;font-size:12px;color:#64748b">Derniere sync: {last_sync}</span>
+</div>""".format(
+        last_sync=bi_stats.get("last_sync", "jamais")[:19].replace("T", " ") if bi_stats.get("last_sync") else "jamais"
+    )
+
+    table_card = """<div class="card"><h2>Factures (<span id="inv-count">0</span>)</h2>
+<table><thead><tr>
+<th data-sort="numero" onclick="toggleSort('numero')">Numero<span id="sort_numero"></span></th>
+<th data-sort="date_facture" onclick="toggleSort('date_facture')">Date<span id="sort_date_facture"></span></th>
+<th data-sort="tiers_nom" onclick="toggleSort('tiers_nom')">Tiers<span id="sort_tiers_nom"></span></th>
+<th style="text-align:right">HT</th><th style="text-align:right">TVA</th><th style="text-align:right">TTC</th>
+<th style="text-align:right">Restant</th>
+<th data-sort="statut" onclick="toggleSort('statut')">Statut<span id="sort_statut"></span></th>
+<th data-sort="source" onclick="toggleSort('source')">Source<span id="sort_source"></span></th>
+<th>SFEC</th><th>Sage</th><th>Actions</th>
+</tr></thead>
+<tbody id="inv-body"><tr><td colspan="12" style="text-align:center;color:#64748b">Chargement...</td></tr></tbody>
+</table>
+<div id="inv-pagination" style="margin-top:10px"></div></div>"""
+    script_block = """<script>
+window.NATIVE_ALERTS = true;
+var bs={page:1,limit:25,sort_by:"date_facture",sort_dir:"DESC"};
+function esc(x){var d=document.createElement("div");d.textContent=(x==null?"":String(x));return d.innerHTML;}
+function fmt(x){return Number(x||0).toLocaleString("fr-FR",{maximumFractionDigits:0});}
+function buildQ(){
+var q=[],a=function(k,v){if(v!==null&&v!==""){q.push(k+"="+encodeURIComponent(v));}};
+a("statut",document.getElementById("f_statut").value);
+a("source",document.getElementById("f_source").value);
+a("search",document.getElementById("f_search").value);
+a("date_from",document.getElementById("f_date_from").value);
+a("date_to",document.getElementById("f_date_to").value);
+a("sort_by",bs.sort_by);a("sort_dir",bs.sort_dir);
+a("page",bs.page);a("limit",bs.limit);
+return q.join("&");}
+function sfecCell(t){
+var ss=t.sfec_statut||"",cb=' <button class="btn btn-sm" onclick="certifyBilling('+t.id+')">Certifier</button>';
+if(ss==="CERTIFIE"||ss==="DEJA_CERTIFIE"){return '<span class="badge badge-ok" title="'+esc((t.sfec_num_certif||"").slice(0,25))+'">'+(ss==="CERTIFIE"?"Certifie":"Deja certifie")+"</span>";}
+if(ss==="EN_COURS"){return '<span class="badge badge-warn">En attente</span>'+cb;}
+if(ss==="ERREUR"){return '<span class="badge badge-err">Erreur</span>'+cb;}
+return '<span class="badge badge-info">A certifier</span>'+cb;}
+function sageCell(t){
+if(t.synced_sage){return '<span class="badge badge-ok" title="'+esc(t.sage_piece||"")+'">Dans Sage</span>';}
+if(t.source==="sage"){return '<span class="badge badge-info">Importe</span>';}
+var pushable=(t.statut!=="brouillon")&&(t.source!=="pos"||(t.sfec_num_certif||""));
+return '<span class="badge badge-warn">En attente</span>'+(pushable?' <button class="btn btn-sm" onclick="pushInvoice('+t.id+')">Pousser</button>':"");}
+function invRow(t){
+var s=t.statut||"";
+var sb=(s==="valide"||s==="a_comptabilise")?"badge-ok":(s==="a_comptabiliser")?"badge-warn":(s==="brouillon")?"badge-info":"";
+var rest=t.montant_restant||0,u="/billing/invoice/"+t.id;
+return '<tr><td><a href="'+u+'" style="color:#38bdf8;text-decoration:none">'+esc(t.numero)+'</a></td>'
++'<td>'+esc(t.date_facture)+'</td><td>'+esc(t.tiers_nom)+'</td>'
++'<td style="text-align:right">'+fmt(t.montant_ht)+'</td><td style="text-align:right">'+fmt(t.montant_tva)+'</td><td style="text-align:right">'+fmt(t.montant_ttc)+'</td>'
++'<td style="text-align:right">'+fmt(rest)+'</td>'
++'<td><span class="badge '+sb+'">'+esc(s)+'</span></td>'
++'<td><span class="badge badge-info">'+esc(t.source)+'</span></td>'
++'<td>'+sfecCell(t)+'</td><td>'+sageCell(t)+'</td>'
++'<td><a class="btn btn-sm" href="'+u+'" target="_blank" style="text-decoration:none">Voir</a></td></tr>';}
+function setArrows(){
+var k=["numero","date_facture","tiers_nom","statut","source"],i,el;
+for(i=0;i<k.length;i++){el=document.getElementById("sort_"+k[i]);if(el){el.textContent=(bs.sort_by===k[i])?(bs.sort_dir==="ASC"?String.fromCharCode(0x25B2):String.fromCharCode(0x25BC)):"";}}}
+function paginate(d){
+var p=document.getElementById("inv-pagination");
+if(d.pages<=1){p.innerHTML="";return;}
+var html='<span style="color:#64748b">Page '+d.page+' / '+d.pages+'</span> ';
+if(d.page>1){html+='<button class="btn btn-sm" onclick="go('+(d.page-1)+')">Prec</button> ';}
+var w=2,start=Math.max(1,d.page-w),end=Math.min(d.pages,d.page+w),i;
+for(i=start;i<=end;i++){html+=(i===d.page)?'<span class="badge badge-ok">'+i+'</span> ':'<button class="btn btn-sm" onclick="go('+i+')">'+i+'</button> ';}
+if(d.page<d.pages){html+='<button class="btn btn-sm" onclick="go('+(d.page+1)+')">Suiv</button>';}
+html+=' <select onchange="setLimit(this.value)">';
+var Ls=[25,50,100];
+for(i=0;i<Ls.length;i++){html+='<option value="'+Ls[i]+'"'+(Ls[i]===d.limit?' selected':'')+'>'+Ls[i]+' / page</option>';}
+html+='</select>';
+p.innerHTML=html;}
+function render(){
+setArrows();
+api("GET","/api/invoices/list?"+buildQ()).then(function(d){
+var tb=document.getElementById("inv-body");tb.innerHTML="";
+if(!d.invoices.length){tb.innerHTML='<tr><td colspan="12" style="text-align:center;color:#64748b">Aucune facture</td></tr>';}
+else{for(var i=0;i<d.invoices.length;i++){tb.innerHTML+=invRow(d.invoices[i]);}}
+document.getElementById("inv-count").textContent=d.total;paginate(d);
+}).catch(function(e){showToast("Erreur: "+e,"err");});}
+function go(n){bs.page=n;render();}
+function setLimit(n){bs.limit=Number(n);bs.page=1;render();}
+function toggleSort(k){if(bs.sort_by===k){bs.sort_dir=bs.sort_dir==="DESC"?"ASC":"DESC";}else{bs.sort_by=k;bs.sort_dir="DESC";}bs.page=1;render();}
+function resetFilters(){["f_statut","f_source","f_search","f_date_from","f_date_to"].forEach(function(id){document.getElementById(id).value="";});bs.page=1;render();}
+function syncBi(){api("POST","/api/sync/bi",{}).then(function(d){showToast("Sync: "+d.pushed+" poussees, "+d.pull_new+" tirees","ok");render()}).catch(function(e){showToast("Erreur: "+e,"err")});}
+function certifyBilling(id){api("POST","/api/sfec/certify",{invoice_id:"INV-"+id}).then(function(r){if(r.success&&r.certification_number){showToast("Certifiee SFEC: "+r.certification_number,"ok");render();}else if(r.success){showToast("Certification envoyee, en attente...","warn");render();}else{showToast("Certification: "+(r.error||"echec"),"err");}})}
+function pushInvoice(id){api("POST","/api/invoices/"+id+"/push-sage").then(function(r){if(r.success){showToast("Facture poussee vers Sage","ok");render();}else{showToast("Push Sage: "+(r.error||"echec"),"err");}})}
+document.getElementById("f_search").addEventListener("input",(function(){var t;return function(){clearTimeout(t);t=setTimeout(function(){bs.page=1;render();},250);};})());
+document.getElementById("filters-form").addEventListener("submit",function(e){e.preventDefault();bs.page=1;render();});
+["f_statut","f_source","f_date_from","f_date_to"].forEach(function(id){document.getElementById(id).addEventListener("change",function(){bs.page=1;render();});});
+render();
+</script>"""
+    body = stat_cards + mois_cards + filters_card + actions_card + table_card + script_block
     return _page(body)
+
+
+@app.route("/api/invoices/list")
+@_login_required
+def api_invoices_list():
+    page = max(1, request.args.get("page", 1, type=int))
+    limit = max(1, min(request.args.get("limit", 25, type=int), 200))
+    res = invoice_engine.list_invoices(
+        statut=request.args.get("statut") or None,
+        source=request.args.get("source") or None,
+        search=request.args.get("search") or None,
+        date_from=request.args.get("date_from") or None,
+        date_to=request.args.get("date_to") or None,
+        limit=limit, offset=(page - 1) * limit,
+        sort_by=request.args.get("sort_by") or "date_facture",
+        sort_dir=request.args.get("sort_dir") or "DESC"
+    )
+    total = res.get("total", 0)
+    pages = max(1, (total + limit - 1) // limit)
+    return jsonify({"invoices": res.get("invoices", []), "total": total,
+                    "page": page, "pages": pages, "limit": limit})
 
 
 @app.route("/billing/invoice/new")
@@ -1793,10 +2449,11 @@ def invoice_detail_page(invoice_id):
 <strong style="color:#38bdf8">TOTAL TTC: {:,.0f} FCFA</strong>
 </div></div>
 <script>
+window.NATIVE_ALERTS = true;
 function certifyInv(id){{api("POST","/api/sfec/certify",{{invoice_id:"INV-"+id}}).then(function(d){{if(d.success){{showToast("Certifie: "+d.certification_number,"ok");setTimeout(function(){{location.reload()}},1500)}}else{{showToast("Erreur: "+d.error,"err")}}}})}}
 </script>""".format(
         _esc(inv.get("numero", "")),
-        inv["id"], inv["id"], inv["id"],
+        inv["id"], inv["id"], inv["id"], inv["id"],
         _esc(inv.get("numero", "")), _esc(inv.get("date_facture", "")),
         _esc(inv.get("reference", "") or "-"), _esc(inv.get("tiers_nom", "") or "N/A"),
         _esc(inv.get("tiers_code", "") or ""), _esc(inv.get("statut", "")),
@@ -1865,12 +2522,13 @@ def _invoice_form_page(inv):
             <option value="valide" {s_valide}>Valide</option>
             <option value="a_comptabiliser" {s_acompt}>A comptabiliser</option>
           </select></div>
-          <div><label>Type tiers</label><select name="tiers_type">
+          <div><label>Type tiers</label><select name="tiers_type" onchange="onTiersTypeChange()">
             <option value="business" {t_bus}>Entreprise</option>
             <option value="individual" {t_ind}>Particulier</option>
             <option value="government" {t_gov}>Gouvernement</option>
             <option value="foreign" {t_for}>Etranger</option>
-          </select></div>
+          </select>
+          <div class="tiers-type-info" id="tiers-type-info"></div></div>
         </div>
       </div>
 
@@ -1886,7 +2544,7 @@ def _invoice_form_page(inv):
           </div>
           <div><label>Code tiers</label><input type="text" id="tiers_code" name="tiers_code" value="{tiers_code}"></div>
           <div><label>Nom</label><input type="text" id="tiers_nom" name="tiers_nom" value="{tiers_nom}"></div>
-          <div><label>NIU</label><input type="text" id="tiers_niu" name="tiers_niu" value="{tiers_niu}"></div>
+          <div id="niu-field"><label id="niu-label">NIU</label><input type="text" id="tiers_niu" name="tiers_niu" value="{tiers_niu}"><div class="niu-required-hint" id="niu-hint" style="display:none"></div></div>
           <div><label>Email</label><input type="email" id="tiers_email" name="tiers_email" value="{tiers_email}"></div>
           <div><label>Telephone</label><input type="text" id="tiers_telephone" name="tiers_telephone" value="{tiers_telephone}"></div>
           <div class="full-width"><label>Adresse</label><input type="text" id="tiers_adresse" name="tiers_adresse" value="{tiers_adresse}"></div>
@@ -1934,6 +2592,7 @@ def _invoice_form_page(inv):
   </div>
 </form>
 <script>
+window.NATIVE_ALERTS = true;
 var contacts={contacts_json};
 var products={products_json};
 var taxRates={tax_rates_json};
@@ -1942,7 +2601,18 @@ var isEdit={is_edit};
 var invoiceId={inv_id};
 var lineCounter=0;
 
-function fillContact(){{var sel=document.getElementById("contact-select");var c=contacts.find(function(x){{return x.code===sel.value}});if(c){{document.getElementById("tiers_code").value=c.code;document.getElementById("tiers_nom").value=c.nom;document.getElementById("tiers_niu").value=c.niu||"";document.getElementById("tiers_email").value=c.email||"";document.getElementById("tiers_telephone").value=c.telephone||"";document.getElementById("tiers_adresse").value=c.adresse||""}}}}
+function onTiersTypeChange(){{var t=document.querySelector("select[name='tiers_type']").value;
+var info=document.getElementById("tiers-type-info");
+var labels={{business:"Entreprise",individual:"Particulier",government:"Gouvernement",foreign:"Etranger"}};
+info.textContent="Type SFEC: "+((labels[t]||t));
+if(t==="business"||t==="government"){{document.getElementById("niu-field").classList.add("niu-required");document.getElementById("niu-label").innerHTML='NIU <span class="niu-star">*</span>';var h=document.getElementById("niu-hint");h.textContent="NIU obligatoire pour la certification SFEC (16-17 caracteres)";h.style.display="block"}}
+else{{document.getElementById("niu-field").classList.remove("niu-required");document.getElementById("niu-label").textContent="NIU";document.getElementById("niu-hint").style.display="none"}}}}
+
+function fillContact(){{var sel=document.getElementById("contact-select");var c=contacts.find(function(x){{return x.code===sel.value}});if(c){{document.getElementById("tiers_code").value=c.code;document.getElementById("tiers_nom").value=c.nom;document.getElementById("tiers_niu").value=c.niu||"";document.getElementById("tiers_email").value=c.email||"";document.getElementById("tiers_telephone").value=c.telephone||"";document.getElementById("tiers_adresse").value=c.adresse||"";var rt=c.type_raw?String(c.type_raw).toLowerCase():"";if(!rt&&c.type){{rt=String(c.type).toLowerCase();if(rt==="client")rt="business";if(rt==="fournisseur")rt="business"}}if(rt==="government"||rt==="gouvernement")rt="government";if(rt==="particulier"||rt==="individual"||rt==="individu")rt="individual";if(rt==="etranger"||rt==="foreign")rt="foreign";if(rt)document.querySelector("select[name='tiers_type']").value=rt;onTiersTypeChange()}}}}
+
+function initContactSelect(){{var cs=document.getElementById("contact-select");cs.innerHTML='<option value="">-- Choisir --</option>';contacts.forEach(function(c){{var o=document.createElement("option");o.value=c.code;o.textContent=c.nom+" ("+c.code+")";cs.appendChild(o)}})}}
+
+function validateTiersNiu(){{var t=document.querySelector("select[name='tiers_type']").value;var niu=document.getElementById("tiers_niu").value.trim();if(t==="business"||t==="government"){{if(!niu){{showToast("NIU obligatoire pour la certification SFEC (type: "+t+")","err");document.getElementById("tiers_niu").focus();return false}}}}return true}}
 
 function addLine(data){{lineCounter++;var idx=lineCounter;var html='<div class="line-item" id="line-'+idx+'"><div class="line-item-header"><span class="line-item-title">Ligne #'+idx+'</span><div class="line-item-actions"><button type="button" class="btn btn-sm btn-danger" onclick="removeLine('+idx+')">Supprimer</button></div></div><div class="line-item-grid"><div><label>Designation</label><input type="text" name="l_design_'+idx+'" value="'+(data?data.designation:"")+'" list="products-list"></div><div><label>Qte</label><input type="number" name="l_qte_'+idx+'" value="'+(data?data.quantite:1)+'" step="0.01" min="0" onchange="calcLine('+idx+')"></div><div><label>Prix unitaire</label><input type="number" name="l_prix_'+idx+'" value="'+(data?data.prix_unitaire:0)+'" step="0.01" min="0" onchange="calcLine('+idx+')"></div><div><label>TVA %</label><select name="l_tva_'+idx+'" onchange="calcLine('+idx+')"></select></div><div><label>HT</label><input type="text" id="l_ht_'+idx+'" readonly value="'+(data?data.montant_ht:0)+'"></div><div><label>TTC</label><input type="text" id="l_ttc_'+idx+'" readonly value="'+(data?data.montant_ttc:0)+'"></div></div><input type="hidden" name="l_code_article_'+idx+'" value="'+(data?data.code_article:"")+'"><input type="hidden" name="l_famille_'+idx+'" value="'+(data?data.famille:"")+'"></div>';
 document.getElementById("lines-container").insertAdjacentHTML("beforeend",html);
@@ -1958,12 +2628,14 @@ function round2(n){{return Math.round(n*100)/100}}
 
 function gatherData(){{var d={{}};d.date_facture=document.querySelector("input[name='date_facture']").value;d.date_echeance=document.querySelector("input[name='date_echeance']").value;d.reference=document.querySelector("input[name='reference']").value;d.tiers_code=document.getElementById("tiers_code").value;d.tiers_nom=document.getElementById("tiers_nom").value;d.tiers_niu=document.getElementById("tiers_niu").value;d.tiers_email=document.getElementById("tiers_email").value;d.tiers_telephone=document.getElementById("tiers_telephone").value;d.tiers_adresse=document.getElementById("tiers_adresse").value;d.tiers_type=document.querySelector("select[name='tiers_type']").value;d.statut=document.querySelector("select[name='statut']").value;d.notes=document.querySelector("textarea[name='notes']").value;d.lignes=[];var lines=document.querySelectorAll("[id^='line-']");lines.forEach(function(el){{var idx=el.id.replace("line-","");var ligne={{}};ligne.designation=document.querySelector("input[name='l_design_"+idx+"']").value;ligne.quantite=parseFloat(document.querySelector("input[name='l_qte_"+idx+"']").value)||1;ligne.prix_unitaire=parseFloat(document.querySelector("input[name='l_prix_"+idx+"']").value)||0;ligne.taux_tva=parseFloat(document.querySelector("select[name='l_tva_"+idx+"']").value)||18;ligne.code_article=document.querySelector("input[name='l_code_article_"+idx+"']").value;ligne.famille=document.querySelector("input[name='l_famille_"+idx+"']").value;if(ligne.designation)d.lignes.push(ligne)}});return d}}
 
-document.getElementById("form-invoice").onsubmit=function(e){{e.preventDefault();var d=gatherData();var url=isEdit?"/api/invoices/"+invoiceId:"/api/invoices";var method=isEdit?"PUT":"POST";api(method,url,d).then(function(r){{if(r.success||r.id){{showToast("Facture sauvegardee","ok");setTimeout(function(){{location.href="/billing/invoice/"+(r.id||invoiceId)}},1000)}}else{{showToast("Erreur: "+(r.error||"inconnue"),"err")}}}}).catch(function(e){{showToast("Erreur reseau: "+e,"err")}})}}
+document.getElementById("form-invoice").onsubmit=function(e){{e.preventDefault();if(!validateTiersNiu())return;var d=gatherData();var url=isEdit?"/api/invoices/"+invoiceId:"/api/invoices";var method=isEdit?"PUT":"POST";api(method,url,d).then(function(r){{if(r.success||r.id){{showToast("Facture sauvegardee","ok");setTimeout(function(){{location.href="/billing/invoice/"+(r.id||invoiceId)}},1000)}}else{{showToast("Erreur: "+(r.error||"inconnue"),"err")}}}}).catch(function(e){{showToast("Erreur reseau: "+e,"err")}})}}
 
-function saveAndCertify(){{var d=gatherData();d._certify=true;var url=isEdit?"/api/invoices/"+invoiceId:"/api/invoices";var method=isEdit?"PUT":"POST";api(method,url,d).then(function(r){{if(r.id){{showToast("Facture sauvegardee, certification...","info");api("POST","/api/sfec/certify",{{invoice_id:"INV-"+r.id}}).then(function(c){{if(c.success){{showToast("Certifie: "+c.certification_number,"ok")}}else{{showToast("Certification: "+c.error,"warn")}}setTimeout(function(){{location.href="/billing/invoice/"+r.id}},1500)}})}}}})}}
+function saveAndCertify(){{if(!validateTiersNiu())return;var d=gatherData();d._certify=true;var url=isEdit?"/api/invoices/"+invoiceId:"/api/invoices";var method=isEdit?"PUT":"POST";api(method,url,d).then(function(r){{if(r.id){{api("POST","/api/sfec/certify",{{invoice_id:"INV-"+r.id}}).then(function(c){{if(c.success){{showToast("Certifie: "+c.certification_number,"ok")}}else{{showToast("Certification: "+c.error,"warn")}}setTimeout(function(){{location.href="/billing/invoice/"+r.id}},1500)}})}}}})}}
 
 if(existingLines.length>0){{existingLines.forEach(function(l){{addLine(l)}})}}
 else{{addLine()}}
+initContactSelect();
+onTiersTypeChange();
 </script>
 <datalist id="products-list"></datalist>
 """.format(
@@ -2011,8 +2683,8 @@ def api_create_invoice():
     data = request.get_json(silent=True) or {}
     try:
         result = invoice_engine.create_invoice(data)
-        if data.get("_certify"):
-            pass
+        who = (_current_identity() or {}).get("email", "")
+        user_auth.audit("facture.creee", "Facture {} creee".format(result.get("numero", "")), email=who)
         return jsonify({"success": True, "id": result["id"], "numero": result["numero"]})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
@@ -2035,6 +2707,8 @@ def api_update_invoice(invoice_id):
         result = invoice_engine.update_invoice(invoice_id, data)
         if not result:
             return jsonify({"error": "Non trouvee"}), 404
+        who = (_current_identity() or {}).get("email", "")
+        user_auth.audit("facture.modifiee", "Facture {} modifiee".format(result.get("numero", "")), email=who)
         return jsonify({"success": True, "id": result["id"], "numero": result["numero"]})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
@@ -2044,12 +2718,32 @@ def api_update_invoice(invoice_id):
 @_login_required
 def api_delete_invoice(invoice_id):
     try:
+        numero = ""
+        inv = invoice_engine.get_invoice(invoice_id)
+        if inv:
+            numero = inv.get("numero", "")
         ok = invoice_engine.delete_invoice(invoice_id)
         if not ok:
             return jsonify({"error": "Non trouvee"}), 404
+        who = (_current_identity() or {}).get("email", "")
+        user_auth.audit("facture.supprimee", "Facture {} supprimee".format(numero), email=who)
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
+
+
+@app.route("/api/invoices/<int:invoice_id>/push-sage", methods=["POST"])
+@_login_required
+def api_invoice_push_sage(invoice_id):
+    try:
+        result = sync_bidirectional.push_invoice_to_sage(invoice_id)
+        code = 200 if result.get("success") else 400
+        if result.get("success"):
+            who = (_current_identity() or {}).get("email", "")
+            user_auth.audit("facture.poussee_sage", "Facture #{} poussee vers Sage".format(invoice_id), email=who)
+        return jsonify(result), code
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/api/invoices/stats")
@@ -2136,27 +2830,42 @@ def api_local_tax_rates():
 @_login_required
 def pos_page():
     stats = pos_engine.count_tickets()
-    products = pos_engine.list_products(limit=50)
-    tax_rates = pos_engine.list_tax_rates()
-    tickets_list = pos_engine.list_tickets(limit=20)
+    tickets_list = pos_engine.list_tickets(limit=8)
     current_vendeur_id = session.get("vendeur_id")
-
-    prod_rows = ""
-    for p in products:
-        prod_rows += '<div class="stat" style="cursor:pointer;min-width:120px" onclick="addPosProduct({})"><div class="value" style="font-size:14px">{}</div><div class="label">{:,.0f} FCFA</div></div>'.format(
-            json.dumps({"ref": p["ref"], "designation": p["designation"], "prix_vente": p["prix_vente"], "tva_code": p.get("tva_code", "18")})[:200],
-            _esc(p["designation"][:20]), p.get("prix_vente", 0)
-        )
-
-    products_json_str = json.dumps(products)[:8000]
-    tax_rates_json_str = json.dumps(tax_rates)
     vendeurs = pos_engine.list_vendeurs()
-    vendeurs_json_str = json.dumps([{"id":v["id"],"nom":v["nom"],"prenom":v.get("prenom","")} for v in vendeurs])
+    top_products = pos_engine.top_selling_products(limit=10)
+
+    def _pos_tile(p, rank=None):
+        sold = int(p.get("total_vendu", 0) or 0)
+        badge = '<span class="badge-sold">TOP {}</span>'.format(rank) if rank and sold > 0 else ""
+        return ('<div class="pos-tile" data-id="{pid}" data-ref="{ref}" data-barcode="{bc}" '
+                'data-des="{des}" data-prix="{prix}" data-tva="{tva}" '
+                'onclick="addToCartFromTile(this)">{badge}'
+                '<div class="pos-tile-nom">{des2}</div>'
+                '<div class="pos-tile-ref">{ref2}</div>'
+                '<div class="pos-tile-prix">{prix2} FCFA</div>'
+                '<div class="pos-tile-stock">Stock: {stock}</div>'
+                '</div>').format(
+                    pid=str(p["id"]), ref=_esc(p.get("ref", "")),
+                    bc=_esc(p.get("barcode", "") or ""),
+                    des=_esc(p.get("designation", "")),
+                    prix=p.get("prix_vente", 0) or 0,
+                    tva=_esc(p.get("tva_code", "18") or "18"),
+                    badge=badge,
+                    des2=_esc(p.get("designation", "")),
+                    ref2=_esc(p.get("ref", "")),
+                    prix2="{:,}".format(int(round(p.get("prix_vente", 0) or 0))),
+                    stock="{:,}".format(int(round(p.get("stock_reel", 0) or 0))))
+
+    top10_tiles = "".join(_pos_tile(p, i + 1) for i, p in enumerate(top_products))
+    if not top10_tiles:
+        top10_tiles = ('<div class="pos-results-empty">Aucun article disponible. '
+                       'Utilisez <b>Sync articles</b> pour importer le catalogue Sage.</div>')
 
     ticket_rows_html = ""
     for t in tickets_list["tickets"]:
         ticket_rows_html += "<tr><td>{}</td><td>{}</td><td style='text-align:right'>{:,.0f}</td><td>{}</td></tr>".format(
-            _esc(t.get("numero", "")), _esc(t.get("date_ticket", "")[:10]),
+            _esc(t.get("numero", "")), _esc(t.get("date_ticket", "")[11:19] or ""),
             t.get("montant_ttc", 0), _esc(t.get("mode_paiement", ""))
         )
     if not ticket_rows_html:
@@ -2168,97 +2877,315 @@ def pos_page():
         sel = ' selected' if current_vendeur_id and v["id"] == current_vendeur_id else ""
         vendeur_opts_html += '<option value="{}"{}>{}</option>'.format(v["id"], sel, label)
 
-    body = """
-<div class="grid-2">
-<div>
-<div class="card"><h2>Module de Vente</h2>
-<div class="stat-grid" style="margin-bottom:12px">
-<div class="stat"><div class="value">""" + str(stats.get("tickets_jour", 0)) + """</div><div class="label">Tickets aujourd'hui</div></div>
-<div class="stat"><div class="value">""" + "{:,.0f}".format(stats.get("ca_jour", 0)) + """</div><div class="label">CA Jour (FCFA)</div></div>
-<div class="stat"><div class="value">""" + "{:,.0f}".format(stats.get("ca_total", 0)) + """</div><div class="label">CA Total (FCFA)</div></div>
-</div></div>
-<div class="card"><h2>Nouveau Ticket</h2>
-<div class="grid-2">
-<div><label>Client</label><input type="text" id="pos-client" value="Client comptoir"></div>
-<div><label>Paiement</label><select id="pos-paiement">
-<option value="especes">Especes</option>
+    with sqlite_db.get_cursor() as cur:
+        cur.execute("SELECT id, code, nom, niu FROM contacts WHERE type = 'client' AND est_actif = 1 ORDER BY nom")
+        pos_clients = sqlite_db.rows_to_list(cur.fetchall())
+    pos_clients_js = json.dumps([
+        {"id": c["id"], "code": c["code"], "nom": c["nom"]} for c in pos_clients
+    ], ensure_ascii=False)
+    pos_clients_html = '<option value="|CLI-CPT|Client comptoir" selected>Client comptoir</option>'
+    for c in pos_clients:
+        pos_clients_html += '<option value="|{}|{}">{}</option>'.format(
+            _esc(c["code"]), _esc(c["nom"]), _esc("{} - {}".format(c["code"], c["nom"])))
+
+    stats_html = ('<span><b style="color:#0f172a">{tj}</b> tickets aujourd&#39;hui</span>'
+                  '<span><b style="color:#0f172a">{cj} FCFA</b> CA jour</span>'
+                  '<span><b style="color:#0f172a">{ct} FCFA</b> CA total</span>').format(
+                      tj=str(stats.get("tickets_jour", 0)),
+                      cj="{:,}".format(int(round(stats.get("ca_jour", 0)))),
+                      ct="{:,}".format(int(round(stats.get("ca_total", 0)))))
+
+    pos_css = """<style>
+.pos-layout{display:grid;grid-template-columns:1fr 400px;gap:16px;align-items:start}
+.pos-main{min-width:0}
+.pos-side{position:sticky;top:24px;display:flex;flex-direction:column;gap:16px}
+.pos-stats{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:#64748b;margin-bottom:12px}
+.pos-scanner{display:flex;gap:12px;align-items:stretch;background:linear-gradient(135deg,#0f172a,#1e293b);border-radius:12px;padding:12px 14px;margin-bottom:14px}
+.pos-scanner .sc-icon{color:#38bdf8;flex-shrink:0;display:flex;align-items:center}
+.pos-scanner .sc-icon svg{width:26px;height:26px}
+.pos-scanner .sc-body{flex:1;min-width:0}
+.pos-scanner input{width:100%;background:#0b1220;border:1px solid #334155;color:#e2e8f0;font-size:17px;font-weight:700;letter-spacing:2px;text-align:center;padding:11px 12px;border-radius:8px}
+.pos-scanner input:focus{border-color:#38bdf8;box-shadow:0 0 0 3px rgba(56,189,248,.18)}
+.pos-scanner .hint{color:#64748b;font-size:10px;margin-top:6px;letter-spacing:0}
+.pos-qte-mini{display:flex;gap:8px;align-items:center;margin-bottom:12px;font-size:12px;color:#475569;font-weight:600}
+.pos-qte-mini input{width:70px;padding:6px 10px}
+.pos-search{position:relative;margin-bottom:12px}
+.pos-search svg{position:absolute;left:13px;top:50%;transform:translateY(-50%);width:16px;height:16px;color:#94a3b8;pointer-events:none;flex-shrink:0}
+.pos-search input{padding-left:38px;padding-right:40px;font-size:14px}
+.pos-section-title{font-size:12px;font-weight:700;color:#3b82f6;text-transform:uppercase;letter-spacing:.8px;margin:14px 0 8px;display:flex;align-items:center;gap:8px}
+.pos-section-title::before{content:'';display:inline-block;width:4px;height:14px;background:linear-gradient(180deg,#3b82f6,#6366f1);border-radius:2px}
+.pos-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(136px,1fr));gap:10px}
+.pos-tile{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px;cursor:pointer;transition:all .15s;box-shadow:0 1px 2px rgba(0,0,0,.04);user-select:none;position:relative;overflow:hidden}
+.pos-tile:hover{border-color:#3b82f6;box-shadow:0 8px 18px rgba(59,130,246,.15);transform:translateY(-2px)}
+.pos-tile:active{transform:scale(.97)}
+.pos-tile-nom{font-size:13px;font-weight:600;color:#0f172a;line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-bottom:4px;min-height:32px}
+.pos-tile-ref{font-size:10px;color:#94a3b8;font-weight:600;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pos-tile-prix{font-size:15px;font-weight:800;color:#3b82f6}
+.pos-tile-stock{font-size:10px;color:#64748b;margin-top:2px}
+.pos-tile .badge-sold{position:absolute;top:8px;right:8px;background:#ede9fe;color:#6d28d9;font-size:9px;font-weight:700;padding:2px 6px;border-radius:6px}
+.pos-results{display:grid;grid-template-columns:repeat(auto-fill,minmax(136px,1fr));gap:10px;margin-top:12px}
+.pos-results-empty{padding:20px 16px;text-align:center;color:#94a3b8;font-size:13px;border:1px dashed #e2e8f0;border-radius:12px}
+.pos-cart-table td{vertical-align:middle}
+.pos-cart-table input[type=number]{width:58px;padding:5px 8px;font-size:12px}
+.pos-total-box{display:flex;justify-content:space-between;align-items:center;background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:10px;padding:12px 16px;margin-top:10px}
+.pos-total-box .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:#64748b;font-weight:700}
+.pos-total-box .val{font-size:22px;font-weight:800;color:#0f172a}
+.pos-cart-foot{display:flex;justify-content:space-between;font-size:12px;color:#64748b;margin-top:6px}
+.pos-pay-row{display:flex;gap:10px;align-items:flex-end}
+.pos-pay-row>div{flex:1}
+.pos-monnaie{font-size:14px;font-weight:800;margin-top:8px;text-align:right}
+.pos-monnaie.ok{color:#059669}
+.pos-monnaie.ko{color:#dc2626}
+.pos-validate{width:100%;padding:14px;font-size:16px;margin-top:12px}
+.pos-cart-empty{text-align:center;padding:26px 12px;color:#94a3b8;font-size:13px}
+.pos-client-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media(max-width:1180px){.pos-layout{grid-template-columns:1fr}}
+@media(max-width:1180px){.pos-side{position:static}}
+@media(max-width:600px){.pos-client-row{grid-template-columns:1fr}}
+</style>"""
+
+    body = pos_css + """
+<div class="pos-layout">
+<div class="pos-main">
+<div class="card">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+<h2 style="margin:0">Caisse</h2>
+<div style="display:flex;gap:8px">
+<button class="btn btn-sm btn-ghost no-print" onclick="syncPosArticles()">Sync articles</button>
+<button class="btn btn-sm btn-ghost no-print" id="btn-stock" onclick="toggleStock()">Stock: --</button>
+</div>
+</div>
+<div class="pos-stats">@@STATS@@</div>
+<div class="pos-scanner">
+<div class="sc-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5V3h2v2H3zM7 5V3h4v2H7zM13 5V3h4v2h-4zM17 5V3h2v2h-2zM21 5h-2v2h2v14H3V5h2v14h14V7h2V5z"/><rect x="5" y="9" width="3" height="5"/><rect x="16" y="9" width="3" height="5"/><path d="M5 19v-2h3v2H5zM16 19v-2h3v2h-3z"/></svg></div>
+<div class="sc-body">
+<input id="pos-barcode" placeholder="Scanner / saisir le code-barres...  (Entree)" autocomplete="off" autofocus
+  onkeydown="if(event.key==='Enter'){event.preventDefault();scanBarcode(this.value)}">
+<div class="hint">Scannez un article puis Entree : il est ajoute instantanement au ticket</div>
+</div>
+</div>
+<div class="pos-qte-mini">Quantite par defaut : <input type="number" id="pos-qte" value="1" min="1"></div>
+<div class="pos-search">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+<input id="pos-search" placeholder="Rechercher un article (automatique des 2 caracteres)..." autocomplete="off" oninput="posInstantSearch(this.value)">
+</div>
+<div id="pos-products-head" class="pos-section-title">Meilleures ventes</div>
+<div id="pos-products-grid" class="pos-grid">@@TILES@@</div>
+<div id="pos-results"></div>
+</div>
+</div>
+<div class="pos-side">
+<div class="card">
+<h2>Ticket en cours</h2>
+<div class="pos-client-row">
+<div><label>Client</label><select id="pos-client">@@POS_CLIENTS@@</select></div>
+<div><label>Vendeur</label><select id="pos-vendeur">@@VENDEURS@@</select></div>
+</div>
+<div id="pos-cart" style="margin-top:10px">
+<table class="pos-cart-table"><thead><tr><th>Article</th><th style="text-align:center">Qte</th><th style="text-align:right">P. un.</th><th style="text-align:right">Total</th><th></th></tr></thead>
+<tbody id="pos-cart-body"></tbody></table>
+<div id="pos-cart-empty" class="pos-cart-empty">Ticket vide<br>Ajoutez un article ci-contre ou scannez un code-barres</div>
+</div>
+<div class="pos-total-box"><span class="lbl">Total TTC</span><span class="val" id="pos-total">0 FCFA</span></div>
+<div class="pos-cart-foot"><span>Articles : <b id="pos-articles-count">0</b></span><span>HT + TVA</span></div>
+<div style="margin-top:14px"><label>Mode de paiement</label>
+<select id="pos-paiement" onchange="calcMonnaie()">
+<option value="especes" selected>Especes</option>
 <option value="mobile_money">Mobile Money</option>
 <option value="virement">Virement</option>
 <option value="carte">Carte</option>
+<option value="cheque">Cheque</option>
+<option value="mixte">Mixte</option>
 </select></div>
-<div style="grid-column:1/-1"><label>Vendeur</label><select id="pos-vendeur">""" + vendeur_opts_html + """</select></div>
+<div class="pos-pay-row" style="margin-top:10px">
+<div><label>Recu (FCFA)</label><input type="number" id="pos-recu" value="0" min="0" oninput="calcMonnaie()"></div>
 </div>
-<div style="margin-top:16px;background:#fff;border:1.5px solid #dbeafe;border-radius:12px;padding:16px">
-<label style="color:#3b82f6;font-weight:700;font-size:14px">Scanner code-barres</label>
-<input type="text" id="pos-barcode" placeholder="Scannez ou tapez le code-barres..." autofocus
-  style="width:100%;padding:14px;font-size:18px;font-weight:700;letter-spacing:2px;margin-top:8px;background:#f8fafc;border:1.5px solid #cbd5e1;color:#1e293b;border-radius:8px;text-align:center"
-  onkeydown="if(event.key==='Enter'){event.preventDefault();scanBarcode(this.value);this.value='';this.focus()}">
-</div>
-<div style="margin-top:12px">
-<label>Ajouter / Rechercher</label>
-<div style="display:flex;gap:8px">
-<input type="text" id="pos-search" placeholder="Rechercher par nom ou ref..." onkeyup="searchPosProducts()" style="flex:1">
-<input type="number" id="pos-qte" value="1" min="1" style="width:60px">
-<button type="button" class="btn btn-sm btn-primary" onclick="addPosLineManual()">+ Manuel</button>
-</div>
-<div id="pos-product-list" style="max-height:150px;overflow-y:auto;margin-top:8px"></div>
-</div>
-<div id="pos-cart" style="margin-top:12px">
-<table id="pos-cart-table"><thead><tr><th>Article</th><th style="text-align:right">Qte</th><th style="text-align:right">Prix</th><th style="text-align:right">Total</th><th></th></tr></thead>
-<tbody id="pos-cart-body"></tbody></table>
-</div>
-<div style="text-align:right;margin-top:12px;font-size:20px">
-<strong>Total: <span id="pos-total">0</span> FCFA</strong>
-</div>
-<div style="margin-top:12px;display:flex;gap:8px">
-<label style="margin:0">Recu:</label>
-<input type="number" id="pos-recu" value="0" min="0" style="width:120px" onchange="calcMonnaie()">
-<span id="pos-monnaie" style="color:#10b981;font-weight:bold"></span>
-</div>
-<div style="margin-top:12px">
-<button class="btn btn-success" onclick="validerTicket()" style="width:100%;padding:12px;font-size:16px">Valider & Imprimer</button>
+<div id="pos-monnaie" class="pos-monnaie"></div>
+<button id="pos-validate" class="btn btn-success pos-validate" onclick="validerTicket()" disabled>Ticket vide</button>
+<div style="margin-top:8px;text-align:center">
+<button class="btn btn-sm btn-ghost" onclick="addPosLineManual()">+ Ligne manuelle</button>
+<button class="btn btn-sm btn-ghost" onclick="clearCart()">Vider</button>
 </div>
 </div>
-</div>
-<div>
-<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><h2 style="margin:0">Articles rapides</h2><button class="btn btn-sm btn-primary" onclick="syncPosArticles()">Sync articles</button></div>
-<div class="stat-grid" id="pos-products-grid">
-""" + prod_rows + """
-</div></div>
 <div class="card"><h2>Derniers tickets</h2>
-<table><thead><tr><th>Numero</th><th>Date</th><th style="text-align:right">TTC</th><th>Paiement</th></tr></thead>
-<tbody id="pos-tickets-list">""" + ticket_rows_html + """</tbody></table></div>
+<table><thead><tr><th>Numero</th><th>Heure</th><th style="text-align:right">TTC</th><th>Paiement</th></tr></thead>
+<tbody>@@TICKETS@@</tbody></table></div>
 </div>
 </div>
 <script>
-var posProducts=""" + products_json_str + """;
-var posTaxRates=""" + tax_rates_json_str + """;
-var posVendeurs=""" + vendeurs_json_str + """;
 var posCart=[];
 var posLineIdx=0;
+var posSearchTimer=null;
+var posClients=@@POS_CLIENTS_JS@@;
+window.NATIVE_ALERTS = true;
 
-function scanBarcode(code){if(!code||!code.trim())return;fetch("/api/products/barcode?code="+encodeURIComponent(code.trim())).then(function(r){return r.json()}).then(function(d){if(d.found){var p=d.product;var q=parseInt(document.getElementById("pos-qte").value)||1;posLineIdx++;posCart.push({idx:posLineIdx,ref:p.ref,barcode:p.barcode||"",designation:p.designation,prix_unitaire:p.prix_vente,quantite:q,taux_tva:parseFloat(p.tva_code)||18,product_id:p.id});renderPosCart();showToast(p.designation+" ajoute","ok")}else{showToast("Code-barres inconnu: "+code,"warn")}}).catch(function(){showToast("Erreur scan","err")})}
+function _h(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
 
-function addPosProduct(p){var q=parseInt(document.getElementById("pos-qte").value)||1;posLineIdx++;posCart.push({idx:posLineIdx,ref:p.ref,barcode:p.barcode||"",designation:p.designation,prix_unitaire:p.prix_vente,quantite:q,taux_tva:parseFloat(p.tva_code)||18,product_id:p.id||null});renderPosCart()}
+function getPosClientData(v){
+  v=String(v||"");
+  if(v==="|CLI-CPT|Client comptoir"){var c=posClients.filter(function(x){return x.code==="CLI-CPT"})[0];return {code:"CLI-CPT",nom:"Client comptoir",id:c?c.id:null};}
+  var parts=v.split("|");
+  if(parts.length>=3){return {code:parts[1],nom:parts.slice(2).join("|"),id:null};}
+  return {code:"",nom:"Client comptoir",id:null};
+}
 
-function addPosLineManual(){var desc=prompt("Designation:");if(!desc)return;var prix=parseFloat(prompt("Prix unitaire:"))||0;var q=parseInt(document.getElementById("pos-qte").value)||1;var tva=parseFloat(prompt("Taux TVA (%):","18"))||18;posLineIdx++;posCart.push({idx:posLineIdx,ref:"",barcode:"",designation:desc,prix_unitaire:prix,quantite:q,taux_tva:tva});renderPosCart()}
+function addToCartFromTile(elm){
+  addToCart({id:elm.getAttribute("data-id"),ref:elm.getAttribute("data-ref"),barcode:elm.getAttribute("data-barcode")||"",designation:elm.getAttribute("data-des"),prix_vente:parseFloat(elm.getAttribute("data-prix"))||0,tva_code:elm.getAttribute("data-tva")||"18"});
+}
 
+function addToCart(p){
+  if(!p||!p.designation)return;
+  var q=parseInt(document.getElementById("pos-qte").value)||1;if(q<1)q=1;
+  var exist=null;
+  if(p.ref){exist=posCart.filter(function(l){return l.ref&&l.ref===p.ref})[0]}
+  if(exist){exist.quantite=round2(exist.quantite+q)}
+  else{posLineIdx++;posCart.push({idx:posLineIdx,ref:p.ref||"",barcode:p.barcode||"",designation:p.designation,prix_unitaire:parseFloat(p.prix_vente)||0,quantite:q,taux_tva:parseFloat(p.tva_code)||18,product_id:p.id||null})}
+  renderPosCart();
+}
+
+function addPosLineManual(){
+  var desc=prompt("Designation de la ligne :");if(!desc||!desc.trim())return;
+  var prix=parseFloat(prompt("Prix unitaire (FCFA) :"))||0;
+  var q=parseInt(document.getElementById("pos-qte").value)||1;
+  posLineIdx++;posCart.push({idx:posLineIdx,ref:"",barcode:"",designation:desc.trim(),prix_unitaire:prix,quantite:q,taux_tva:18,product_id:null});
+  renderPosCart();
+}
+
+function scanBarcode(code){
+  code=(code||"").trim();
+  var bi=document.getElementById("pos-barcode");
+  if(!code){bi.focus();return}
+  fetch("/api/products/barcode?code="+encodeURIComponent(code)).then(function(r){return r.json()}).then(function(d){
+    if(d.found){addToCart(d.product)}
+    else{showToast("Code-barres inconnu : "+code,"err")}
+    bi.value="";bi.focus();
+  }).catch(function(){showToast("Erreur scan","err");bi.value="";bi.focus()});
+}
+
+function posInstantSearch(raw){
+  raw=(raw||"").trim();
+  clearTimeout(posSearchTimer);
+  var grid=document.getElementById("pos-products-grid");
+  var head=document.getElementById("pos-products-head");
+  var results=document.getElementById("pos-results");
+  if(raw.length===0){
+    head.textContent="Meilleures ventes";
+    grid.style.display="grid";
+    results.innerHTML="";
+    return;
+  }
+  if(raw.length===1){return;}
+  grid.style.display="none";
+  results.innerHTML='<div class="pos-results-empty">Recherche...</div>';
+  posSearchTimer=setTimeout(function(){
+    fetch("/api/pos/products/search?q="+encodeURIComponent(raw)).then(function(r){return r.json()}).then(function(list){
+      if(!Array.isArray(list)||!list.length){head.textContent="Aucun resultat";results.innerHTML='<div class="pos-results-empty">Aucun article pour &laquo; '+_h(raw)+' &raquo;</div>';return}
+      head.textContent=list.length+" article(s) trouve(s)";
+      results.innerHTML="";
+      list.forEach(function(p){results.appendChild(makeTileEl(p))});
+    }).catch(function(){results.innerHTML='<div class="pos-results-empty">Erreur de recherche</div>'});
+  },250);
+}
+
+function makeTileEl(p){
+  var d=document.createElement("div");d.className="pos-tile";
+  d.addEventListener("click",function(){addToCart(p)});
+  var nom=document.createElement("div");nom.className="pos-tile-nom";nom.textContent=p.designation;
+  var ref=document.createElement("div");ref.className="pos-tile-ref";ref.textContent=p.ref||"";
+  var prix=document.createElement("div");prix.className="pos-tile-prix";prix.textContent=(Number(p.prix_vente)||0).toLocaleString("fr-FR")+" FCFA";
+  var st=document.createElement("div");st.className="pos-tile-stock";st.textContent="Stock : "+(Number(p.stock_reel)||0);
+  d.appendChild(nom);d.appendChild(ref);d.appendChild(prix);d.appendChild(st);
+  return d;
+}
+
+function renderPosCart(){
+  var body="";var total=0;var nbArt=0;
+  posCart.forEach(function(l){
+    var ttc=round2(l.quantite*l.prix_unitaire*(1+l.taux_tva/100));
+    total+=ttc;nbArt+=l.quantite;
+    body+="<tr>"
+      +"<td><div style='font-weight:600'>"+_h(l.designation)+"</div><div style='font-size:10px;color:#94a3b8'>"+_h(l.ref||l.barcode||"")+"</div></td>"
+      +"<td style='text-align:center'><input type='number' value='"+l.quantite+"' min='0.5' step='0.5' onchange='updatePosQte("+l.idx+",this.value)'></td>"
+      +"<td style='text-align:right'>"+Number(l.prix_unitaire).toLocaleString("fr-FR")+"</td>"
+      +"<td style='text-align:right;font-weight:700'>"+Number(ttc).toLocaleString("fr-FR")+"</td>"
+      +"<td><button class='btn-sm btn-danger' onclick='removePosLine("+l.idx+")'>x</button></td></tr>";
+  });
+  document.getElementById("pos-cart-body").innerHTML=body;
+  document.getElementById("pos-total").textContent=Number(total).toLocaleString("fr-FR")+" FCFA";
+  document.getElementById("pos-articles-count").textContent=nbArt;
+  document.getElementById("pos-cart-empty").style.display=posCart.length?"none":"block";
+  calcMonnaie();
+}
+
+function updatePosQte(idx,val){var l=posCart.filter(function(x){return x.idx===idx})[0];if(l){l.quantite=parseFloat(val)||1;renderPosCart()}}
 function removePosLine(idx){posCart=posCart.filter(function(l){return l.idx!==idx});renderPosCart()}
-
-function renderPosCart(){var body="";var total=0;posCart.forEach(function(l){var ttc=round2(l.quantite*l.prix_unitaire*(1+l.taux_tva/100));total+=ttc;body+="<tr><td>"+l.designation+"</td><td style='text-align:right'><input type='number' value='"+l.quantite+"' min='1' style='width:50px' onchange='updatePosQte("+l.idx+",this.value)'></td><td style='text-align:right'>"+l.prix_unitaire.toLocaleString()+"</td><td style='text-align:right'>"+ttc.toLocaleString()+"</td><td><button class='btn-sm btn-danger' onclick='removePosLine("+l.idx+")'>X</button></td></tr>"});document.getElementById("pos-cart-body").innerHTML=body;document.getElementById("pos-total").textContent=total.toLocaleString();calcMonnaie()}
-
-function updatePosQte(idx,val){var l=posCart.find(function(x){return x.idx===idx});if(l){l.quantite=parseInt(val)||1;renderPosCart()}}
-
-function calcMonnaie(){var total=0;posCart.forEach(function(l){total+=round2(l.quantite*l.prix_unitaire*(1+l.taux_tva/100))});var recu=parseFloat(document.getElementById("pos-recu").value)||0;var monnaie=recu-total;document.getElementById("pos-monnaie").textContent=monnaie>=0?"Monnaie: "+monnaie.toLocaleString()+" FCFA":"Manque: "+Math.abs(monnaie).toLocaleString()+" FCFA"}
-
-function searchPosProducts(){var q=document.getElementById("pos-search").value.toLowerCase();var html="";posProducts.forEach(function(p){if(!q||p.designation.toLowerCase().indexOf(q)>=0||p.ref.toLowerCase().indexOf(q)>=0||(p.barcode&&p.barcode.toLowerCase().indexOf(q)>=0)){html+="<div style='padding:6px;cursor:pointer;border-bottom:1px solid #e2e8f0' onclick='addPosProduct("+JSON.stringify(p).replace(/"/g,"&quot;")+")'>"+p.ref+" - "+p.designation+" - "+p.prix_vente.toLocaleString()+" FCFA</div>"}});document.getElementById("pos-product-list").innerHTML=html}
-
-function validerTicket(){if(posCart.length===0){showToast("Panier vide","err");return}var lignes=[];posCart.forEach(function(l){lignes.push({designation:l.designation,quantite:l.quantite,prix_unitaire:l.prix_unitaire,taux_tva:l.taux_tva,code_article:l.ref,barcode:l.barcode||"",product_id:l.product_id||null})});var vid=document.getElementById("pos-vendeur").value;var data={tiers_nom:document.getElementById("pos-client").value,mode_paiement:document.getElementById("pos-paiement").value,montant_recu:parseFloat(document.getElementById("pos-recu").value)||0,vendeur_id:vid?parseInt(vid):null,lignes:lignes};api("POST","/api/pos/ticket",data).then(function(d){if(d.success){showToast("Ticket "+d.numero+" cree! Monnaie: "+d.monnaie_rendue.toLocaleString()+" FCFA","ok");posCart=[];posLineIdx=0;renderPosCart();document.getElementById("pos-recu").value=0;document.getElementById("pos-client").value="Client comptoir";document.getElementById("pos-barcode").value="";document.getElementById("pos-barcode").focus();setTimeout(function(){location.href="/pos/ticket/"+d.id+"/print"},1500)}else{showToast("Erreur: "+d.error,"err")}}).catch(function(e){showToast("Erreur: "+e,"err")})}
-
+function clearCart(){posCart=[];posLineIdx=0;renderPosCart()}
 function round2(n){return Math.round(n*100)/100}
 
-function syncPosArticles(){showToast("Sync des articles en cours...","info");api("POST","/api/articles/sync",{}).then(function(d){showToast(d.message||"OK","ok");setTimeout(function(){location.reload()},2500)}).catch(function(e){showToast("Erreur: "+e,"err")})}
-</script>"""
+function calcMonnaie(){
+  var total=0;posCart.forEach(function(l){total+=round2(l.quantite*l.prix_unitaire*(1+l.taux_tva/100))});
+  var recu=parseFloat(document.getElementById("pos-recu").value)||0;
+  var mode=document.getElementById("pos-paiement").value;
+  var monnaie=round2(recu-total);
+  var el=document.getElementById("pos-monnaie");
+  var btn=document.getElementById("pos-validate");
+  if(posCart.length===0){el.className="pos-monnaie";el.textContent="";btn.disabled=true;btn.textContent="Ticket vide";return}
+  if(mode==="especes"&&monnaie<0){
+    el.className="pos-monnaie ko";el.textContent="Manque : "+Number(Math.abs(monnaie)).toLocaleString("fr-FR")+" FCFA";
+    btn.disabled=true;btn.textContent="Manque "+Number(Math.abs(monnaie)).toLocaleString("fr-FR")+" FCFA";
+  }else{
+    el.className="pos-monnaie ok";
+    el.textContent=mode==="especes"?"A rendre : "+Number(monnaie).toLocaleString("fr-FR")+" FCFA":"Total : "+Number(total).toLocaleString("fr-FR")+" FCFA";
+    btn.disabled=false;btn.textContent="Valider & imprimer";
+  }
+}
+
+function validerTicket(){
+  if(posCart.length===0){showToast("Ticket vide","err");return}
+  var lignes=[];
+  posCart.forEach(function(l){lignes.push({designation:l.designation,quantite:l.quantite,prix_unitaire:l.prix_unitaire,taux_tva:l.taux_tva,code_article:l.ref,code_compte:"",famille:"",barcode:l.barcode||"",product_id:l.product_id||null})});
+  var vid=document.getElementById("pos-vendeur").value;
+  var pcd=getPosClientData(document.getElementById("pos-client").value);
+  var data={tiers_nom:pcd.nom||"Client comptoir",
+            tiers_code:pcd.code||"",
+            contact_id:pcd.id||null,
+            mode_paiement:document.getElementById("pos-paiement").value,
+            montant_recu:parseFloat(document.getElementById("pos-recu").value)||0,
+            vendeur_id:vid?parseInt(vid):null,lignes:lignes};
+  var btn=document.getElementById("pos-validate");
+  btn.disabled=true;btn.textContent="Validation...";
+  api("POST","/api/pos/ticket",data).then(function(d){
+    if(d.success){
+      var msg="Ticket "+d.numero+" valide";
+      if(d.invoice_numero){msg+=" - Facture "+d.invoice_numero}
+      if(d.sfec_ok){msg+=" - SFEC certifiee ("+String(d.sfec_num_certif||"").slice(0,20)+")"}
+      else if(d.sfec_error){msg+=" - SFEC: "+String(d.sfec_error).slice(0,40)}
+      msg+=" - Monnaie : "+Number(d.monnaie_rendue||0).toLocaleString("fr-FR")+" FCFA";
+      if(d.sage_ok){msg+=" - ecrite dans Sage"}
+      showToast(msg,(d.sfec_ok&&d.sage_ok)?"ok":"warn");
+      clearCart();
+      document.getElementById("pos-recu").value=0;
+      document.getElementById("pos-client").selectedIndex=0;
+      setTimeout(function(){location.href="/pos/ticket/"+d.id+"/print"},1400);
+    }else{
+      btn.disabled=false;btn.textContent="Valider & imprimer";
+      showToast("Erreur : "+d.error,"err");
+    }
+  }).catch(function(e){btn.disabled=false;btn.textContent="Valider & imprimer";showToast("Erreur : "+e,"err")});
+}
+
+function syncPosArticles(){api("POST","/api/articles/sync",{}).then(function(d){alert(d.message||"Sync OK");setTimeout(function(){location.reload()},2500)}).catch(function(e){alert("Erreur : "+e)})}
+window.STOCK_CONTROL = @@STOCK_CTL@@;
+function refreshStockBtn(){var b=document.getElementById("btn-stock");if(!b)return;b.textContent="Stock: "+(window.STOCK_CONTROL?"ON":"OFF");b.classList.toggle("btn-success",!!window.STOCK_CONTROL);b.classList.toggle("btn-warning",!window.STOCK_CONTROL);}
+function toggleStock(){api("POST","/api/pos/config",{stock_control:!window.STOCK_CONTROL}).then(function(d){if(d.success){window.STOCK_CONTROL=!!d.stock_control;refreshStockBtn();showToast("Controle de stock "+(window.STOCK_CONTROL?"ACTIVE":"DESACTIVE"),"ok")}else{showToast(d.error||"Erreur","err")}});}
+refreshStockBtn();
+</script>""".replace("@@STATS@@", stats_html) \
+        .replace("@@TILES@@", top10_tiles) \
+        .replace("@@VENDEURS@@", vendeur_opts_html) \
+        .replace("@@POS_CLIENTS@@", pos_clients_html) \
+        .replace("@@POS_CLIENTS_JS@@", pos_clients_js) \
+        .replace("@@TICKETS@@", ticket_rows_html) \
+        .replace("@@STOCK_CTL@@", "true" if pos_engine.stock_control_enabled() else "false")
     return _page(body)
 
 
@@ -2281,68 +3208,132 @@ def pos_print_ticket(ticket_id):
     logo_path = company.get("logo_file_name", "")
     if logo_path and os.path.exists(logo_path):
         logo_html = '<img src="{}" style="max-height:60px">'.format(logo_path)
+    elif company.get("logo_base64"):
+        logo_html = '<img src="data:image/png;base64,{}" style="max-height:60px">'.format(company["logo_base64"])
+
+    def _fmt_cert_date(s):
+        s = (s or "").strip()
+        if not s:
+            return ""
+        return s.replace("T", " ").replace("Z", "").strip()[:19]
+
+    company_meta = ""
+    for line in [
+        company.get("address", ""),
+        "NIU: {}".format(company.get("tax_number", "")) if company.get("tax_number") else "",
+        "RCCM: {}".format(company.get("rc_number", "")) if company.get("rc_number") else "",
+        "Tel: {}".format(company.get("phone", "")) if company.get("phone") else "",
+        company.get("email", ""),
+    ]:
+        if line:
+            company_meta += '<div class="info">{}</div>'.format(_esc(line))
+
+    invoice_html = ""
+    sfec_html = ""
+    invoice_id = ticket.get("invoice_id")
+    if invoice_id:
+        try:
+            import invoice_engine
+            inv = invoice_engine.get_invoice(invoice_id)
+            if inv:
+                invoice_html = "<div><span>Facture</span><span><b>{}</b></span></div>".format(_esc(inv.get("numero", "")))
+                cert_num = inv.get("sfec_num_certif", "") or ""
+                qr = inv.get("sfec_qr_code", "") or ""
+                cert_date = _fmt_cert_date(inv.get("sfec_date_certif", ""))
+                sstatut = inv.get("sfec_statut", "") or ""
+                if cert_num:
+                    cert_short = cert_num if len(cert_num) <= 40 else cert_num[:40]
+                    parts = ['<div class="info" style="font-weight:bold">Certifiee SFEC</div>',
+                             '<div class="info">N certif : {}</div>'.format(_esc(cert_short))]
+                    if cert_date:
+                        parts.append('<div class="info">Date : {}</div>'.format(_esc(cert_date)))
+                    if qr and (qr.startswith("data:") or qr.startswith("http")) and len(qr) < 40000:
+                        parts.append('<div style="text-align:center;margin:2px 0">'
+                                     '<img src="{}" style="width:16mm;height:16mm;image-rendering:pixelated"></div>'.format(qr))
+                    sfec_html = '<div class="rule"></div>' + "".join(parts)
+                elif sstatut == "ERREUR":
+                    sfec_html = ('<div class="rule"></div>'
+                                 '<div class="info" style="font-weight:bold">SFEC : ERREUR - certification a reessayer</div>')
+                else:
+                    sfec_html = ('<div class="rule"></div>'
+                                 '<div class="info" style="font-weight:bold">SFEC : certification en attente...</div>')
+        except Exception:
+            pass
+
+    paiement_label = ticket.get("mode_paiement", "")
+    paiement_map = {"especes": "Especes", "mobile_money": "Mobile Money", "virement": "Virement",
+                    "carte": "Carte", "cheque": "Cheque", "mixte": "Mixte"}
+    paiement_label = paiement_map.get(paiement_label, paiement_label)
 
     body = """<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
 <title>Ticket {numero}</title>
 <style>
-body{{font-family:'Segoe UI',sans-serif;padding:20px;color:#000;background:#fff;max-width:400px;margin:0 auto}}
-.header{{text-align:center;margin-bottom:20px}}
-.logo{{margin-bottom:10px}}
-.company{{font-size:18px;font-weight:bold}}
-.info{{font-size:11px;color:#666}}
-.ticket-info{{border-top:2px solid #333;padding-top:10px;margin-top:10px}}
-table{{width:100%;border-collapse:collapse;margin:10px 0}}
-th,td{{padding:4px 0;font-size:12px}}
-th{{border-bottom:1px solid #333;text-align:left}}
-.total{{border-top:2px solid #333;font-weight:bold;font-size:14px}}
-.footer{{text-align:center;margin-top:20px;font-size:10px;color:#999}}
-@media print{{body{{padding:10px;max-width:100%}}.no-print{{display:none!important}}}}
-</style></head><body>
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{font-family:'Courier New',monospace;color:#000;background:#fff;max-width:80mm;margin:0 auto;font-size:12px}}
+.header{{text-align:center;margin-bottom:8px}}
+.logo{{margin-bottom:6px}}
+.company{{font-size:15px;font-weight:bold;text-transform:uppercase;letter-spacing:1px}}
+.info{{font-size:10px;color:#000}}
+.rule{{border-top:1px dashed #000;margin:6px 0}}
+.ticket-info{{padding:2px 0}}
+.ticket-info div{{display:flex;justify-content:space-between;padding:1px 0;font-size:11px}}
+table{{width:100%;border-collapse:collapse;margin:4px 0}}
+th,td{{padding:2px 0;font-size:11px;border-bottom:1px dotted #ccc}}
+th{{text-align:left;font-size:10px;text-transform:uppercase}}
+td.r{{text-align:right}}
+.total{{border-top:2px solid #000;font-weight:bold;font-size:15px;padding-top:6px;margin-top:4px}}
+.footer{{text-align:center;margin-top:10px;font-size:10px}}
+.pay-row{{display:flex;justify-content:space-between;padding:1px 0;font-size:12px}}
+.pay-row.big{{font-weight:bold;font-size:14px;margin-top:4px}}
+.no-print{{margin-top:12px;text-align:center}}
+.no-print a,.no-print button{{display:inline-block;margin:4px;padding:8px 14px;font-size:12px;text-decoration:none;border:none;border-radius:4px;cursor:pointer;font-family:inherit}}
+@media print{{body{{width:80mm}} .no-print{{display:none!important}}}}
+</style></head><body onload="setTimeout(function(){{window.print()}},500)">
 <div class="header">
 <div class="logo">{logo}</div>
 <div class="company">{company_name}</div>
-<div class="info">{company_addr}</div>
-<div class="info">NIU: {company_niu}</div>
-<div class="info">Tel: {company_tel}</div>
+{company_meta}
 </div>
+<div class="rule"></div>
 <div class="ticket-info">
-<strong>TICKET DE VENTE</strong><br>
-Numero: <strong>{numero}</strong><br>
-Date: {date}<br>
-Caissier: {caissier}<br>
-Client: {client}
+<div><span><b>TICKET DE VENTE</b></span><span>{date}</span></div>
+<div><span>N&deg; <b>{numero}</b></span><span>{caissier}</span></div>
+<div><span>Client</span><span>{client}</span></div>
+{invoice_html}
 </div>
+<div class="rule"></div>
 <table>
-<thead><tr><th>Article</th><th style="text-align:right">Qte</th><th style="text-align:right">Prix</th><th style="text-align:right">Total</th></tr></thead>
+<thead><tr><th>Article</th><th class="r" style="text-align:right">Qte</th><th class="r" style="text-align:right">PU</th><th class="r" style="text-align:right">Total</th></tr></thead>
 <tbody>{lignes}</tbody>
-<tr class="total"><td colspan="3">TOTAL TTC</td><td style="text-align:right">{total:,.0f} FCFA</td></tr>
 </table>
-<div style="margin-top:10px;font-size:12px">
-Mode: {paiement}<br>
-Recu: {recu:,.0f} FCFA<br>
-<strong>Monnaie: {monnaie:,.0f} FCFA</strong>
-</div>
+<div class="rule"></div>
+<div class="pay-row big"><span>TOTAL TTC</span><span>{total:,.0f} FCFA</span></div>
+<div class="rule"></div>
+<div class="pay-row"><span>Mode</span><span>{paiement}</span></div>
+<div class="pay-row"><span>Recu</span><span>{recu:,.0f} FCFA</span></div>
+<div class="pay-row big"><span>Monnaie rendue</span><span>{monnaie:,.0f} FCFA</span></div>
+{sfec}
 <div class="footer">
 {message}
 </div>
-<div class="no-print" style="margin-top:20px;text-align:center">
-<button onclick="window.print()" style="padding:10px 20px;background:#38bdf8;border:none;border-radius:4px;font-size:14px;cursor:pointer">Imprimer</button>
-<a href="/api/pos/ticket/{ticket_id}/pdf" style="margin-left:12px;padding:10px 20px;background:#10b981;color:white;border:none;border-radius:4px;font-size:14px;text-decoration:none" target="_blank">PDF</a>
-<a href="/pos" style="margin-left:12px;color:#38bdf8">Retour</a>
+<div class="no-print">
+<button onclick="window.print()">Imprimer</button>
+<a href="/api/pos/ticket/{ticket_id}/pdf" class="no-print" target="_blank">PDF</a>
+<a href="/pos">Retour caisse</a>
 </div>
 </body></html>""".format(
         numero=_esc(ticket.get("numero", "")),
         logo=logo_html,
         company_name=_esc(company.get("name", "Mon Entreprise")),
-        company_addr=_esc(company.get("address", "")),
-        company_niu=_esc(company.get("tax_number", "")),
-        company_tel=_esc(company.get("phone", "")),
+        company_meta=company_meta,
         date=_esc(ticket.get("date_ticket", "")),
         caissier=_esc(ticket.get("caissier", "")),
         client=_esc(ticket.get("tiers_nom", "")),
+        invoice_html=invoice_html,
+        sfec=sfec_html,
         lignes=lignes_rows,
         total=ticket.get("montant_ttc", 0),
-        paiement=_esc(ticket.get("mode_paiement", "")),
+        paiement=_esc(paiement_label),
         recu=ticket.get("montant_recu", 0),
         monnaie=ticket.get("monnaie_rendue", 0),
         message=get_setting("ticket_message", "Merci pour votre achat !"),
@@ -2352,6 +3343,24 @@ Recu: {recu:,.0f} FCFA<br>
 
 
 # ── API POS ──
+
+@app.route("/api/pos/config", methods=["GET", "POST"])
+@_login_required
+def api_pos_config():
+    cfg = get_config()
+    if request.method == "GET":
+        return jsonify({"success": True, "stock_control": pos_engine.stock_control_enabled()})
+    data = request.get_json(silent=True) or {}
+    try:
+        pos = cfg.get("pos", {}) or {}
+        if "stock_control" in data:
+            pos["stock_control"] = bool(data["stock_control"])
+        cfg["pos"] = pos
+        save_config(cfg)
+        return jsonify({"success": True, "stock_control": bool(pos.get("stock_control", True))})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
 
 @app.route("/api/pos/ticket", methods=["POST"])
 @_login_required
@@ -2370,6 +3379,8 @@ def api_list_tickets():
     result = pos_engine.list_tickets(
         date_from=request.args.get("date_from"),
         date_to=request.args.get("date_to"),
+        vendeur_id=request.args.get("vendeur_id"),
+        search=request.args.get("search"),
         limit=min(int(request.args.get("limit", 100)), 500)
     )
     return jsonify(result)
@@ -2429,10 +3440,26 @@ def sales_page():
     result = pos_engine.list_tickets(limit=200)
     for t in result["tickets"]:
         vendeur_txt = "{} {}".format(t.get("vendeur_prenom", "") or "", t.get("vendeur_nom", "") or "").strip() or "-"
-        ticket_rows += "<tr><td>{}</td><td>{}</td><td>{}</td><td style='text-align:right'>{:,.0f}</td><td>{}</td><td>{}</td><td><a href='/pos/ticket/{}/print' class='btn btn-sm' target='_blank'>Voir</a></td></tr>".format(
+        sstatut = t.get("sfec_statut", "") or ""
+        inv_id = t.get("invoice_id")
+        if sstatut in ("CERTIFIE", "DEJA_CERTIFIE"):
+            sfec_cell = '<span class="badge badge-ok" title="{}">Certifiee</span>'.format(_esc((t.get("sfec_num_certif", "") or "")[:25]))
+        elif sstatut == "EN_COURS":
+            sfec_cell = '<span class="badge badge-warn">En attente</span>'
+            if inv_id:
+                sfec_cell += ' <button class="btn btn-sm" onclick="certifySales({})">Certifier</button>'.format(inv_id)
+        elif sstatut == "ERREUR":
+            sfec_cell = '<span class="badge badge-err">Erreur</span>'
+            if inv_id:
+                sfec_cell += ' <button class="btn btn-sm" onclick="certifySales({})">Certifier</button>'.format(inv_id)
+        elif inv_id:
+            sfec_cell = '<span class="badge badge-info">Non certifiee</span> <button class="btn btn-sm" onclick="certifySales({})">Certifier</button>'.format(inv_id)
+        else:
+            sfec_cell = "-"
+        ticket_rows += "<tr><td>{}</td><td>{}</td><td>{}</td><td style='text-align:right'>{:,.0f}</td><td>{}</td><td>{}</td><td>{}</td><td><a href='/pos/ticket/{}/print' class='btn btn-sm' target='_blank'>Voir</a></td></tr>".format(
             _esc(t.get("numero", "")), _esc(t.get("date_ticket", "")[:16]),
             _esc(t.get("tiers_nom", "")), t.get("montant_ttc", 0),
-            _esc(t.get("mode_paiement", "")), _esc(vendeur_txt), t.get("id", "")
+            _esc(t.get("mode_paiement", "")), _esc(vendeur_txt), sfec_cell, t.get("id", "")
         )
 
     vendeurs = pos_engine.list_vendeurs()
@@ -2458,9 +3485,26 @@ def sales_page():
 <div><button class="btn btn-primary" onclick="filterSales()">Filtrer</button></div>
 </div></div>
 <div class="card"><h2>Ventes ({count})</h2>
-<table><thead><tr><th>Numero</th><th>Date</th><th>Client</th><th style="text-align:right">Montant</th><th>Paiement</th><th>Vendeur</th><th></th></tr></thead>
+<table><thead><tr><th>Numero</th><th>Date</th><th>Client</th><th style="text-align:right">Montant</th><th>Paiement</th><th>Vendeur</th><th>SFEC</th><th></th></tr></thead>
 <tbody id="sales-body">{rows}</tbody></table></div>
 <script>
+function certifySales(invoiceId){{
+  if(!invoiceId)return;
+  api("POST","/api/sfec/certify",{{invoice_id:"INV-"+invoiceId}}).then(function(r){{
+    if(r.success&&r.certification_number){{showToast("Certifiee SFEC: "+r.certification_number,"ok");setTimeout(function(){{location.reload()}},1800)}}
+    else if(r.success){{showToast("Certification envoyee, en attente de finalisation...","warn")}}
+    else{{showToast("Certification: "+(r.error||"echec"),"err")}}
+  }})
+}}
+function sfecCell(t){{
+  var ss=t.sfec_statut||"";
+  if(ss==="CERTIFIE"||ss==="DEJA_CERTIFIE")return '<span class="badge badge-ok" title="'+(t.sfec_num_certif||"").slice(0,25)+'">Certifiee</span>';
+  var ic=t.invoice_id;
+  if(ss==="EN_COURS")return '<span class="badge badge-warn">En attente</span>'+(ic?' <button class="btn btn-sm" onclick="certifySales('+ic+')">Certifier</button>':"");
+  if(ss==="ERREUR")return '<span class="badge badge-err">Erreur</span>'+(ic?' <button class="btn btn-sm" onclick="certifySales('+ic+')">Certifier</button>':"");
+  if(ic)return '<span class="badge badge-info">Non certifiee</span> <button class="btn btn-sm" onclick="certifySales('+ic+')">Certifier</button>';
+  return "-";
+}}
 function filterSales(){{
   var df=document.getElementById("f-date-from").value;
   var dt=document.getElementById("f-date-to").value;
@@ -2475,9 +3519,9 @@ function filterSales(){{
     var html="";
     (d.tickets||[]).forEach(function(t){{
       var v=(t.vendeur_prenom||"")+" "+(t.vendeur_nom||"");
-      html+="<tr><td>"+t.numero+"</td><td>"+(t.date_ticket||"").substring(0,16)+"</td><td>"+t.tiers_nom+"</td><td style='text-align:right'>"+Number(t.montant_ttc).toLocaleString()+"</td><td>"+t.mode_paiement+"</td><td>"+(v.trim()||"-")+"</td><td><a href='/pos/ticket/"+t.id+"/print' class='btn btn-sm' target='_blank'>Voir</a></td></tr>"
+      html+="<tr><td>"+t.numero+"</td><td>"+(t.date_ticket||"").substring(0,16)+"</td><td>"+t.tiers_nom+"</td><td style='text-align:right'>"+Number(t.montant_ttc).toLocaleString()+"</td><td>"+t.mode_paiement+"</td><td>"+(v.trim()||"-")+"</td><td>"+sfecCell(t)+"</td><td><a href='/pos/ticket/"+t.id+"/print' class='btn btn-sm' target='_blank'>Voir</a></td></tr>"
     }});
-    if(!html)html='<tr><td colspan="7' style="text-align:center;color:#64748b">Aucune vente</td></tr>';
+    if(!html)html='<tr><td colspan="8" style="text-align:center;color:#64748b">Aucune vente</td></tr>';
     document.getElementById("sales-body").innerHTML=html;
   }})
 }}
@@ -2759,6 +3803,7 @@ def clients_page():
 
 {toast}
 <script>
+window.CSRF_TOKEN = {csrf_json};
 var contacts = {contacts_json};
 
 function filterContacts() {{
@@ -2806,8 +3851,7 @@ function editContact(id) {{
 
 function deleteContact(id) {{
   if(!confirm("Supprimer ce contact ?")) return;
-  fetch("/api/contacts/" + id, {{method:"DELETE"}})
-    .then(function(r){{return r.json()}})
+  api("DELETE", "/api/contacts/" + id)
     .then(function(d){{
       if(d.success) {{ showToast("Contact supprime","ok"); setTimeout(function(){{location.reload()}},800); }}
       else showToast(d.error || "Erreur","err");
@@ -2830,8 +3874,7 @@ function saveContact() {{
   var url = "/api/contacts";
   var method = "POST";
   if(editId) {{ url = "/api/contacts/" + editId; method = "PUT"; }}
-  fetch(url, {{method:method, headers:{{"Content-Type":"application/json"}}, body:JSON.stringify(data)}})
-    .then(function(r){{return r.json()}})
+  api(method, url, data)
     .then(function(d){{
       if(d.success) {{ showToast(editId ? "Contact modifie" : "Contact cree","ok"); setTimeout(function(){{location.reload()}},800); }}
       else showToast(d.error || "Erreur","err");
@@ -2843,9 +3886,405 @@ function saveContact() {{
         total=len(contacts), nb_clients=client_count, nb_fournis=fourni_count, nb_total=len(contacts),
         rows=rows,
         contacts_json=__import__("json").dumps(contacts),
+        csrf_json=json.dumps(_get_csrf_token()),
         toast=TOAST
     )
     return render_template_string(html)
+
+
+# ══════════════════════════════════════════════════════════════
+# GESTION UTILISATEURS & DROITS D'ACCES
+# ══════════════════════════════════════════════════════════════
+
+
+def _user_rows(comptes, me_id):
+    rows = ""
+    role_cls = {"admin": "badge-ok", "responsable": "badge-info", "caissiere": "badge-warn", "financiere": ""}
+    for u in comptes:
+        rows += """<tr>
+<td>{nom}</td><td>{email}</td>
+<td><span class="badge {rc}">{role_label}</span>{me}</td>
+<td><span class="badge {sc}">{s}</span></td>
+<td>{derniere}</td>
+<td>
+<button class="btn btn-sm" onclick="editUser({uid})">Editer</button>
+<button class="btn btn-sm" onclick="resetPwd({uid})">MdP</button>
+<button class="btn btn-sm" onclick="toggleActif({uid})">{tgl}</button>
+<button class="btn btn-sm btn-danger" onclick="delUser({uid})">Suppr</button>
+</td></tr>""".format(
+            nom=_esc("{} {}".format(u.get("prenom", ""), u.get("nom", "")).strip()),
+            email=_esc(u["email"]),
+            rc=role_cls.get(u["role"], ""), role_label=_esc(u["role_label"]),
+            me=' <span class="badge badge-info">vous</span>' if u["id"] == me_id else "",
+            sc="badge-ok" if u["est_actif"] else "badge-err",
+            s="Actif" if u["est_actif"] else "Inactif",
+            derniere=_esc((u.get("derniere_connexion") or "-")[:19]),
+            uid=u["id"], tgl="Desactiver" if u["est_actif"] else "Activer",
+        )
+    return rows
+
+
+def _matrix_editor(matrix):
+    editor = "<table id='matrix'><thead><tr><th>Permission</th>"
+    for r in user_auth.ROLES:
+        editor += "<th>{}</th>".format(user_auth.ROLE_LABELS[r])
+    editor += "</tr></thead><tbody>"
+    for perm, label in user_auth.PERMISSIONS.items():
+        editor += "<tr><td>{}</td>".format(_esc(label))
+        for r in user_auth.ROLES:
+            checked = "checked" if perm in (matrix.get(r) or []) else ""
+            editor += ('<td style="text-align:center"><input type="checkbox" data-role="{}" '
+                       'data-perm="{}" {}></td>').format(r, perm, checked)
+        editor += "</tr>"
+    return editor + "</tbody></table>"
+
+
+def _audit_rows(entries):
+    rows = ""
+    for e in entries[:12]:
+        rows += "<tr><td>{}</td><td>{}</td><td><span class='badge badge-info'>{}</span></td><td>{}</td><td>{}</td></tr>".format(
+            _esc((e["ts"] or "")[2:16]), _esc(e.get("utilisateur", "")),
+            _esc(e.get("action", "")), _esc(e.get("detail", "")), _esc(e.get("ip", "")))
+    return rows or '<tr><td colspan="5" style="text-align:center;color:#94a3b8">Aucune activite</td></tr>'
+
+
+@app.route("/utilisateurs")
+@_login_required
+def utilisateurs_page():
+    comptes = user_auth.list_users()
+    matrix = user_auth.get_matrix()
+    audit = user_auth.list_audit(limit=20)
+    me = _current_identity() or {}
+    acfg = user_auth.get_auth_config()
+    role_opts = "".join('<option value="{}">{}</option>'.format(r, user_auth.ROLE_LABELS[r]) for r in user_auth.ROLES)
+
+    body = """
+<div class="card"><h2>Comptes utilisateurs</h2>
+<div class="stat-grid" style="margin-bottom:16px">
+<div class="stat"><div class="value">@NB@</div><div class="label">Comptes</div></div>
+<div class="stat"><div class="value">@ACTIV@</div><div class="label">Actifs</div></div>
+<div class="stat"><div class="value">@ADMINS@</div><div class="label">Administrateurs</div></div>
+</div>
+<button class="btn btn-primary" onclick="showNewUser()">+ Nouveau compte</button>
+</div>
+<div class="card"><h2>Liste des comptes</h2>
+<table><thead><tr><th>Nom</th><th>Email</th><th>Role</th><th>Statut</th><th>Derniere connexion</th><th>Actions</th></tr></thead>
+<tbody>{rows}</tbody></table>
+<div style="font-size:12px;color:#64748b;margin-top:8px">Provider d'authentification : <b>@PROVIDER@</b> (sage = comptes verifies depuis la base Sage si elle expose des utilisateurs)</div>
+</div>
+<div class="card"><h2>Droits d'acces par role</h2>
+@MATRIX@
+<div style="margin-top:12px"><button class="btn btn-primary" onclick="saveMatrix()">Enregistrer les droits</button>
+<span id="matrix-status" style="margin-left:8px;font-size:12px;color:#64748b"></span></div>
+</div>
+<div class="card"><h2>Securite de la session</h2>
+<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:end">
+<div><label>Coiffre (provider)</label><select id="sec-provider"><option value="local">Local</option><option value="sage">Sage</option></select></div>
+<div><label>Tentatives max</label><input type="number" id="sec-attempts" min="1" max="20" style="width:110px"></div>
+<div><label>Verrouillage (min)</label><input type="number" id="sec-lock" min="1" max="1440" style="width:110px"></div>
+<div><label>Session max (heures)</label><input type="number" id="sec-hours" min="1" max="720" style="width:110px"></div>
+<div><label>Inactivite (min, 0=off)</label><input type="number" id="sec-idle" min="0" max="1440" style="width:110px"></div>
+<div><label><input type="checkbox" id="sec-https"> HTTPS / Secure cookie</label></div>
+<div><button class="btn btn-primary" onclick="saveSec()">Enregistrer</button></div>
+</div>
+<div style="font-size:12px;color:#64748b;margin-top:8px">Un compte est verrouille apres trop d'echecs. Redemarrez le dashboard pour appliquer <b>https_only</b>.</div>
+</div>
+<div class="card no-print"><h2>Journal d'audit</h2>
+<table><thead><tr><th>Heure</th><th>Compte</th><th>Action</th><th>Detail</th><th>IP</th></tr></thead>
+<tbody>@AUDIT@</tbody></table></div>
+
+<div id="user-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:100;align-items:center;justify-content:center">
+<div class="card" style="width:440px;max-width:95vw">
+<h2 id="user-modal-title">Nouveau compte</h2>
+<form id="user-form">
+<input type="hidden" id="u-id">
+<div class="grid-2">
+<div><label>Nom</label><input type="text" id="u-nom"></div>
+<div><label>Prenom</label><input type="text" id="u-prenom"></div>
+</div>
+<div><label>Email *</label><input type="email" id="u-email" required></div>
+<div class="grid-2">
+<div><label>Role</label><select id="u-role">@ROLEOPTS@</select></div>
+<div><label>Actif</label><select id="u-actif"><option value="1">Oui</option><option value="0">Non</option></select></div>
+</div>
+<div><label id="u-pwd-label">Mot de passe provisoire * (min 8 char.)</label><input type="password" id="u-pwd"></div>
+<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+<button type="button" class="btn btn-sm btn-ghost" onclick="hideUserModal()">Annuler</button>
+<button type="submit" class="btn btn-primary">Enregistrer</button>
+</div>
+</form>
+</div>
+</div>
+
+<script>
+function visible(){var ids=["u-id","u-nom","u-prenom","u-email","u-role","u-actif"].concat(["u-pwd"]);for(var i=0;i<ids.length;i++){var el=document.getElementById(ids[i]);if(el)el.value="";}document.getElementById("u-pwd").style.display="";document.getElementById("u-pwd").required=true;}
+function showNewUser(){
+visible();
+document.getElementById("u-actif").value="1";
+document.getElementById("u-pwd-label").textContent="Mot de passe initial * (min 8 char.)";
+document.getElementById("user-modal-title").textContent="Nouveau compte";
+document.getElementById("user-modal").style.display="flex";
+document.getElementById("u-email").focus();
+}
+function hideUserModal(){document.getElementById("user-modal").style.display="none";}
+function editUser(id){
+api("GET","/api/utilisateurs").then(function(d){
+var u=null;for(var i=0;i<d.comptes.length;i++){if(d.comptes[i].id===id){u=d.comptes[i];break;}}
+if(!u)return;
+visible();
+document.getElementById("u-id").value=u.id;
+document.getElementById("u-nom").value=u.nom||"";
+document.getElementById("u-prenom").value=u.prenom||"";
+document.getElementById("u-email").value=u.email;
+document.getElementById("u-role").value=u.role;
+document.getElementById("u-actif").value=u.est_actif?"1":"0";
+document.getElementById("u-pwd").required=false;
+document.getElementById("u-pwd").style.display="none";
+document.getElementById("u-pwd-label").textContent="Laisser vide = ne pas changer le mot de passe";
+document.getElementById("user-modal-title").textContent="Modifier le compte";
+document.getElementById("user-modal").style.display="flex";
+});
+}
+document.getElementById("user-form").onsubmit=function(e){
+e.preventDefault();
+var id=document.getElementById("u-id").value;
+var d={
+nom:document.getElementById("u-nom").value,
+prenom:document.getElementById("u-prenom").value,
+email:document.getElementById("u-email").value,
+role:document.getElementById("u-role").value,
+est_actif:document.getElementById("u-actif").value==="1",
+password:document.getElementById("u-pwd").value
+};
+var url=id?"/api/utilisateurs/"+id:"/api/utilisateurs";
+var m=id?"PUT":"POST";
+api(m,url,d).then(function(r){
+if(r.success==false){showToast(r.error||"Erreur","err");return;}
+showToast(id?"Compte modifie":"Compte cree","ok");
+setTimeout(function(){location.reload()},900);
+});
+};
+function resetPwd(id){
+var p=prompt("Nouveau mot de passe (min 8 caracteres) :");
+if(!p)return;
+if(p.length<8){showToast("Minimum 8 caracteres","err");return;}
+api("POST","/api/utilisateurs/"+id+"/password",{password:p}).then(function(r){
+if(r.success==false){showToast(r.error||"Erreur","err");return;}
+showToast("Mot de passe reinitialise","ok");
+});
+}
+function toggleActif(id){
+api("PUT","/api/utilisateurs/"+id,{toggle_actif:true}).then(function(r){
+if(r.success==false){showToast(r.error||"Erreur","err");return;}
+showToast("Statut mis a jour","ok");setTimeout(function(){location.reload()},700);
+});
+}
+function delUser(id){
+if(!confirm("Supprimer ce compte ?"))return;
+api("DELETE","/api/utilisateurs/"+id).then(function(r){
+if(r.success==false){showToast(r.error||"Erreur","err");return;}
+showToast("Compte supprime","ok");setTimeout(function(){location.reload()},700);
+});
+}
+function saveMatrix(){
+var matrix={};
+["admin","responsable","caissiere","financiere"].forEach(function(r){matrix[r]=[];});
+document.querySelectorAll("#matrix input[type=checkbox]").forEach(function(cb){
+if(cb.checked)matrix[cb.dataset.role].push(cb.dataset.perm);
+});
+api("POST","/api/auth/permissions",{matrix:matrix}).then(function(r){
+if(r.success==false){showToast(r.error||"Erreur","err");return;}
+document.getElementById("matrix-status").textContent="Droits enregistres";
+setTimeout(function(){document.getElementById("matrix-status").textContent="";},2500);
+});
+}
+function secFill(c){
+document.getElementById("sec-provider").value=c.provider||"local";
+document.getElementById("sec-attempts").value=c.max_attempts||5;
+document.getElementById("sec-lock").value=c.lock_minutes||15;
+document.getElementById("sec-hours").value=c.session_max_age_hours||24;
+document.getElementById("sec-idle").value=c.session_idle_minutes||60;
+document.getElementById("sec-https").checked=!!c.https_only;
+}
+function saveSec(){
+var d={
+provider:document.getElementById("sec-provider").value,
+max_attempts:Number(document.getElementById("sec-attempts").value)||5,
+lock_minutes:Number(document.getElementById("sec-lock").value)||15,
+session_max_age_hours:Number(document.getElementById("sec-hours").value)||24,
+session_idle_minutes:Number(document.getElementById("sec-idle").value)||0,
+https_only:document.getElementById("sec-https").checked
+};
+api("POST","/api/auth/config",d).then(function(r){
+if(r.success==false){showToast(r.error||"Erreur","err");return;}
+showToast("Securite enregistree","ok");
+});
+}
+api("GET","/api/auth/config").then(function(d){if(d.config)secFill(d.config);});
+</script>"""
+    out = body
+    out = out.replace("@NB@", str(len(comptes)))
+    out = out.replace("@ACTIV@", str(sum(1 for u in comptes if u["est_actif"])))
+    out = out.replace("@ADMINS@", str(sum(1 for u in comptes if u["role"] == "admin" and u["est_actif"])))
+    out = out.replace("@ROWS@", _user_rows(comptes, me.get("user_id")))
+    out = out.replace("@MATRIX@", _matrix_editor(matrix))
+    out = out.replace("@AUDIT@", _audit_rows(audit))
+    out = out.replace("@PROVIDER@", acfg.get("provider", "local"))
+    out = out.replace("@ROLEOPTS@", role_opts)
+    return _page(out)
+
+
+@app.route("/compte/mot-de-passe")
+@_login_required
+def compte_password_page():
+    body = """
+<div class="card" style="max-width:460px"><h2>Changer mon mot de passe</h2>
+<form id="pwd-form">
+<div><label>Mot de passe actuel</label><input type="password" id="p-current" required></div>
+<div><label>Nouveau mot de passe</label><input type="password" id="p-new" required minlength="8"></div>
+<div><label>Confirmation</label><input type="password" id="p-confirm" required></div>
+<div style="margin-top:16px"><button type="submit" class="btn btn-primary">Mettre a jour</button></div>
+</form>
+<p style="font-size:12px;color:#64748b;margin-top:12px">Minimum 8 caracteres. Le mot de passe est hache (PBKDF2) et n'est jamais stocke en clair.</p>
+</div>
+<script>
+document.getElementById("pwd-form").onsubmit=function(e){
+e.preventDefault();
+var cur=document.getElementById("p-current").value;
+var nv=document.getElementById("p-new").value;
+var cf=document.getElementById("p-confirm").value;
+if(nv!==cf){showToast("Les mots de passe ne correspondent pas","err");return;}
+api("POST","/api/compte/password",{current:cur,nouveau:nv}).then(function(r){
+if(r.success==false){showToast(r.error||"Erreur","err");return;}
+showToast("Mot de passe mis a jour","ok");document.getElementById("pwd-form").reset();
+});
+};
+</script>"""
+    return _page(body)
+
+
+@app.route("/api/utilisateurs", methods=["GET"])
+@_login_required
+def api_list_comptes():
+    return jsonify({"comptes": user_auth.list_users()})
+
+
+@app.route("/api/utilisateurs", methods=["POST"])
+@_login_required
+def api_create_compte():
+    data = request.get_json(silent=True) or {}
+    try:
+        new_id = user_auth.create_user(
+            data.get("nom", ""), data.get("prenom", ""), data.get("email", ""),
+            data.get("password", ""), data.get("role", "responsable"))
+        return jsonify({"success": True, "id": new_id})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
+
+@app.route("/api/utilisateurs/<int:user_id>", methods=["PUT"])
+@_login_required
+def api_update_compte(user_id):
+    data = request.get_json(silent=True) or {}
+    try:
+        if data.get("toggle_actif"):
+            u = user_auth.get_user(user_id)
+            if not u:
+                return jsonify({"success": False, "error": "Compte introuvable"}), 404
+            user_auth.update_user(user_id, est_actif=not u["est_actif"])
+            return jsonify({"success": True})
+        user_auth.update_user(
+            user_id,
+            nom=data.get("nom"), prenom=data.get("prenom"),
+            role=data.get("role"), est_actif=data.get("est_actif"))
+        if data.get("password"):
+            user_auth.set_password(user_id, data["password"],
+                                   resetter=_current_identity().get("email", ""))
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
+
+@app.route("/api/utilisateurs/<int:user_id>", methods=["DELETE"])
+@_login_required
+def api_delete_compte(user_id):
+    try:
+        user_auth.delete_user(user_id, acting_user_id=(_current_identity() or {}).get("user_id"))
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
+
+@app.route("/api/utilisateurs/<int:user_id>/password", methods=["POST"])
+@_login_required
+def api_reset_compte_password(user_id):
+    data = request.get_json(silent=True) or {}
+    try:
+        user_auth.set_password(user_id, data.get("password", ""),
+                               resetter=(_current_identity() or {}).get("email", ""))
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
+
+@app.route("/api/compte/password", methods=["POST"])
+@_login_required
+def api_compte_password():
+    ident = _current_identity() or {}
+    data = request.get_json(silent=True) or {}
+    try:
+        user, err = user_auth.authenticate(ident.get("email", ""), data.get("current", ""))
+        if not user:
+            return jsonify({"success": False, "error": "Mot de passe actuel incorrect"}), 400
+        user_auth.set_password(user["id"], data.get("nouveau", ""))
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
+
+@app.route("/api/auth/permissions", methods=["GET", "POST"])
+@_login_required
+def api_auth_permissions():
+    if request.method == "GET":
+        return jsonify({"roles": user_auth.ROLES, "roles_labels": user_auth.ROLE_LABELS,
+                        "permissions": user_auth.PERMISSIONS,
+                        "matrix": user_auth.get_matrix(),
+                        "defaults": user_auth.DEFAULT_MATRIX})
+    data = request.get_json(silent=True) or {}
+    try:
+        matrix = user_auth.set_matrix(data.get("matrix", {}))
+        audit_entry = _current_identity().get("email", "")
+        user_auth.audit("droits.modifies", "Matrice des droits mise a jour", email=audit_entry)
+        return jsonify({"success": True, "matrix": matrix})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
+
+@app.route("/api/auth/config", methods=["GET", "POST"])
+@_login_required
+def api_auth_config():
+    if request.method == "GET":
+        return jsonify({"config": user_auth.get_auth_config()})
+    data = request.get_json(silent=True) or {}
+    try:
+        cfg = user_auth.save_auth_config(data)
+        _apply_session_security()
+        login_email = _current_identity() and _current_identity().get("email", "")
+        user_auth.audit("securite.modifiee", "Parametres de securite mis a jour", email=login_email or "")
+        return jsonify({"success": True, "config": cfg})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
+
+@app.route("/api/csrf")
+def api_csrf():
+    return jsonify({"token": _get_csrf_token()})
+
+
+@app.route("/api/audit", methods=["GET"])
+@_login_required
+def api_audit():
+    return jsonify({"entries": user_auth.list_audit(limit=min(int(request.args.get("limit", 200)), 500))})
 
 
 @app.route("/health")

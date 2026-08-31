@@ -15,6 +15,7 @@ if SCRIPT_DIR not in sys.path:
 from config_manager import load_config, get_config
 from database import close_pool
 from sync_engine import start_polling, stop_polling
+from sync_bidirectional import start_bi_sync
 from dashboard import app
 from connectivity import check_now, start_background_check, stop_background_check
 
@@ -66,6 +67,14 @@ def main():
         sqlite_db.init_database()
         logger.info("SQLite local initialise (data/tconnector.db)")
         try:
+            import user_auth
+            user_auth.ensure_schema()
+            admin_id = user_auth.migrate_admin_from_config()
+            if admin_id:
+                logger.info("Compte administrateur initial cree (id=%s)", admin_id)
+        except Exception as e:
+            logger.warning("Init authentification: %s", e)
+        try:
             import article_sync
             result = article_sync.sync_articles_from_sage()
             logger.info("Sync articles Sage au demarrage: %s", result)
@@ -115,6 +124,10 @@ def main():
     def _background_init():
         logger.info("Demarrage du polling intelligent...")
         start_polling()
+        _db_cfg = get_config().get("database", {})
+        _interval = max(_db_cfg.get("polling_interval_ms", 30000) // 1000, 15)
+        logger.info("Demarrage de la sync bidirectionnelle (intervalle: %ds)...", _interval)
+        start_bi_sync(interval=_interval)
 
     init_thread = threading.Thread(target=_background_init, daemon=True, name="sfec-init")
     init_thread.start()

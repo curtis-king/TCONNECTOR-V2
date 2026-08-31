@@ -1,11 +1,20 @@
 import logging
 from datetime import datetime
 from sqlite_db import (
-    get_cursor, generate_ticket_number, recalc_ticket_totals,
+    get_cursor, generate_ticket_number, generate_invoice_number,
+    recalc_ticket_totals, calc_line_ticket_totals,
     log_sync, row_to_dict, rows_to_list
 )
+from config_manager import get_config
 
 logger = logging.getLogger("t-connector.pos")
+
+
+def stock_control_enabled():
+    try:
+        return bool(get_config().get("pos", {}).get("stock_control", True))
+    except Exception:
+        return True
 
 
 def create_ticket(data):
@@ -17,27 +26,37 @@ def create_ticket(data):
     montant_recu = float(data.get("montant_recu", 0))
     vendeur_id = data.get("vendeur_id")
     notes = data.get("notes", "")
+    caissier = data.get("caissier", "") or ""
+    remise_globale_pct = float(data.get("remise_globale_pct", 0) or 0)
+    remise_globale_montant = float(data.get("remise_globale_montant", 0) or 0)
 
     lignes = data.get("lignes", [])
     if not lignes:
         return {"success": False, "error": "Aucune ligne dans le ticket"}
 
+    stock_check = check_stock_available(lignes)
+    if not stock_check["ok"]:
+        manque = stock_check["manque"]
+        detail = ", ".join(
+            "{} (stock {}{}, demande {})".format(m["designation"], m.get("stock", 0), "", m["qte"])
+            for m in manque
+        )
+        return {"success": False, "error": "Stock insuffisant: " + detail}
+
     with get_cursor() as cur:
         cur.execute("""
             INSERT INTO pos_tickets (
                 numero, date_ticket, contact_id, tiers_nom,
-                mode_paiement, vendeur_id, notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (numero, date_ticket, contact_id, tiers_nom, mode_paiement, vendeur_id, notes))
+                mode_paiement, vendeur_id, notes, caissier,
+                remise_globale_pct, remise_globale_montant
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (numero, date_ticket, contact_id, tiers_nom, mode_paiement,
+              vendeur_id, notes, caissier, remise_globale_pct, remise_globale_montant))
         ticket_id = cur.lastrowid
 
     _save_ticket_lines(ticket_id, lignes)
-    recalc_ticket_totals(ticket_id)
-
-    with get_cursor() as cur:
-        cur.execute("SELECT montant_ttc FROM pos_tickets WHERE id = ?", (ticket_id,))
-        row = cur.fetchone()
-        montant_ttc = row["montant_ttc"] if row else 0
+    totals = recalc_ticket_totals(ticket_id)
+    montant_ttc = totals["montant_ttc"]
 
     monnaie_rendue = max(montant_recu - montant_ttc, 0)
     with get_cursor() as cur:
@@ -45,11 +64,177 @@ def create_ticket(data):
             UPDATE pos_tickets SET montant_recu = ?, monnaie_rendue = ? WHERE id = ?
         """, (montant_recu, monnaie_rendue, ticket_id))
 
+    _decrement_stock(lignes)
+
+    invoice_result = _create_invoice_for_ticket(ticket_id, data, totals)
+
     log_sync("pos_tickets", ticket_id, numero, "create", "pos")
     logger.info("Ticket cree: %s (id=%d)", numero, ticket_id)
 
-    return {"success": True, "id": ticket_id, "numero": numero,
-            "montant_ttc": montant_ttc, "monnaie_rendue": monnaie_rendue}
+    result = {"success": True, "id": ticket_id, "numero": numero,
+              "montant_ttc": montant_ttc, "monnaie_rendue": monnaie_rendue}
+    result.update(invoice_result)
+    return result
+
+
+def _create_invoice_for_ticket(ticket_id, data, totals):
+    """Cree une facture associee au ticket POS et la pousse vers Sage
+    (comportement du module de saisie de caisse Sage)."""
+    try:
+        numero = generate_invoice_number()
+        date_ticket = data.get("date_ticket") or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        date_facture = date_ticket[:10]
+        tiers_nom = data.get("tiers_nom", "Client comptoir")
+        mode_paiement = data.get("mode_paiement", "especes")
+
+        with get_cursor() as cur:
+            cur.execute("""
+                INSERT INTO invoices (
+                    numero, date_facture, reference, contact_id,
+                    tiers_code, tiers_nom, tiers_type, montant_ht, montant_tva,
+                    montant_ttc, montant_restant, statut, valide,
+                    type_doc, source, vendeur_id, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'a_comptabiliser', 1, 'vente', 'pos', ?, ?)
+            """, (
+                numero, date_facture, "PAIEMENT " + mode_paiement,
+                data.get("contact_id"), data.get("tiers_code", ""), tiers_nom,
+                data.get("tiers_type", "particulier"),
+                totals.get("montant_ht", 0), totals.get("montant_tva", 0),
+                totals.get("montant_ttc", 0), 0,
+                data.get("vendeur_id"), ""
+            ))
+            invoice_id = cur.lastrowid
+
+        ligne_infos = []
+        with get_cursor() as cur:
+            for i, ligne in enumerate(data.get("lignes", [])):
+                quantite = float(ligne.get("quantite", 1))
+                prix_unitaire = float(ligne.get("prix_unitaire", 0))
+                taux_tva = float(ligne.get("taux_tva", 18))
+                net_ht, montant_tva, montant_ttc, _ = calc_line_ticket_totals(
+                    quantite, prix_unitaire,
+                    float(ligne.get("remise_pct", 0) or 0),
+                    float(ligne.get("remise_montant", 0) or 0),
+                    taux_tva
+                )
+                cur.execute("""
+                    INSERT INTO invoice_lines (
+                        invoice_id, numero_ligne, designation, quantite, prix_unitaire,
+                        montant_ht, taux_tva, montant_tva, montant_ttc,
+                        code_article, code_compte, famille, product_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    invoice_id, i + 1, ligne.get("designation", ""), quantite,
+                    prix_unitaire, net_ht, taux_tva, montant_tva, montant_ttc,
+                    ligne.get("code_article", ""), ligne.get("code_compte", ""),
+                    ligne.get("famille", ""), ligne.get("product_id")
+                ))
+                ligne_infos.append({
+                    "numero_ligne": i + 1, "designation": ligne.get("designation", ""),
+                    "quantite": quantite, "prix_unitaire": prix_unitaire,
+                    "montant_ht": net_ht, "taux_tva": taux_tva,
+                    "montant_tva": montant_tva, "montant_ttc": montant_ttc,
+                    "code_article": ligne.get("code_article", ""),
+                    "code_compte": ligne.get("code_compte", ""),
+                    "famille": ligne.get("famille", ""),
+                    "product_id": ligne.get("product_id")
+                })
+
+        with get_cursor() as cur:
+            cur.execute("UPDATE pos_tickets SET invoice_id = ? WHERE id = ?", (invoice_id, ticket_id))
+
+        log_sync("invoices", invoice_id, numero, "create_from_pos", "pos")
+
+        sfec_ok = False
+        sfec_error = ""
+        sfec_num = ""
+        sfec_qr = ""
+        sfec_date = ""
+        try:
+            from config_manager import get_config
+            from connectivity import is_online
+            from sfec_endpoints import certify_sqlite_invoice
+            sfec_cfg = get_config().get("sfec", {})
+            if sfec_cfg.get("enabled") and sfec_cfg.get("api_key") and is_online():
+                cert_inv = {
+                    "id": invoice_id, "numero": numero,
+                    "reference": "PAIEMENT " + mode_paiement,
+                    "date_facture": date_facture, "date_echeance": date_facture,
+                    "montant_ht": totals.get("montant_ht", 0),
+                    "montant_tva": totals.get("montant_tva", 0),
+                    "montant_ttc": totals.get("montant_ttc", 0),
+                    "tiers_nom": tiers_nom,
+                    "tiers_type": data.get("tiers_type", "particulier"),
+                    "tiers_niu": data.get("tiers_niu", ""),
+                    "tiers_telephone": data.get("tiers_telephone", ""),
+                    "tiers_email": data.get("tiers_email", ""),
+                    "tiers_adresse": data.get("tiers_adresse", ""),
+                    "lignes": ligne_infos,
+                }
+                cert_res = certify_sqlite_invoice(cert_inv)
+                sfec_num = cert_res.get("certification_number", "") or ""
+                sfec_qr = cert_res.get("qr_code", "") or ""
+                sfec_date = cert_res.get("certification_date", "") or ""
+                sfec_ok = bool(sfec_num)
+                if not sfec_ok:
+                    sfec_error = "Certification SFEC pas finalisee (id {})".format(cert_res.get("identifier", ""))
+                    with get_cursor() as cur:
+                        cur.execute("UPDATE invoices SET sfec_statut = 'EN_COURS' WHERE id = ?", (invoice_id,))
+            else:
+                sfec_error = "SFEC desactivee, cle manquante ou hors ligne"
+                with get_cursor() as cur:
+                    cur.execute("""
+                        UPDATE invoices SET sfec_statut = 'EN_COURS',
+                            notes = COALESCE(NULLIF(notes, ''), '') || 'En attente de certification SFEC. '
+                        WHERE id = ?
+                    """, (invoice_id,))
+        except Exception as e:
+            sfec_error = str(e)[:200]
+            try:
+                with get_cursor() as cur:
+                    cur.execute("""
+                        UPDATE invoices SET sfec_statut = 'ERREUR',
+                            notes = COALESCE(NULLIF(notes, ''), '') || ?
+                        WHERE id = ?
+                    """, ("Erreur SFEC: {}. ".format(str(e)[:120]), invoice_id))
+            except Exception:
+                pass
+
+        sage_ok = False
+        sage_error = ""
+        if sfec_ok:
+            try:
+                from sage_writer import write_invoice_to_sage
+                inv = {
+                    "id": invoice_id, "numero": numero,
+                    "date_facture": date_facture,
+                    "tiers_code": data.get("tiers_code", ""),
+                    "reference": "PAIEMENT " + mode_paiement,
+                    "montant_ht": totals.get("montant_ht", 0),
+                    "montant_tva": totals.get("montant_tva", 0),
+                    "montant_ttc": totals.get("montant_ttc", 0),
+                    "lignes": ligne_infos,
+                }
+                sage_res = write_invoice_to_sage(inv)
+                sage_ok = sage_res.get("success", False)
+                if not sage_ok:
+                    sage_error = sage_res.get("error", "")
+            except Exception as e:
+                sage_error = str(e)[:200]
+        else:
+            sage_error = sfec_error or "Certification SFEC requise avant ecriture Sage"
+
+        logger.info("Invoice POS creee: %s (ticket=%s, sfec_ok=%s, sage_ok=%s)",
+                    numero, ticket_id, sfec_ok, sage_ok)
+        return {"invoice_id": invoice_id, "invoice_numero": numero,
+                "sfec_ok": sfec_ok, "sfec_num_certif": sfec_num,
+                "sfec_qr_code": sfec_qr, "sfec_date_certif": sfec_date,
+                "sfec_error": sfec_error,
+                "sage_ok": sage_ok, "sage_error": sage_error}
+    except Exception as e:
+        logger.error("Creation invoice POS echouee pour ticket %s: %s", ticket_id, e)
+        return {"invoice_id": None, "invoice_numero": None,
+                "sage_ok": False, "sage_error": str(e)[:200]}
 
 
 def get_ticket(ticket_id):
@@ -66,6 +251,12 @@ def get_ticket(ticket_id):
         ticket = row_to_dict(row)
         cur.execute("SELECT * FROM pos_ticket_lines WHERE ticket_id = ? ORDER BY numero_ligne", (ticket_id,))
         ticket["lignes"] = rows_to_list(cur.fetchall())
+        cur.execute("""
+            SELECT taux_tva, COALESCE(SUM(montant_ht), 0) as ht, COALESCE(SUM(montant_tva), 0) as tva
+            FROM pos_ticket_lines WHERE ticket_id = ?
+            GROUP BY taux_tva ORDER BY taux_tva
+        """, (ticket_id,))
+        ticket["tax_breakdown"] = rows_to_list(cur.fetchall())
         return ticket
 
 
@@ -78,6 +269,12 @@ def get_ticket_by_numero(numero):
         ticket = row_to_dict(row)
         cur.execute("SELECT * FROM pos_ticket_lines WHERE ticket_id = ? ORDER BY numero_ligne", (ticket["id"],))
         ticket["lignes"] = rows_to_list(cur.fetchall())
+        cur.execute("""
+            SELECT taux_tva, COALESCE(SUM(montant_ht), 0) as ht, COALESCE(SUM(montant_tva), 0) as tva
+            FROM pos_ticket_lines WHERE ticket_id = ?
+            GROUP BY taux_tva ORDER BY taux_tva
+        """, (ticket["id"],))
+        ticket["tax_breakdown"] = rows_to_list(cur.fetchall())
         return ticket
 
 
@@ -111,9 +308,12 @@ def list_tickets(date_from=None, date_to=None, vendeur_id=None, search=None,
 
     with get_cursor() as cur:
         cur.execute("""
-            SELECT t.*, v.nom as vendeur_nom, v.prenom as vendeur_prenom
+            SELECT t.*, v.nom as vendeur_nom, v.prenom as vendeur_prenom,
+                   i.numero as invoice_numero, i.sfec_statut as sfec_statut,
+                   i.sfec_num_certif as sfec_num_certif
             FROM pos_tickets t
             LEFT JOIN vendeurs v ON t.vendeur_id = v.id
+            LEFT JOIN invoices i ON t.invoice_id = i.id
             WHERE {where}
             ORDER BY t.{sort} {dir}
             LIMIT ? OFFSET ?
@@ -180,6 +380,86 @@ def find_product_by_barcode(barcode):
         return row_to_dict(row) if row else None
 
 
+def top_selling_products(limit=10):
+    """Retourne les articles les plus vendus (via le ticket POS), complete
+    par les autres articles actifs si le nombre est insuffisant."""
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT p.*, COALESCE(SUM(pl.quantite), 0) AS total_vendu
+            FROM products p
+            LEFT JOIN pos_ticket_lines pl ON pl.product_id = p.id
+            WHERE p.est_actif = 1
+            GROUP BY p.id
+            ORDER BY total_vendu DESC, p.designation ASC
+            LIMIT ?
+        """, (limit,))
+        products = rows_to_list(cur.fetchall())
+
+    remaining = limit - len(products)
+    if remaining > 0:
+        seen = [p["id"] for p in products]
+        with get_cursor() as cur:
+            if seen:
+                placeholders = ",".join("?" for _ in seen)
+                cur.execute("""
+                    SELECT *, 0 AS total_vendu FROM products
+                    WHERE est_actif = 1 AND id NOT IN ({})
+                    ORDER BY designation LIMIT ?
+                """.format(placeholders), seen + [remaining])
+            else:
+                cur.execute("""
+                    SELECT *, 0 AS total_vendu FROM products
+                    WHERE est_actif = 1
+                    ORDER BY designation LIMIT ?
+                """, (remaining,))
+            products.extend(rows_to_list(cur.fetchall()))
+    return products
+
+
+def check_stock_available(lignes):
+    if not stock_control_enabled():
+        return {"ok": True, "manque": []}
+    manque = []
+    for ligne in lignes:
+        product_id = ligne.get("product_id")
+        if not product_id:
+            continue
+        qte = float(ligne.get("quantite", 1))
+        with get_cursor() as cur:
+            cur.execute("SELECT stock_reel as stock FROM products WHERE id = ?", (product_id,))
+            row = cur.fetchone()
+        stock = row["stock"] if row else 0
+        if qte > stock:
+            manque.append({
+                "designation": ligne.get("designation", ""),
+                "stock": stock, "qte": qte
+            })
+    return {"ok": len(manque) == 0, "manque": manque}
+
+
+def _decrement_stock(lignes):
+    for ligne in lignes:
+        product_id = ligne.get("product_id")
+        if not product_id:
+            continue
+        qte = float(ligne.get("quantite", 1))
+        with get_cursor() as cur:
+            cur.execute(
+                "UPDATE products SET stock_reel = MAX(stock_reel - ?, 0), updated_at = datetime('now') WHERE id = ?",
+                (qte, product_id)
+            )
+
+
+def get_ticket_tax_breakdown(ticket_id):
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT taux_tva, COALESCE(SUM(montant_ht), 0) as ht, COALESCE(SUM(montant_tva), 0) as tva
+            FROM pos_ticket_lines WHERE ticket_id = ?
+            GROUP BY taux_tva ORDER BY taux_tva
+        """, (ticket_id,))
+        return rows_to_list(cur.fetchall())
+
+
 def _save_ticket_lines(ticket_id, lignes):
     if not lignes:
         return
@@ -193,20 +473,24 @@ def _save_ticket_lines(ticket_id, lignes):
             code_article = ligne.get("code_article", "")
             barcode = ligne.get("barcode", "")
             product_id = ligne.get("product_id")
+            remise_pct = float(ligne.get("remise_pct", 0) or 0)
+            remise_montant = float(ligne.get("remise_montant", 0) or 0)
 
-            subtotal = round(quantite * prix_unitaire, 2)
-            montant_tva = round(subtotal * taux_tva / 100, 2)
-            montant_ttc = round(subtotal + montant_tva, 2)
+            net_ht, montant_tva, montant_ttc, remise_total = calc_line_ticket_totals(
+                quantite, prix_unitaire, remise_pct, remise_montant, taux_tva
+            )
 
             cur.execute("""
                 INSERT INTO pos_ticket_lines (
                     ticket_id, numero_ligne, designation, quantite, prix_unitaire,
                     montant_ht, taux_tva, montant_tva, montant_ttc,
+                    remise_pct, remise_montant,
                     code_article, barcode, product_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 ticket_id, numero_ligne, designation, quantite, prix_unitaire,
-                subtotal, taux_tva, montant_tva, montant_ttc,
+                net_ht, taux_tva, montant_tva, montant_ttc,
+                remise_pct, remise_total,
                 code_article, barcode, product_id
             ))
 

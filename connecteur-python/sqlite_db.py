@@ -292,7 +292,39 @@ def init_database():
         cur.executescript(SCHEMA)
     _seed_default_tax_rates()
     _seed_default_settings()
+    _migrate()
     logger.info("Base SQLite initialisee")
+
+
+def _column_exists(cur, table, column):
+    cur.execute("PRAGMA table_info({})".format(table))
+    for row in cur.fetchall():
+        if row["name"] == column:
+            return True
+    return False
+
+
+def _migrate():
+    migrations = [
+        ("pos_ticket_lines", [
+            ("remise_pct", "REAL DEFAULT 0.0"),
+            ("remise_montant", "REAL DEFAULT 0.0"),
+        ]),
+        ("pos_tickets", [
+            ("remise_globale_pct", "REAL DEFAULT 0.0"),
+            ("remise_globale_montant", "REAL DEFAULT 0.0"),
+        ]),
+    ]
+    with get_cursor() as cur:
+        for table, columns in migrations:
+            for col, definition in columns:
+                if _column_exists(cur, table, col):
+                    continue
+                try:
+                    cur.execute("ALTER TABLE {} ADD COLUMN {} {}".format(table, col, definition))
+                    logger.info("Migration: %s.%s ajoutee", table, col)
+                except Exception as e:
+                    logger.warning("Migration: %s.%s deja presente (%s)", table, col, e)
 
 
 def _seed_default_tax_rates():
@@ -344,6 +376,32 @@ def set_setting(key, value):
         )
 
 
+def update_invoice_sfec(invoice_id, sfec_id="", certification_number="",
+                        signature="", qr_code="", certification_date="", statut=""):
+    """Enregistre les donnees de certification SFEC d'une facture locale."""
+    with get_cursor() as cur:
+        cur.execute("""
+            UPDATE invoices SET
+                sfec_id = CASE WHEN ? <> '' THEN ? ELSE sfec_id END,
+                sfec_num_certif = CASE WHEN ? <> '' THEN ? ELSE sfec_num_certif END,
+                sfec_signature = CASE WHEN ? <> '' THEN ? ELSE sfec_signature END,
+                sfec_qr_code = CASE WHEN ? <> '' THEN ? ELSE sfec_qr_code END,
+                sfec_date_certif = CASE WHEN ? <> '' THEN ? ELSE sfec_date_certif END,
+                sfec_statut = CASE WHEN ? <> '' THEN ? ELSE sfec_statut END,
+                updated_at = datetime('now')
+            WHERE id = ?
+        """, (
+            sfec_id, sfec_id,
+            certification_number, certification_number,
+            signature, signature,
+            qr_code, qr_code,
+            certification_date, certification_date,
+            statut, statut,
+            invoice_id
+        ))
+    return True
+
+
 def generate_invoice_number():
     prefix = get_setting("invoice_prefix", "FA")
     fmt = get_setting("invoice_format", "FA{:06d}")
@@ -391,6 +449,18 @@ def calc_line_totals(qty, unit_price, discount_pct, tax_rate):
     return net_ht, tva, ttc
 
 
+def calc_line_ticket_totals(qty, unit_price, remise_pct, remise_montant, tax_rate):
+    subtotal = round(qty * unit_price, 2)
+    remise_pct_amt = round(subtotal * (remise_pct or 0) / 100, 2)
+    remise_total = round((remise_pct_amt + (remise_montant or 0)), 2)
+    net_ht = round(subtotal - remise_total, 2)
+    if net_ht < 0:
+        net_ht = 0.0
+    tva = round(net_ht * tax_rate / 100, 2)
+    ttc = round(net_ht + tva, 2)
+    return net_ht, tva, ttc, remise_total
+
+
 def recalc_invoice_totals(invoice_id):
     with get_cursor() as cur:
         cur.execute("""
@@ -423,10 +493,36 @@ def recalc_ticket_totals(ticket_id):
         row = cur.fetchone()
         if row:
             cur.execute("""
+                SELECT
+                    COALESCE(remise_globale_pct, 0) as r_pct,
+                    COALESCE(remise_globale_montant, 0) as r_montant
+                FROM pos_tickets WHERE id = ?
+            """, (ticket_id,))
+            trow = cur.fetchone()
+            total_ht = row["total_ht"]
+            total_tva = row["total_tva"]
+            total_ttc = row["total_ttc"]
+            r_pct = trow["r_pct"] if trow else 0.0
+            r_montant = trow["r_montant"] if trow else 0.0
+            if r_montant or r_pct:
+                base = total_ttc
+                global_remise_ttc = round(base * r_pct / 100, 2) if r_pct else 0.0
+                applied_remise_ttc = global_remise_ttc + r_montant
+                # Recompute HT/TVA proportionally to keep VAT correct
+                if total_ttc and total_ttc > 0:
+                    ratio = max((total_ttc - applied_remise_ttc) / total_ttc, 0)
+                else:
+                    ratio = 0
+                total_ht = round(total_ht * ratio, 2)
+                total_tva = round(total_tva * ratio, 2)
+                total_ttc = max(round(total_ttc - applied_remise_ttc, 2), 0.0)
+            cur.execute("""
                 UPDATE pos_tickets SET
                     montant_ht = ?, montant_tva = ?, montant_ttc = ?
                 WHERE id = ?
-            """, (row["total_ht"], row["total_tva"], row["total_ttc"], ticket_id))
+            """, (total_ht, total_tva, total_ttc, ticket_id))
+            return {"montant_ht": total_ht, "montant_tva": total_tva, "montant_ttc": total_ttc}
+    return {"montant_ht": 0, "montant_tva": 0, "montant_ttc": 0}
 
 
 def log_sync(table_name, record_id, record_numero, action, direction, status="pending", error=""):

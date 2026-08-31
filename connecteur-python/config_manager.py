@@ -116,6 +116,9 @@ def _defaults():
             "login_password": "CHANGE-ME",
             "session_max_age_hours": 24,
         },
+        "pos": {
+            "stock_control": True,
+        },
         "log_level": "info",
     }
 

@@ -19,11 +19,38 @@ def get_sync_stats():
         return dict(_sync_stats)
 
 
+def push_invoice_to_sage(invoice_id):
+    with get_cursor() as cur:
+        cur.execute("SELECT * FROM invoices WHERE id = ?", (invoice_id,))
+        row = cur.fetchone()
+        if not row:
+            return {"success": False, "error": "Facture non trouvee"}
+        inv = dict(row)
+        if inv.get("synced_sage"):
+            return {"success": True, "already": True}
+        if inv.get("statut") == "brouillon":
+            return {"success": False, "error": "Facture brouillon: valider avant de pousser"}
+        if inv.get("source") == "pos" and not (inv.get("sfec_num_certif") or ""):
+            return {"success": False, "error": "Certification SFEC requise avant ecriture Sage"}
+        cur.execute("SELECT * FROM invoice_lines WHERE invoice_id = ? ORDER BY numero_ligne", (invoice_id,))
+        inv["lignes"] = rows_to_list(cur.fetchall())
+
+    result = write_invoice_to_sage(inv)
+    if result.get("success"):
+        with _sync_lock:
+            _sync_stats["pushed"] += 1
+    else:
+        with _sync_lock:
+            _sync_stats["errors"] += 1
+    return result
+
+
 def push_to_sage():
     with get_cursor() as cur:
         cur.execute("""
             SELECT * FROM invoices
-            WHERE source = 'web' AND synced_sage = 0 AND statut != 'brouillon'
+            WHERE source IN ('web', 'pos') AND synced_sage = 0 AND statut != 'brouillon'
+              AND (source != 'pos' OR (sfec_num_certif IS NOT NULL AND sfec_num_certif != ''))
             ORDER BY date_facture ASC
         """)
         unsynced = rows_to_list(cur.fetchall())
@@ -133,8 +160,56 @@ def _update_from_sage(invoice_id, sage_inv):
             ))
 
 
+def certify_pending_pos_invoices():
+    """Re-tente la certification SFEC des factures POS pas encore certifiees
+    (vrai rejet / panne lors de la validation du ticket)."""
+    try:
+        from config_manager import get_config
+        from sfec_endpoints import certify_sqlite_invoice
+        from connectivity import is_online
+    except Exception as e:
+        logger.error("certify_pending_pos_invoices: imports: %s", e)
+        return {"certified": 0, "errors": 0}
+
+    cfg = get_config().get("sfec", {})
+    if not cfg.get("enabled") or not cfg.get("api_key"):
+        return {"certified": 0, "errors": 0}
+    if not is_online():
+        return {"certified": 0, "errors": 0}
+
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT * FROM invoices
+            WHERE source = 'pos' AND synced_sage = 0
+              AND (sfec_num_certif IS NULL OR sfec_num_certif = '' OR LENGTH(sfec_num_certif) > 40)
+              AND (sfec_statut NOT IN ('CERTIFIE', 'DEJA_CERTIFIE') OR LENGTH(sfec_num_certif) > 40)
+            ORDER BY date_facture ASC
+        """)
+        pending = rows_to_list(cur.fetchall())
+
+    certified = 0
+    errors = 0
+    for inv in pending:
+        with get_cursor() as cur:
+            cur.execute("SELECT * FROM invoice_lines WHERE invoice_id = ? ORDER BY numero_ligne", (inv["id"],))
+            inv["lignes"] = rows_to_list(cur.fetchall())
+        try:
+            certify_sqlite_invoice(inv)
+            certified += 1
+        except Exception as e:
+            errors += 1
+            logger.error("Certification SFEC POS (retry) %s: %s", inv.get("numero"), str(e)[:200])
+
+    if pending:
+        logger.info("Certification SFEC POS en attente: %d certifiees, %d erreurs", certified, errors)
+    with _sync_lock:
+        _sync_stats["certified"] = _sync_stats.get("certified", 0) + certified
+    return {"certified": certified, "errors": errors}
+
+
 def full_sync():
     logger.info("Demarrage sync bidirectionnelle...")
+    cert_result = certify_pending_pos_invoices()
     push_result = push_to_sage()
     pull_result = pull_from_sage()
 
@@ -145,10 +220,12 @@ def full_sync():
         "pushed": push_result["pushed"],
         "pull_new": pull_result.get("new", 0),
         "pull_updated": pull_result.get("updated", 0),
-        "errors": push_result["errors"],
+        "certified": cert_result.get("certified", 0),
+        "errors": push_result["errors"] + cert_result.get("errors", 0),
     }
-    logger.info("Sync terminee: push=%d, pull_new=%d, pull_updated=%d, errors=%d",
-                total["pushed"], total["pull_new"], total["pull_updated"], total["errors"])
+    logger.info("Sync terminee: push=%d, pull_new=%d, pull_updated=%d, certif=%d, errors=%d",
+                total["pushed"], total["pull_new"], total["pull_updated"],
+                total["certified"], total["errors"])
     return total
 
 

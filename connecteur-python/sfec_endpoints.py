@@ -311,9 +311,9 @@ def validate_sfec_payload(payload):
 
 
 def _extract_cert_data(sfec_inv):
-    cert_number = (sfec_inv.get("certification_number", "")
+    cert_number = (sfec_inv.get("certification_short_signature", "")
                    or sfec_inv.get("short_signature", "")
-                   or sfec_inv.get("certification_short_signature", ""))
+                   or sfec_inv.get("certification_number", ""))
     sig = (sfec_inv.get("signature", "")
            or sfec_inv.get("certification_signature", "")
            or sfec_inv.get("short_signature", ""))
@@ -484,7 +484,25 @@ def certify_sqlite_invoice(invoice):
         raise Exception(msg)
 
     client = SfecClient()
-    result = client.certify(sfec_req)
+    recovered = False
+    try:
+        result = client.certify(sfec_req)
+    except Exception as e:
+        if getattr(e, "status_code", None) == 409 and invoice.get("numero"):
+            logger.info("SFEC: %s deja certifiee (409) - recuperation des donnees...", invoice.get("numero"))
+            existing = client.verify_by_invoice_number(str(invoice.get("numero")))
+            if existing:
+                existing = dict(existing)
+                existing["identifier"] = (existing.get("sfec_id")
+                                          or existing.get("identifier")
+                                          or existing.get("id")
+                                          or "DEJA_CERTIFIE")
+                result = existing
+                recovered = True
+            else:
+                raise
+        else:
+            raise
 
     identifier = result.get("identifier", "")
     if not identifier:
@@ -500,26 +518,45 @@ def certify_sqlite_invoice(invoice):
                 if full_data:
                     cert_number, sig, qr, cert_date = _extract_cert_data(full_data)
                     if cert_number:
-                        result.update(full_data)
+                        try:
+                            result.update(full_data)
+                        except Exception:
+                            result = full_data
                         break
             except Exception:
                 pass
 
     import sqlite_db
+    if not cert_number:
+        sqlite_db.update_invoice_sfec(
+            invoice["id"],
+            sfec_id=identifier,
+            statut="EN_COURS"
+        )
+        logger.warning("SFEC: certification en cours pour %s (id %s)", invoice.get("numero"), identifier)
+        return {
+            "success": True,
+            "identifier": identifier,
+            "certification_number": "",
+            "certification_date": "",
+            "signature": "",
+            "qr_code": "",
+        }
+
     sqlite_db.update_invoice_sfec(
         invoice["id"],
         sfec_id=identifier,
-        certification_number=cert_number or "",
+        certification_number=cert_number,
         signature=sig or "",
         qr_code=qr or "",
         certification_date=cert_date or "",
-        statut="CERTIFIE" if cert_number else "EN_COURS"
+        statut="DEJA_CERTIFIE" if recovered else "CERTIFIE"
     )
 
     return {
         "success": True,
         "identifier": identifier,
-        "certification_number": cert_number or "",
+        "certification_number": cert_number,
         "certification_date": cert_date or "",
         "signature": sig or "",
         "qr_code": qr or "",

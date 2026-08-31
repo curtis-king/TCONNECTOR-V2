@@ -133,7 +133,8 @@ def get_invoice_by_numero(numero):
 
 
 def list_invoices(type_doc=None, statut=None, source=None, search=None,
-                  date_from=None, date_to=None, limit=200, offset=0):
+                  date_from=None, date_to=None, limit=200, offset=0,
+                  sort_by="date_facture", sort_dir="DESC"):
     where_clauses = []
     params = []
 
@@ -158,11 +159,17 @@ def list_invoices(type_doc=None, statut=None, source=None, search=None,
         params.append(date_to)
 
     where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+
+    allowed_sorts = {"date_facture", "statut", "source", "numero", "montant_ttc", "id", "tiers_nom"}
+    if sort_by not in allowed_sorts:
+        sort_by = "date_facture"
+    sort_dir = "ASC" if (sort_dir or "DESC").upper() == "ASC" else "DESC"
+
     params.extend([limit, offset])
 
     with get_cursor() as cur:
         cur.execute(
-            "SELECT * FROM invoices WHERE {} ORDER BY date_facture DESC, id DESC LIMIT ? OFFSET ?".format(where_sql),
+            "SELECT * FROM invoices WHERE {} ORDER BY {} {} LIMIT ? OFFSET ?".format(where_sql, sort_by, sort_dir),
             params
         )
         invoices = rows_to_list(cur.fetchall())

@@ -13,6 +13,7 @@ if SCRIPT_DIR not in sys.path:
 from config_manager import load_config
 from database import ping_database, discover_tables, close_pool
 from sync_engine import start_polling, stop_polling, sync_all
+from sync_bidirectional import start_bi_sync, stop_bi_sync
 from dashboard import app
 from connectivity import start_background_check, stop_background_check
 
@@ -40,6 +41,10 @@ class TConnectorService(win32serviceutil.ServiceFramework):
         win32event.SetEvent(self.stop_event)
         try:
             stop_polling()
+        except Exception:
+            pass
+        try:
+            stop_bi_sync()
         except Exception:
             pass
         try:
@@ -88,6 +93,10 @@ class TConnectorService(win32serviceutil.ServiceFramework):
 
         logger.info("Demarrage du polling...")
         start_polling()
+        _db_cfg = load_config().get("database", {})
+        _interval = max(_db_cfg.get("polling_interval_ms", 30000) // 1000, 15)
+        logger.info("Demarrage de la sync bidirectionnelle (intervalle: %ds)...", _interval)
+        start_bi_sync(interval=_interval)
         start_background_check()
 
         cfg = load_config()

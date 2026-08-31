@@ -199,8 +199,9 @@ def _build_conn_string(cfg):
     preferred = [
         "ODBC Driver 17 for SQL Server",
         "ODBC Driver 13 for SQL Server",
-        "SQL Server Native Client 11.0",
+        "ODBC Driver 11 for SQL Server",
         "SQL Server",
+        "SQL Server Native Client 11.0",
     ]
     driver = next((d for d in preferred if d in available), "SQL Server")
 
@@ -384,11 +385,25 @@ def discover_tables():
                     cur.execute("""
                         SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES
                         WHERE TABLE_TYPE = 'BASE TABLE' AND TABLE_NAME LIKE ?
+                        ORDER BY TABLE_NAME
                     """, pattern)
-                    row = cur.fetchone()
-                    if row:
-                        table_map[logical] = row[0]
-                        logger.info("Table trouvee par LIKE '%s': %s", pattern, row[0])
+                    candidates_like = [row[0] for row in cur.fetchall()]
+
+                if logical == "third_party":
+                    candidates_like = [
+                        n for n in candidates_like
+                        if not any(s in n.upper() for s in
+                                   ("INFOS", "ARCHIVE", "HISTO", "TICKET"))
+                    ]
+
+                for name in candidates_like:
+                    cols = _discover_columns(name)
+                    if logical == "third_party" and not (cols & {"CT_TYPE", "CT_INTITULE", "CT_NOM"}):
+                        continue
+                    table_map[logical] = name
+                    found = True
+                    logger.info("Table trouvee par LIKE '%s': %s", pattern, name)
+                    break
 
         _TABLE_MAP = table_map
         logger.info("Tables Sage 100: %s", table_map)
@@ -472,6 +487,17 @@ def _get_tiers_col():
     return None
 
 
+def _tiers_name_expr(alias="c"):
+    """Genere l'expression SQL du nom du tiers selon les colonnes disponibles."""
+    t = get_table_map()
+    tp_table = t.get("third_party", "")
+    tp_cols = _TABLE_COLUMNS.get(tp_table.upper(), set()) if tp_table else set()
+    for col in ("CT_Intitule", "CT_IntitulePayeur", "CT_RaisonSociale", "CT_Libelle"):
+        if col.upper() in tp_cols:
+            return "ISNULL({}.{}, '') AS nom_tiers".format(alias, col)
+    return "'' AS nom_tiers"
+
+
 def _refresh_sfec_columns():
     try:
         ensure_sfec_columns()
@@ -510,9 +536,9 @@ def fetch_sales_invoices(updated_from=None, limit=None):
     has_third_party_cols = bool(_TABLE_COLUMNS.get(t.get("third_party", "").upper(), set()))
     tp_cols = _TABLE_COLUMNS.get(t.get("third_party", "").upper(), set()) if has_third_party else set()
 
-    if tiers_col and has_third_party and has_third_party_cols:
+    if tiers_col and has_third_party and has_third_party_cols and "CT_NUM" in tp_cols:
         tiers_select = "d.{} AS code_tiers".format(tiers_col)
-        nom_tiers_select = "ISNULL(c.CT_Intitule, '') AS nom_tiers"
+        nom_tiers_select = _tiers_name_expr()
         niu_select = "ISNULL(c.CT_NIU, '') AS recipient_niu" if "CT_NIU" in tp_cols else "'' AS recipient_niu"
         phone_select = "ISNULL(c.CT_Telephone, '') AS recipient_phone" if "CT_TELEPHONE" in tp_cols else "'' AS recipient_phone"
         email_select = "ISNULL(c.CT_EMail, '') AS recipient_email" if "CT_EMAIL" in tp_cols else "'' AS recipient_email"
@@ -816,9 +842,9 @@ def fetch_purchase_invoices(updated_from=None, limit=None):
     has_third_party_cols = bool(_TABLE_COLUMNS.get(t.get("third_party", "").upper(), set()))
     tp_cols = _TABLE_COLUMNS.get(t.get("third_party", "").upper(), set()) if has_third_party else set()
 
-    if tiers_col and has_third_party and has_third_party_cols:
+    if tiers_col and has_third_party and has_third_party_cols and "CT_NUM" in tp_cols:
         tiers_select = "d.{} AS code_tiers".format(tiers_col)
-        nom_tiers_select = "ISNULL(c.CT_Intitule, '') AS nom_tiers"
+        nom_tiers_select = _tiers_name_expr()
         niu_select = "ISNULL(c.CT_NIU, '') AS recipient_niu" if "CT_NIU" in tp_cols else "'' AS recipient_niu"
         phone_select = "ISNULL(c.CT_Telephone, '') AS recipient_phone" if "CT_TELEPHONE" in tp_cols else "'' AS recipient_phone"
         email_select = "ISNULL(c.CT_EMail, '') AS recipient_email" if "CT_EMAIL" in tp_cols else "'' AS recipient_email"
@@ -1000,15 +1026,17 @@ def _fetch_purchase_invoices_fallback(dc, t):
 def fetch_contacts(type_filter=None):
     t = get_table_map()
     if not t["third_party"]:
-        logger.error("Table tiers introuvable")
+        logger.warning("Table tiers introuvable")
         return []
 
     where = ""
     params = []
-    if type_filter == "client":
-        where = "WHERE c.CT_Type = 0"
-    elif type_filter == "fournisseur":
-        where = "WHERE c.CT_Type = 1"
+    has_type = "CT_TYPE" in tp_cols
+    if has_type:
+        if type_filter == "client":
+            where = "WHERE c.CT_Type = 0"
+        elif type_filter == "fournisseur":
+            where = "WHERE c.CT_Type = 1"
 
     tp_cols = _TABLE_COLUMNS.get(t["third_party"].upper(), set())
 
@@ -1026,6 +1054,20 @@ def fetch_contacts(type_filter=None):
     else:
         modif_select = "'' AS date_modification"
 
+    if has_type:
+        type_select = """CASE c.CT_Type
+                            WHEN 0 THEN 'Client'
+                            WHEN 1 THEN 'Fournisseur'
+                            WHEN 2 THEN 'Les deux'
+                            ELSE 'Inconnu'
+                        END AS type_tiers"""
+        client_flag = "CASE WHEN c.CT_Type IN (0, 2) THEN 1 ELSE 0 END AS est_client"
+        fourni_flag = "CASE WHEN c.CT_Type IN (1, 2) THEN 1 ELSE 0 END AS est_fournisseur"
+    else:
+        type_select = "'' AS type_tiers"
+        client_flag = "1 AS est_client"
+        fourni_flag = "1 AS est_fournisseur"
+
     intitule_available = "CT_INTITULE" in tp_cols
     if intitule_available:
         name_select = "ISNULL(c.CT_Intitule, '') AS nom"
@@ -1041,14 +1083,9 @@ def fetch_contacts(type_filter=None):
                     c.CT_Num AS id,
                     c.CT_Num AS code,
                     {nom},
-                    CASE c.CT_Type
-                        WHEN 0 THEN 'Client'
-                        WHEN 1 THEN 'Fournisseur'
-                        WHEN 2 THEN 'Les deux'
-                        ELSE 'Inconnu'
-                    END AS type_tiers,
-                    CASE WHEN c.CT_Type IN (0, 2) THEN 1 ELSE 0 END AS est_client,
-                    CASE WHEN c.CT_Type IN (1, 2) THEN 1 ELSE 0 END AS est_fournisseur,
+                    {type},
+                    {client_flag},
+                    {fourni_flag},
                     {email},
                     {phone},
                     {niu},
@@ -1058,7 +1095,8 @@ def fetch_contacts(type_filter=None):
                 {where}
                 {order}
             """.format(
-                nom=name_select, email=email_select, phone=phone_select,
+                nom=name_select, type=type_select, client_flag=client_flag, fourni_flag=fourni_flag,
+                email=email_select, phone=phone_select,
                 niu=niu_select, create=create_select, modif=modif_select,
                 tbl=t["third_party"], where=where, order=order_by
             ), params)
@@ -1072,7 +1110,7 @@ def fetch_contacts(type_filter=None):
 def fetch_tax_rates():
     t = get_table_map()
     if not t["tax_rate"]:
-        logger.error("Table TVA introuvable")
+        logger.warning("Table TVA introuvable")
         return []
 
     try:
@@ -1111,7 +1149,7 @@ def fetch_tax_rates():
 def fetch_ledger_accounts():
     t = get_table_map()
     if not t["chart_of_accounts"]:
-        logger.error("Table plan comptable introuvable")
+        logger.warning("Table plan comptable introuvable")
         return []
 
     try:
@@ -1178,7 +1216,7 @@ def fetch_articles(limit=None):
     type_s = _col(("AR_TYPE",), "0")
     prix_vente_s = _col(("AR_PRIXVEN", "AR_PRIXVENTE", "AR_PRIXVENNOUV", "AR_PRIXTTC"), "0")
     prix_achat_s = _col(("AR_PRIXACH", "AR_PRIXACHAT", "AR_PRIXACHNOUV"), "0")
-    unite_s = _col(("AR_UNITEVEN", "AR_UNITE", "AR_UNITVENTE"), "'U'")
+    unite_s = _col(("AR_UNITEVEN", "AR_UNITE", "AR_UNITVENTE"), "'U'", cast=True)
     inactif_s = _col(("AR_INACTIF",), "0")
     barcode_s = _col(("AR_CODEBARRE",), "''")
     tva_s = _col(("AR_CODETVA", "FA_CODETVA"), "'18'", cast=True)
@@ -1250,7 +1288,7 @@ def _merge_article_stock(articles, article_tbl):
     try:
         with get_cursor() as cur:
             cur.execute("""
-                SELECT TRIM(AR_Ref) AS ar_ref, SUM(AS_QteSto) AS qte
+                SELECT RTRIM(LTRIM(AR_Ref)) AS ar_ref, SUM(AS_QteSto) AS qte
                 FROM F_ARTSTOCK
                 GROUP BY AR_Ref
             """)
