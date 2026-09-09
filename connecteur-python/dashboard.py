@@ -45,6 +45,84 @@ def _esc(val):
     return html.escape(str(val))
 
 
+def _to_num(val):
+    try:
+        return float(str(val).replace("\u00a0", "").replace(" ", "").replace(",", "."))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _fmt_money(val):
+    """Montant entier avec separateurs de milliers (espaces insecables)."""
+    n = int(round(_to_num(val)))
+    return "{:,.0f}".format(n).replace(",", "\u00a0")
+
+
+def _fmt_qty(val):
+    f = _to_num(val)
+    if f == int(f):
+        return "{:,.0f}".format(int(f)).replace(",", "\u00a0")
+    return ("{:,.2f}".format(f).replace(",", "\u00a0")).replace(".", ",")
+
+
+_NWU = ["", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf",
+        "dix", "onze", "douze", "treize", "quatorze", "quinze", "seize",
+        "dix-sept", "dix-huit", "dix-neuf"]
+_NWT = ["", "dix", "vingt", "trente", "quarante", "cinquante", "soixante"]
+
+
+def _nw_cent(n):
+    if n < 20:
+        return _NWU[n]
+    d, u = divmod(n, 10)
+    if d == 7:
+        if u == 0:
+            return "soixante-dix"
+        if u == 1:
+            return "soixante-et-onze"
+        return "soixante-" + _NWU[10 + u]
+    if d == 8:
+        if u == 0:
+            return "quatre-vingt"
+        if u == 1:
+            return "quatre-vingt-un"
+        return "quatre-vingt-" + _NWU[u]
+    if d == 9:
+        return "quatre-vingt-" + _NWU[10 + u]
+    base = _NWT[d]
+    if u == 0:
+        return base
+    return base + (" et un" if u == 1 else "-" + _NWU[u])
+
+
+def _nw_mille(n):
+    if n < 100:
+        return _nw_cent(n)
+    c, r = divmod(n, 100)
+    if c == 1:
+        head = "cent"
+    else:
+        head = _NWU[c] + " cent" + ("s" if r == 0 else "")
+    return (head + (" " + _nw_cent(r) if r else "")).strip()
+
+
+def _nw_amt(n):
+    """Montant en toutes lettres (0 a 999 999 999)."""
+    n = int(round(_to_num(n)))
+    if n == 0:
+        return "zero"
+    parts = []
+    m, r = divmod(n, 1000000)
+    if m:
+        parts.append(_nw_mille(m) + (" million" if m == 1 else " millions"))
+    t, r = divmod(r, 1000)
+    if t:
+        parts.append("mille" if t == 1 else _nw_mille(t) + " mille")
+    if r:
+        parts.append(_nw_mille(r))
+    return " ".join(parts)
+
+
 def _get_secret_key():
     cfg = get_config().get("dashboard", {})
     key = cfg.get("session_secret", "")
@@ -1225,21 +1303,64 @@ def certified_page():
     cache = get_cache()
     last_sfec = cache.get("last_sfec_sync_at", "")
     body = r"""
-<div class="card"><h2>Factures certifiees SFEC</h2>
+<div class="page-header">
+  <div>
+    <div class="breadcrumb">SFEC / Certifications</div>
+    <h1>Factures certifiees SFEC</h1>
+    <p style="font-size:13px;color:#64748b;margin-top:4px">Suivi des certifications transmises vers la plateforme SFEC</p>
+  </div>
+  <div class="topbar-actions no-print" style="margin:0">
+    <span id="sfec-status" class="desc" style="font-size:12px;margin:0">Derniere sync: @LAST@</span>
+    <button class="btn btn-sm btn-success no-print" id="sfec-refresh" onclick="refreshCert()">Sync SFEC</button>
+  </div>
+</div>
+
 <div class="stat-grid" style="margin-bottom:16px">
-<div class="stat"><div class="value" id="c-tot">-</div><div class="label">Factures SFEC</div></div>
-<div class="stat"><div class="value" id="c-aff">-</div><div class="label">Affichées</div></div>
+  <div class="stat">
+    <div class="icon-chip" style="background:#eff6ff;color:#2563eb">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="m9 15 2 2 4-4"/></svg>
+    </div>
+    <div class="value" id="c-tot">-</div>
+    <div class="label">Factures SFEC</div>
+  </div>
+  <div class="stat">
+    <div class="icon-chip" style="background:#f0fdf4;color:#16a34a">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+    </div>
+    <div class="value" id="c-aff">-</div>
+    <div class="label">Affichées</div>
+  </div>
+  <div class="stat">
+    <div class="icon-chip" style="background:#fef3c7;color:#d97706">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2"/><path d="M6 12h.01M18 12h.01"/></svg>
+    </div>
+    <div class="value" id="c-mont">-</div>
+    <div class="label">Montant filtre (FCFA)</div>
+  </div>
 </div>
-<button class="btn btn-sm btn-success no-print" id="sfec-refresh" onclick="refreshCert()">Sync SFEC</button>
-<span id="sfec-status" style="margin-left:8px;font-size:12px;color:#64748b">Derniere sync: @LAST@</span>
-<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:14px">
-<input id="c-search" placeholder="N° facture, client..." style="min-width:240px;padding:8px 10px;border:1px solid #334155;border-radius:8px;background:#0f172a;color:#e2e8f0">
-<select id="c-statut" style="height:38px;padding:0 8px;border:1px solid #334155;border-radius:8px;background:#0f172a;color:#e2e8f0"><option value="">Tous statuts</option></select>
-<input type="date" id="c-dfrom" title="Date certif depuis" style="height:38px;padding:0 8px;border:1px solid #334155;border-radius:8px;background:#0f172a;color:#e2e8f0;color-scheme:dark">
-<span style="color:#94a3b8">→</span>
-<input type="date" id="c-dto" title="Date certif jusqu'a" style="height:38px;padding:0 8px;border:1px solid #334155;border-radius:8px;background:#0f172a;color:#e2e8f0;color-scheme:dark">
-<button class="btn btn-sm no-print" onclick="resetCerts()">Reinitialiser</button>
-</div>
+
+<div class="card">
+  <h2>Filtres</h2>
+  <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end">
+<div style="flex:1;min-width:220px">
+      <label>Recherche</label>
+      <input type="text" id="c-search" placeholder="N° facture, client...">
+    </div>
+    <div style="min-width:170px">
+      <label>Statut</label>
+      <select id="c-statut"><option value="">Tous statuts</option></select>
+    </div>
+    <div>
+      <label>Date certif depuis</label>
+      <input type="date" id="c-dfrom" title="Date certif depuis">
+    </div>
+    <span class="desc" style="padding-bottom:10px">&rarr;</span>
+    <div>
+      <label>Jusqu'au</label>
+      <input type="date" id="c-dto" title="Date certif jusqu'a">
+    </div>
+    <div><button class="btn btn-sm btn-ghost no-print" onclick="resetCerts()">Reinitialiser</button></div>
+  </div>
 </div>
 <div class="card"><h2>Liste des certifications à revoir</h2>
 <table><thead>
@@ -1294,6 +1415,9 @@ function renderCert(){
   var rows=filteredCert();
   document.getElementById("c-tot").textContent=bsC.list.length;
   document.getElementById("c-aff").textContent=rows.length;
+  var mt=0;
+  for(var i=0;i<rows.length;i++){mt+=parseFloat(rows[i].montant)||0;}
+  document.getElementById("c-mont").textContent=fmtMoney(mt);
   var maxPage=Math.max(1,Math.ceil(rows.length/bsC.limit));
   if(bsC.page>maxPage)bsC.page=maxPage;
   var start=(bsC.page-1)*bsC.limit;
@@ -1319,7 +1443,7 @@ function pagC(){
   var rows=filteredCert();
   var maxPage=Math.max(1,Math.ceil(rows.length/bsC.limit));
   var html='<span style="color:#94a3b8;margin-right:8px">'+rows.length+' facture(s)</span>';
-  html+='<select onchange="setLimitC(this.value)" style="height:32px;padding:0 8px;border:1px solid #334155;border-radius:8px;background:#0f172a;color:#e2e8f0">';
+  html+='<select onchange="setLimitC(this.value)" style="height:32px;width:auto;padding:0 8px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;color:#1e293b">';
   for(var i=0;i<bsC.per.length;i++){html+='<option value="'+bsC.per[i]+'"'+(bsC.limit===bsC.per[i]?' selected':'')+'>'+bsC.per[i]+'</option>';}
   html+='</select>';
   html+='<button class="btn btn-sm" onclick="pgC('+(bsC.page-1)+')"'+(bsC.page<=1?' disabled':'')+'>Prec</button>';
@@ -1367,6 +1491,8 @@ function loadCerts(){
   }).catch(function(e){
     document.getElementById("cert-body").innerHTML='<tr><td colspan="6" style="text-align:center;color:#64748b">Erreur de chargement: '+e+'</td></tr>';
     document.getElementById("c-tot").textContent="0";
+    document.getElementById("c-aff").textContent="0";
+    document.getElementById("c-mont").textContent="0";
     document.getElementById("sfec-refresh").disabled=false;
   });
 }
@@ -1395,118 +1521,211 @@ def print_certified(invoice_id):
 
     company = get_config().get("company", {})
     qr_code = inv.get("qr_code") or inv.get("certification_qr_code") or ""
-    is_image = qr_code.startswith("data:")
+    is_image = isinstance(qr_code, str) and qr_code.startswith("data:")
     if qr_code:
-        qr_display = '<img src="{}" style="max-width:200px;max-height:200px">'.format(qr_code) if is_image else '<pre style="font-size:10px;word-break:break-all">{}</pre>'.format(qr_code)
+        qr_display = ('<img class="qr-img" alt="QR code SFEC" src="{}">'.format(qr_code)
+                      if is_image else '<pre class="qr-text">{}</pre>'.format(_esc(qr_code)))
     else:
-        qr_display = '<p style="color:#999">QR Code non disponible</p>'
+        qr_display = '<p style="color:#94a3b8">QR Code non disponible</p>'
 
     items = inv.get("items_json") or []
     item_rows = ""
     for item in items:
-        item_rows += "<tr><td>{}</td><td style='text-align:right'>{}</td><td style='text-align:right'>{:,.0f}</td><td style='text-align:right'>{}</td><td style='text-align:right'>{:,.0f}</td></tr>".format(
+        tax = item.get("tax_rate", "0")
+        tax_txt = _esc(str(tax)) + ("" if str(tax).endswith("%") else "%")
+        item_rows += (
+            "<tr><td>{}</td><td class='num'>{}</td><td class='num'>{}</td>"
+            "<td class='num'>{}</td><td class='num'>{}</td></tr>"
+        ).format(
             _esc(item.get("designation", "")),
-            item.get("quantity", 0),
-            item.get("unit_price", 0),
-            _esc(item.get("tax_rate", "0")),
-            item.get("net_amount", 0),
+            _fmt_qty(item.get("quantity", 0)),
+            _fmt_money(item.get("unit_price", 0)),
+            tax_txt,
+            _fmt_money(item.get("net_amount", 0)),
         )
 
+    currency = _esc(inv.get("currency", "XAF") or "XAF")
+    buyer_name = _esc(inv.get("buyer_name", "") or "Client")
+    payment_method = _esc(inv.get("payment_method", "") or "-")
+    total_words = _nw_amt(inv.get("total_ttc", "0")).capitalize()
+
     body = """<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Facture {invoice_number} - SFEC</title>
 <style>
-body{{font-family:'Segoe UI',sans-serif;padding:40px;color:#000;background:#fff}}
-.header{{display:flex;justify-content:space-between;margin-bottom:30px;border-bottom:2px solid #333;padding-bottom:20px}}
-.company-name{{font-size:24px;font-weight:bold}}
-.company-info{{font-size:12px;color:#666}}
-.cert-box{{background:#f0f0f0;border:2px solid #333;padding:16px;margin:20px 0;border-radius:4px}}
-.cert-box h3{{margin-bottom:8px;font-size:14px}}
-table{{width:100%;border-collapse:collapse;margin:16px 0}}
-th,td{{border:1px solid #ccc;padding:8px;text-align:left;font-size:13px}}
-th{{background:#f5f5f5}}
-.total-row td{{border-top:2px solid #333;font-weight:bold;font-size:14px}}
-.qr-section{{text-align:center;margin:30px 0;padding:20px;border:1px dashed #999}}
-.footer{{margin-top:40px;font-size:11px;color:#666;border-top:1px solid #ccc;padding-top:10px}}
-@media print{{.no-print{{display:none!important}}}}
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:'Segoe UI',-apple-system,Roboto,sans-serif;background:#eef2f6;color:#111827}}
+.sheet{{max-width:820px;margin:28px auto;background:#fff;padding:0 0 6px;box-shadow:0 10px 30px rgba(15,23,42,.12);border-radius:12px;overflow:hidden}}
+.brand{{background:linear-gradient(135deg,#122a4d,#1e3a6e);color:#fff;padding:26px 34px;display:flex;justify-content:space-between;align-items:center;gap:18px;flex-wrap:wrap}}
+.brand .cname{{font-size:22px;font-weight:800;letter-spacing:-.3px}}
+.brand .cinfo{{font-size:12px;color:#cfe0f5;line-height:1.6;margin-top:3px}}
+.inv-title{{text-align:right}}
+.inv-title h1{{font-size:30px;letter-spacing:7px;font-weight:800;color:#fff;text-transform:uppercase}}
+.inv-title .sub{{font-size:12px;color:#9ec5ff;margin-top:3px;letter-spacing:1px}}
+.strip{{display:flex;align-items:center;gap:8px;background:#ecfdf5;border-bottom:1px solid #a7f3d0;padding:10px 34px;font-size:12px;color:#065f46}}
+.strip b{{color:#047857}}
+.body{{padding:22px 34px 8px}}
+.kpis{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}}
+.kpi{{border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;background:#f8fafc}}
+.kpi .k{{font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:#64748b;font-weight:700}}
+.kpi .v{{font-size:14px;font-weight:700;color:#0f172a;margin-top:3px}}
+.parties{{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px}}
+.part{{border:1px solid #e2e8f0;border-radius:10px;padding:14px 16px}}
+.part h3{{font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:#1e3a8a;margin-bottom:8px}}
+.part .name{{font-weight:700;font-size:14px;color:#0f172a;margin-bottom:4px}}
+.part .big{{font-size:20px}}
+.part .line{{font-size:12px;color:#475569;line-height:1.55}}
+table{{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:6px}}
+thead th{{background:#f1f5f9;color:#334155;text-transform:uppercase;font-size:10.5px;letter-spacing:.6px;padding:9px 10px;text-align:left;border-bottom:2px solid #dbe1ea}}
+tbody td{{padding:9px 10px;border-bottom:1px solid #eef1f5;color:#1f2937}}
+tbody tr:nth-child(even){{background:#fafbfc}}
+.num{{text-align:right;font-variant-numeric:tabular-nums}}
+.totals{{border-top:2px solid #e2e8f0;background:#fafbfc;border-radius:0 0 10px 10px;margin-top:8px}}
+.tot{{display:flex;justify-content:space-between;padding:7px 14px;font-size:12.5px;color:#475569}}
+.tot b{{color:#0f172a}}
+.tot.grand{{background:#122a4d;color:#fff;font-size:15px;font-weight:800;padding:11px 14px;margin-top:2px}}
+.tot.grand b{{color:#fff}}
+.mots{{font-size:12px;color:#334155;margin-top:12px;padding:10px 14px;border-left:3px solid #1e3a8a;background:#f8fafc;line-height:1.55}}
+.cert{{border:1px solid #d1fae5;border-radius:10px;background:#f0fdf4;padding:14px 16px;margin-top:18px}}
+.cert h3{{font-size:12px;color:#065f46;margin-bottom:8px;text-transform:uppercase;letter-spacing:.6px}}
+.cert table{{width:100%}}
+.cert td{{padding:4px 6px;border:none;font-size:11.5px;vertical-align:top}}
+.cert td:first-child{{color:#166534;font-weight:700;white-space:nowrap;width:170px}}
+.cert .siglong{{word-break:break-all;font-family:Consolas,monospace;font-size:9.5px;color:#065f46}}
+.qr{{margin:16px 0 4px;text-align:center;padding:18px;border:1px dashed #cbd5e1;border-radius:10px;background:#f8fafc}}
+.qr h3{{font-size:12px;color:#334155;margin-bottom:10px;text-transform:uppercase;letter-spacing:.6px}}
+.qr p{{font-size:11px;color:#64748b;margin-top:8px}}
+.qr-img{{width:130px;height:130px;image-rendering:pixelated}}
+.qr-text{{font-size:9px;word-break:break-all;color:#475569}}
+.sig{{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:26px 0 8px}}
+.sig .box{{height:110px;display:flex;flex-direction:column;justify-content:flex-end;padding-bottom:8px;font-size:11px;color:#64748b;border-bottom:1px solid #94a3b8;text-align:center}}
+footer{{margin-top:20px;padding:14px 34px;background:#f8fafc;border-top:1px solid #e2e8f0;font-size:11px;color:#64748b;text-align:center}}
+.toolbar{{display:flex;justify-content:center;gap:10px;padding:16px}}
+.toolbar .btn{{display:inline-flex;align-items:center;gap:6px;padding:9px 20px;border-radius:8px;border:none;cursor:pointer;font-size:13px;font-weight:600;text-decoration:none}}
+.toolbar .print{{background:linear-gradient(135deg,#1d4ed8,#1e3a8a);color:#fff}}
+.toolbar .back{{background:#f1f5f9;color:#334155}}
+@page{{size:A4;margin:12mm}}
+@media print{{
+  body{{background:#fff}}
+  .sheet{{box-shadow:none;margin:0;border-radius:0;max-width:none}}
+  .toolbar{{display:none!important}}
+}}
+@media(max-width:640px){{.kpis{{grid-template-columns:1fr 1fr}}.parties,.sig{{grid-template-columns:1fr}}.brand{{flex-direction:column;text-align:center}}}}
 </style></head><body>
-<div class="header">
-<div>
-<div class="company-name">{seller_name}</div>
-<div class="company-info">{seller_addr}</div>
-<div class="company-info">NIU: {seller_niu}</div>
-<div class="company-info">RCCM: {seller_rccm}</div>
-</div>
-<div style="text-align:right">
-<h2>FACTURE</h2>
-<div class="company-info">Numero: {invoice_number}</div>
-<div class="company-info">Date: {invoice_date}</div>
-<div class="company-info">Devise: {currency}</div>
-</div>
-</div>
+<div class="sheet">
+  <div class="brand">
+    <div>
+      <div class="cname">{seller_name}</div>
+      <div class="cinfo">{seller_addr}</div>
+      <div class="cinfo">NIU : {seller_niu}</div>
+      <div class="cinfo">RCCM : {seller_rccm}</div>
+    </div>
+    <div class="inv-title">
+      <h1>FACTURE</h1>
+      <div class="sub">{invoice_number}</div>
+    </div>
+  </div>
 
-<div style="display:flex;justify-content:space-between;margin-bottom:20px">
-<div style="border:1px solid #ccc;padding:12px;border-radius:4px;flex:1;margin-right:8px">
-<h3 style="font-size:13px;margin-bottom:8px">Client</h3>
-<div><strong>{buyer_name}</strong></div>
-<div class="company-info">NIU: {buyer_niu}</div>
-<div class="company-info">{buyer_addr}</div>
-<div class="company-info">{buyer_phone}</div>
-</div>
-<div style="border:1px solid #ccc;padding:12px;border-radius:4px;flex:1;margin-left:8px">
-<h3 style="font-size:13px;margin-bottom:8px">Paiement</h3>
-<div>Methode: {payment_method}</div>
-<div>Montant du: <strong>{amount_due} {currency}</strong></div>
-</div>
-</div>
+  <div class="strip">
+    <b>Certifiee par le SFEC</b>
+    <span>&mdash; document juridiquement valable (decret n&deg; 2026-101 du 31 mars 2026)</span>
+  </div>
 
-<table>
-<thead><tr><th>Designation</th><th style="text-align:right">Qte</th><th style="text-align:right">Prix unit.</th><th style="text-align:right">TVA</th><th style="text-align:right">Montant HT</th></tr></thead>
-<tbody>{item_rows}
-<tr class="total-row"><td colspan="4">Total HT</td><td style="text-align:right">{total_ht} {currency}</td></tr>
-<tr class="total-row"><td colspan="4">TVA 18%</td><td style="text-align:right">{total_tax18} {currency}</td></tr>
-<tr class="total-row"><td colspan="4">TVA 5%</td><td style="text-align:right">{total_tax5} {currency}</td></tr>
-<tr class="total-row"><td colspan="4"><strong>TOTAL TTC</strong></td><td style="text-align:right"><strong>{total_ttc} {currency}</strong></td></tr>
-</tbody></table>
+  <div class="body">
+    <div class="kpis">
+      <div class="kpi"><div class="k">Numero</div><div class="v">{invoice_number}</div></div>
+      <div class="kpi"><div class="k">Date</div><div class="v">{invoice_date}</div></div>
+      <div class="kpi"><div class="k">Devise</div><div class="v">{currency}</div></div>
+      <div class="kpi"><div class="k">Mode de paiement</div><div class="v">{payment_method}</div></div>
+    </div>
 
-<div class="cert-box">
-<h3>SFEC - Systeme de Facturation Electronique Certifie</h3>
-<table>
-<tr><td><strong>Statut certification</strong></td><td>{cert_status}</td></tr>
-<tr><td><strong>Signature courte</strong></td><td>{short_sig}</td></tr>
-<tr><td><strong>Signature complete</strong></td><td style="word-break:break-all;font-size:10px">{signature}</td></tr>
-<tr><td><strong>Date de certification</strong></td><td>{cert_date}</td></tr>
-</table>
-</div>
+    <div class="parties">
+      <div class="part">
+        <h3>Vendu a</h3>
+        <div class="name">{buyer_name}</div>
+        <div class="line">NIU : {buyer_niu}</div>
+        <div class="line">{buyer_addr}</div>
+        <div class="line">{buyer_phone}</div>
+      </div>
+      <div class="part">
+        <h3>Paiement</h3>
+        <div class="line">Mode : {payment_method}</div>
+        <div class="line">Net a payer :</div>
+        <div class="name big">{amount_due} {currency}</div>
+      </div>
+    </div>
 
-<div class="qr-section">
-<h3>QR Code de certification</h3>
-{qr_display}
-</div>
+    <table>
+      <thead>
+        <tr><th style="width:46%">Designation</th><th class="num">Qte</th><th class="num">Prix unit. HT</th><th class="num">TVA</th><th class="num">Montant HT</th></tr>
+      </thead>
+      <tbody>{item_rows}</tbody>
+    </table>
 
-<div class="footer no-print">
-<button class="btn btn-primary" onclick="window.print()">Imprimer</button>
-<a href="/certified" style="margin-left:8px;color:#38bdf8">Retour</a>
+    <div class="totals">
+      <div class="tot"><span>Total HT</span><b class="num">{total_ht} {currency}</b></div>
+      <div class="tot"><span>TVA 18 %</span><b class="num">{total_tax18} {currency}</b></div>
+      <div class="tot"><span>TVA 5 %</span><b class="num">{total_tax5} {currency}</b></div>
+      <div class="tot grand"><span>TOTAL TTC</span><b class="num">{total_ttc} {currency}</b></div>
+    </div>
+
+    <div class="mots">
+      Arretee la presente facture a la somme de <b>{total_words} ({total_ttc} {currency})</b>.
+    </div>
+
+    <div class="cert">
+      <h3>Certification SFEC</h3>
+      <table>
+        <tr><td>Statut</td><td>{cert_status}</td></tr>
+        <tr><td>Date de certification</td><td>{cert_date}</td></tr>
+        <tr><td>Signature courte</td><td>{short_sig}</td></tr>
+        <tr><td>Signature complete</td><td class="siglong">{signature}</td></tr>
+      </table>
+    </div>
+
+    <div class="qr">
+      <h3>Verification de l'authenticite</h3>
+      {qr_display}
+      <p>Scannez le QR code pour verifier l'authenticite et l'integrite de cette facture sur le portail SFEC.</p>
+    </div>
+
+    <div class="sig">
+      <div class="box">Le Client<br><i>Signature et cachet</i></div>
+      <div class="box">Le Vendeur<br><i>Signature et cachet</i></div>
+    </div>
+  </div>
+
+  <footer>
+    {seller_name} &middot; NIU {seller_niu} &middot; {seller_addr}<br>
+    Facture electronique certifiee SFEC &middot; {invoice_number}
+  </footer>
+
+  <div class="toolbar no-print">
+    <button class="btn print" onclick="window.print()">Imprimer / PDF</button>
+    <a class="btn back" href="/certified">Retour a la liste</a>
+  </div>
 </div>
 </body></html>""".format(
         invoice_number=_esc(inv.get("invoice_number", "")),
         invoice_date=_esc((inv.get("invoice_date") or "")[:10]),
-        currency=_esc(inv.get("currency", "XAF")),
+        currency=currency,
         seller_name=_esc(inv.get("seller_name", company.get("name", ""))),
         seller_addr=_esc(inv.get("seller_address", company.get("address", ""))),
         seller_niu=_esc(inv.get("seller_niu", company.get("tax_number", ""))),
         seller_rccm=_esc(inv.get("seller_rccm", "")),
-        buyer_name=_esc(inv.get("buyer_name", "")),
+        buyer_name=buyer_name,
         buyer_niu=_esc(inv.get("buyer_niu", "")),
         buyer_addr=_esc(inv.get("buyer_address", "")),
         buyer_phone=_esc(inv.get("buyer_phone", "")),
-        payment_method=_esc(inv.get("payment_method", "")),
-        amount_due=_esc(inv.get("amount_due", "0")),
-        total_ht=_esc(inv.get("total_ht", "0")),
-        total_tax18=_esc(inv.get("total_tax18", "0")),
-        total_tax5=_esc(inv.get("total_tax5", "0")),
-        total_ttc=_esc(inv.get("total_ttc", "0")),
+        payment_method=payment_method,
+        amount_due=_fmt_money(inv.get("amount_due", "0")),
+        total_ht=_fmt_money(inv.get("total_ht", "0")),
+        total_tax18=_fmt_money(inv.get("total_tax18", "0")),
+        total_tax5=_fmt_money(inv.get("total_tax5", "0")),
+        total_ttc=_fmt_money(inv.get("total_ttc", "0")),
+        total_words=_esc(total_words),
         item_rows=item_rows,
-        cert_status=_esc(inv.get("certification_status", "")),
+        cert_status=_esc(inv.get("certification_status", "") or "Certifiee"),
         short_sig=_esc(inv.get("certification_short_signature", "")),
         signature=_esc(inv.get("certification_signature", "")),
         cert_date=_esc((inv.get("certification_date") or "")[:19].replace("T", " ")),

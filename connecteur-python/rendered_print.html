@@ -1,0 +1,157 @@
+<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Facture FA000001 - SFEC</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',-apple-system,Roboto,sans-serif;background:#eef2f6;color:#111827}
+.sheet{max-width:820px;margin:28px auto;background:#fff;padding:0 0 6px;box-shadow:0 10px 30px rgba(15,23,42,.12);border-radius:12px;overflow:hidden}
+.brand{background:linear-gradient(135deg,#122a4d,#1e3a6e);color:#fff;padding:26px 34px;display:flex;justify-content:space-between;align-items:center;gap:18px;flex-wrap:wrap}
+.brand .cname{font-size:22px;font-weight:800;letter-spacing:-.3px}
+.brand .cinfo{font-size:12px;color:#cfe0f5;line-height:1.6;margin-top:3px}
+.inv-title{text-align:right}
+.inv-title h1{font-size:30px;letter-spacing:7px;font-weight:800;color:#fff;text-transform:uppercase}
+.inv-title .sub{font-size:12px;color:#9ec5ff;margin-top:3px;letter-spacing:1px}
+.strip{display:flex;align-items:center;gap:8px;background:#ecfdf5;border-bottom:1px solid #a7f3d0;padding:10px 34px;font-size:12px;color:#065f46}
+.strip b{color:#047857}
+.body{padding:22px 34px 8px}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}
+.kpi{border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;background:#f8fafc}
+.kpi .k{font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:#64748b;font-weight:700}
+.kpi .v{font-size:14px;font-weight:700;color:#0f172a;margin-top:3px}
+.parties{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px}
+.part{border:1px solid #e2e8f0;border-radius:10px;padding:14px 16px}
+.part h3{font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:#1e3a8a;margin-bottom:8px}
+.part .name{font-weight:700;font-size:14px;color:#0f172a;margin-bottom:4px}
+.part .big{font-size:20px}
+.part .line{font-size:12px;color:#475569;line-height:1.55}
+table{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:6px}
+thead th{background:#f1f5f9;color:#334155;text-transform:uppercase;font-size:10.5px;letter-spacing:.6px;padding:9px 10px;text-align:left;border-bottom:2px solid #dbe1ea}
+tbody td{padding:9px 10px;border-bottom:1px solid #eef1f5;color:#1f2937}
+tbody tr:nth-child(even){background:#fafbfc}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.totals{border-top:2px solid #e2e8f0;background:#fafbfc;border-radius:0 0 10px 10px;margin-top:8px}
+.tot{display:flex;justify-content:space-between;padding:7px 14px;font-size:12.5px;color:#475569}
+.tot b{color:#0f172a}
+.tot.grand{background:#122a4d;color:#fff;font-size:15px;font-weight:800;padding:11px 14px;margin-top:2px}
+.tot.grand b{color:#fff}
+.mots{font-size:12px;color:#334155;margin-top:12px;padding:10px 14px;border-left:3px solid #1e3a8a;background:#f8fafc;line-height:1.55}
+.cert{border:1px solid #d1fae5;border-radius:10px;background:#f0fdf4;padding:14px 16px;margin-top:18px}
+.cert h3{font-size:12px;color:#065f46;margin-bottom:8px;text-transform:uppercase;letter-spacing:.6px}
+.cert table{width:100%}
+.cert td{padding:4px 6px;border:none;font-size:11.5px;vertical-align:top}
+.cert td:first-child{color:#166534;font-weight:700;white-space:nowrap;width:170px}
+.cert .siglong{word-break:break-all;font-family:Consolas,monospace;font-size:9.5px;color:#065f46}
+.qr{margin:16px 0 4px;text-align:center;padding:18px;border:1px dashed #cbd5e1;border-radius:10px;background:#f8fafc}
+.qr h3{font-size:12px;color:#334155;margin-bottom:10px;text-transform:uppercase;letter-spacing:.6px}
+.qr p{font-size:11px;color:#64748b;margin-top:8px}
+.qr-img{width:130px;height:130px;image-rendering:pixelated}
+.qr-text{font-size:9px;word-break:break-all;color:#475569}
+.sig{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:26px 0 8px}
+.sig .box{height:110px;display:flex;flex-direction:column;justify-content:flex-end;padding-bottom:8px;font-size:11px;color:#64748b;border-bottom:1px solid #94a3b8;text-align:center}
+footer{margin-top:20px;padding:14px 34px;background:#f8fafc;border-top:1px solid #e2e8f0;font-size:11px;color:#64748b;text-align:center}
+.toolbar{display:flex;justify-content:center;gap:10px;padding:16px}
+.toolbar .btn{display:inline-flex;align-items:center;gap:6px;padding:9px 20px;border-radius:8px;border:none;cursor:pointer;font-size:13px;font-weight:600;text-decoration:none}
+.toolbar .print{background:linear-gradient(135deg,#1d4ed8,#1e3a8a);color:#fff}
+.toolbar .back{background:#f1f5f9;color:#334155}
+@page{size:A4;margin:12mm}
+@media print{
+  body{background:#fff}
+  .sheet{box-shadow:none;margin:0;border-radius:0;max-width:none}
+  .toolbar{display:none!important}
+}
+@media(max-width:640px){.kpis{grid-template-columns:1fr 1fr}.parties,.sig{grid-template-columns:1fr}.brand{flex-direction:column;text-align:center}}
+</style></head><body>
+<div class="sheet">
+  <div class="brand">
+    <div>
+      <div class="cname">SODICO Trading SARL</div>
+      <div class="cinfo">Avenue Amilcar Cabral, Brazzaville</div>
+      <div class="cinfo">NIU : AA-123456</div>
+      <div class="cinfo">RCCM : RC.BZV.2020.B.002345</div>
+    </div>
+    <div class="inv-title">
+      <h1>FACTURE</h1>
+      <div class="sub">FA000001</div>
+    </div>
+  </div>
+
+  <div class="strip">
+    <b>Certifiee par le SFEC</b>
+    <span>&mdash; document juridiquement valable (decret n&deg; 2026-101 du 31 mars 2026)</span>
+  </div>
+
+  <div class="body">
+    <div class="kpis">
+      <div class="kpi"><div class="k">Numero</div><div class="v">FA000001</div></div>
+      <div class="kpi"><div class="k">Date</div><div class="v">2026-08-26</div></div>
+      <div class="kpi"><div class="k">Devise</div><div class="v">XAF</div></div>
+      <div class="kpi"><div class="k">Mode de paiement</div><div class="v">Especes</div></div>
+    </div>
+
+    <div class="parties">
+      <div class="part">
+        <h3>Vendu a</h3>
+        <div class="name">Entreprise Congo Import</div>
+        <div class="line">NIU : BB-654321</div>
+        <div class="line">Rue Mbochis, Pointe-Noire</div>
+        <div class="line">+242 06 555 55 55</div>
+      </div>
+      <div class="part">
+        <h3>Paiement</h3>
+        <div class="line">Mode : Especes</div>
+        <div class="line">Net a payer :</div>
+        <div class="name big">1 500 550 XAF</div>
+      </div>
+    </div>
+
+    <table>
+      <thead>
+        <tr><th style="width:46%">Designation</th><th class="num">Qte</th><th class="num">Prix unit. HT</th><th class="num">TVA</th><th class="num">Montant HT</th></tr>
+      </thead>
+      <tbody><tr><td>Ciment CPJ 42.5 (sac 50kg)</td><td class='num'>50</td><td class='num'>7 500</td><td class='num'>5%</td><td class='num'>375 000</td></tr><tr><td>Fer a beton 12mm (barre 12m)</td><td class='num'>2,50</td><td class='num'>345 000</td><td class='num'>18%</td><td class='num'>862 500</td></tr><tr><td>Colle blanche</td><td class='num'>1</td><td class='num'>0</td><td class='num'>18%</td><td class='num'>0</td></tr></tbody>
+    </table>
+
+    <div class="totals">
+      <div class="tot"><span>Total HT</span><b class="num">1 234 568 XAF</b></div>
+      <div class="tot"><span>TVA 18 %</span><b class="num">222 000 XAF</b></div>
+      <div class="tot"><span>TVA 5 %</span><b class="num">345 XAF</b></div>
+      <div class="tot grand"><span>TOTAL TTC</span><b class="num">1 500 550 XAF</b></div>
+    </div>
+
+    <div class="mots">
+      Arretee la presente facture a la somme de <b>Un million cinq cents mille cinq cent cinquante (1 500 550 XAF)</b>.
+    </div>
+
+    <div class="cert">
+      <h3>Certification SFEC</h3>
+      <table>
+        <tr><td>Statut</td><td>Certifiee</td></tr>
+        <tr><td>Date de certification</td><td>2026-08-26 14:45:09</td></tr>
+        <tr><td>Signature courte</td><td>sffc-5f7a12</td></tr>
+        <tr><td>Signature complete</td><td class="siglong">d42de27aff8edb432468db9126cf4c2a4cb9aebf2a5c1ea41d1da8cd92f6ab68</td></tr>
+      </table>
+    </div>
+
+    <div class="qr">
+      <h3>Verification de l'authenticite</h3>
+      <img class="qr-img" alt="QR code SFEC" src="data:image/png;base64,iVBORw0KGgo=">
+      <p>Scannez le QR code pour verifier l'authenticite et l'integrite de cette facture sur le portail SFEC.</p>
+    </div>
+
+    <div class="sig">
+      <div class="box">Le Client<br><i>Signature et cachet</i></div>
+      <div class="box">Le Vendeur<br><i>Signature et cachet</i></div>
+    </div>
+  </div>
+
+  <footer>
+    SODICO Trading SARL &middot; NIU AA-123456 &middot; Avenue Amilcar Cabral, Brazzaville<br>
+    Facture electronique certifiee SFEC &middot; FA000001
+  </footer>
+
+  <div class="toolbar no-print">
+    <button class="btn print" onclick="window.print()">Imprimer / PDF</button>
+    <a class="btn back" href="/certified">Retour a la liste</a>
+  </div>
+</div>
+</body></html>
