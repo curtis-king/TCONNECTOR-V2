@@ -29,6 +29,7 @@ from connectivity import get_status, check_now
 import sqlite_db
 import invoice_engine
 import pos_engine
+import commercial_engine
 import sage_writer
 import sync_bidirectional
 import pdf_generator
@@ -205,7 +206,7 @@ body{font-family:'Segoe UI',Tahoma,sans-serif;background:#f1f5f9;min-height:100v
 .card{background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:40px;text-align:center;max-width:420px;box-shadow:0 10px 30px rgba(15,23,42,0.06)}
 .ico{width:56px;height:56px;margin:0 auto 16px;border-radius:14px;background:#fef2f2;color:#b91c1c;display:flex;align-items:center;justify-content:center;font-size:26px}
 h1{font-size:20px;margin-bottom:8px}.sub{font-size:13px;color:#64748b;margin-bottom:20px}
-.btn{display:inline-block;background:#4f46e5;color:#fff;text-decoration:none;padding:11px 22px;border-radius:10px;font-size:14px;font-weight:600}
+.btn{display:inline-block;background:#3b82f6;color:#fff;text-decoration:none;padding:11px 22px;border-radius:10px;font-size:14px;font-weight:600}
 </style></head><body><div class="card"><div class="ico">&#128274;</div>
 <h1>Acces refuse</h1><p class="sub">Vous n'avez pas la permission <b>{label}</b> sur cette section.<br>Compte : {email}</p>
 <a class="btn" href="/">Retour au tableau de bord</a></div></body></html>"""
@@ -294,9 +295,12 @@ CSS = """*{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'Segoe UI',Tahoma,sans-serif;background:#f1f5f9;color:#1e293b;min-height:100vh;display:flex}
 .sidebar{width:250px;background:#ffffff;border-right:1px solid #e2e8f0;padding:0;position:fixed;top:0;left:0;bottom:0;overflow-y:auto;z-index:100;box-shadow:2px 0 16px rgba(15,23,42,0.05);display:flex;flex-direction:column;transition:width 0.25s ease}
 .sidebar.collapsed{width:76px}
+.sidebar.collapsed .sidebar-top{justify-content:center;padding:16px 6px 14px}
+.sidebar.collapsed .sidebar-logo{display:none}
+.sidebar.collapsed ~ .main-content{margin-left:76px;max-width:calc(100vw - 76px)}
 .sidebar-top{display:flex;align-items:center;justify-content:space-between;padding:18px 16px 14px;border-bottom:1px solid #eef2f7}
 .sidebar-logo{display:flex;align-items:center;gap:10px;text-decoration:none}
-.sidebar-logo .icon{width:34px;height:34px;flex-shrink:0;border-radius:10px;background:linear-gradient(135deg,#4f46e5,#7c3aed);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:14px;box-shadow:0 4px 10px rgba(79,70,229,0.3)}
+.sidebar-logo .icon{width:34px;height:34px;flex-shrink:0;border-radius:10px;background:linear-gradient(135deg,#3b82f6,#6366f1);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:14px;box-shadow:0 4px 10px rgba(59,130,246,0.3)}
 .sidebar-logo span{font-size:15px;font-weight:700;color:#1e293b;letter-spacing:-0.3px;white-space:nowrap;transition:opacity 0.2s}
 .sidebar-toggle{width:32px;height:32px;flex-shrink:0;border:none;border-radius:8px;background:#f1f5f9;color:#64748b;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all 0.18s}
 .sidebar-toggle:hover{background:#e2e8f0;color:#1e293b}
@@ -304,23 +308,11 @@ body{font-family:'Segoe UI',Tahoma,sans-serif;background:#f1f5f9;color:#1e293b;m
 .sidebar-nav{list-style:none;padding:8px 0;margin:0;flex:1;overflow-y:auto}
 .sidebar.collapsed .sidebar-logo span,
 .sidebar.collapsed .sidebar-nav .nav-label,
-.sidebar.collapsed .sidebar-nav li a .label,
+.sidebar.collapsed .sidebar-nav li a span:not(.icon),
 .sidebar.collapsed .sidebar-foot .net-indicator span:not(.net-dot){display:none}
-.sidebar.collapsed .sidebar-nav li a{justify-content:center;padding:11px 0;overflow:hidden}
+.sidebar.collapsed .sidebar-nav li a{justify-content:center;padding:11px 0}
 .sidebar.collapsed .sidebar-nav li a .icon{margin:0}
-.sidebar.collapsed .sidebar-top{justify-content:center;padding:18px 0 14px}
-.sidebar.collapsed .sidebar-toggle{display:none}
-.sidebar.collapsed + .main-content{margin-left:76px;max-width:calc(100vw - 76px)}
-.sidebar-nav li a .label{white-space:nowrap}
-.sidebar.collapsed:hover{width:250px;box-shadow:8px 0 28px rgba(15,23,42,.16),2px 0 8px rgba(15,23,42,.08)}
-.sidebar.collapsed:hover .sidebar-top{justify-content:space-between;padding:18px 16px 14px}
-.sidebar.collapsed:hover .sidebar-toggle{display:flex}
-.sidebar.collapsed:hover .sidebar-logo span{display:inline-block}
-.sidebar.collapsed:hover .sidebar-nav .nav-label{display:block}
-.sidebar.collapsed:hover .sidebar-nav li a .label{display:inline}
-.sidebar.collapsed:hover .sidebar-foot .net-indicator span:not(.net-dot){display:inline}
-.sidebar.collapsed:hover .sidebar-nav li a{justify-content:flex-start;padding:10px 14px;overflow:visible}
-.sidebar.collapsed:hover .sidebar-nav li a .icon{margin:0}
+.sidebar.collapsed .sidebar-toggle svg{transform:rotate(180deg)}
 .sidebar-foot{position:sticky;bottom:0;background:#ffffff;padding:14px 20px;border-top:1px solid #eef2f7}
 .net-indicator{display:flex;align-items:center;gap:8px;font-size:12px;color:#64748b}
 .net-dot{width:10px;height:10px;border-radius:50%;display:inline-block;flex-shrink:0}
@@ -331,7 +323,7 @@ body{font-family:'Segoe UI',Tahoma,sans-serif;background:#f1f5f9;color:#1e293b;m
 .sidebar-nav li{margin:2px 8px 2px 10px}
 .sidebar-nav li a{display:flex;align-items:center;gap:12px;padding:10px 14px;color:#64748b;text-decoration:none;font-size:13px;font-weight:500;transition:all 0.18s;border-radius:10px;border-left:3px solid transparent}
 .sidebar-nav li a:hover{background:#f1f5f9;color:#1e293b}
-.sidebar-nav li a.active{background:linear-gradient(90deg,rgba(79,70,229,0.12),rgba(124,58,237,0.06));color:#4f46e5;border-left-color:#4f46e5;font-weight:600;box-shadow:inset 0 0 0 1px rgba(79,70,229,0.08)}
+.sidebar-nav li a.active{background:linear-gradient(90deg,rgba(59,130,246,0.12),rgba(99,102,241,0.06));color:#3b82f6;border-left-color:#3b82f6;font-weight:600;box-shadow:inset 0 0 0 1px rgba(59,130,246,0.08)}
 .sidebar-nav .icon{width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:15px;opacity:0.75;transition:all 0.18s}
 .sidebar-nav .icon svg{width:18px;height:18px}
 .sidebar-nav li a:hover .icon,.sidebar-nav li a.active .icon{opacity:1}
@@ -340,22 +332,22 @@ body{font-family:'Segoe UI',Tahoma,sans-serif;background:#f1f5f9;color:#1e293b;m
 .sidebar-nav li a.logout-link{color:#dc2626}
 .sidebar-nav li a.logout-link:hover{background:#fef2f2;color:#b91c1c}
 .main-content{margin-left:250px;flex:1;padding:24px 32px;max-width:calc(100vw - 250px);transition:margin-left 0.25s ease}
-.topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid #eef2f7}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:10px 12px;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid #eef2f7;flex-wrap:wrap}
 .topbar-title{font-size:21px;font-weight:700;color:#0f172a}
 .topbar-actions{display:flex;align-items:center;gap:10px}
 .user-chip{display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid #e2e8f0;border-radius:999px;padding:6px 14px;font-size:12px;font-weight:600;color:#334155}
-.user-chip .ava{width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700}
+.user-chip .ava{width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg,#3b82f6,#6366f1);color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700}
 .page-header{margin-bottom:24px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}
 .page-header h1{font-size:22px;font-weight:700;color:#1e293b;margin:0}
 .breadcrumb{font-size:12px;color:#64748b;margin-bottom:4px}
-.breadcrumb a{color:#4f46e5;text-decoration:none;font-weight:500}
+.breadcrumb a{color:#3b82f6;text-decoration:none;font-weight:500}
 .breadcrumb a:hover{text-decoration:underline}
 .card{background:#fff;border-radius:14px;border:1px solid #e2e8f0;padding:20px;margin-bottom:16px;box-shadow:0 1px 3px rgba(15,23,42,0.04)}
 .card h2{font-size:15px;font-weight:600;color:#1e293b;margin-bottom:16px;display:flex;align-items:center;gap:8px}
-.card h2::before{content:'';display:inline-block;width:4px;height:18px;background:linear-gradient(180deg,#4f46e5,#7c3aed);border-radius:2px}
+.card h2::before{content:'';display:inline-block;width:4px;height:18px;background:linear-gradient(180deg,#3b82f6,#6366f1);border-radius:2px}
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:16px}
 .stat{background:#fff;border-radius:12px;padding:18px;border:1px solid #e2e8f0;transition:all 0.2s;position:relative;overflow:hidden}
-.stat::after{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,#4f46e5,#7c3aed);opacity:0;transition:opacity 0.2s}
+.stat::after{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,#3b82f6,#6366f1);opacity:0;transition:opacity 0.2s}
 .stat:hover{box-shadow:0 8px 20px rgba(15,23,42,0.07);transform:translateY(-3px);border-color:#cbd5e1}
 .stat:hover::after{opacity:1}
 .stat .value{font-size:26px;font-weight:700;color:#0f172a;margin-bottom:4px;letter-spacing:-0.5px}
@@ -378,8 +370,8 @@ input[type=text],input[type=password],input[type=number],input[type=email],input
   font-family:inherit;transition:all 0.2s;
 }
 input:focus,select:focus,textarea:focus{
-  outline:none;border-color:#4f46e5;
-  box-shadow:0 0 0 3px rgba(79,70,229,0.1);
+  outline:none;border-color:#3b82f6;
+  box-shadow:0 0 0 3px rgba(59,130,246,0.1);
   background:#fff;
 }
 input::placeholder{color:#94a3b8}
@@ -390,8 +382,8 @@ textarea{resize:vertical;min-height:60px}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 16px;border-radius:8px;border:none;cursor:pointer;font-size:13px;font-weight:600;transition:all 0.15s;text-decoration:none}
 .btn:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,0.1)}
 .btn:active{transform:translateY(0)}
-.btn-primary{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;box-shadow:0 2px 8px rgba(79,70,229,0.25)}
-.btn-primary:hover{box-shadow:0 4px 16px rgba(79,70,229,0.35)}
+.btn-primary{background:linear-gradient(135deg,#3b82f6,#6366f1);color:#fff;box-shadow:0 2px 8px rgba(59,130,246,0.25)}
+.btn-primary:hover{box-shadow:0 4px 16px rgba(59,130,246,0.35)}
 .btn-success{background:linear-gradient(135deg,#10b981,#059669);color:#fff;box-shadow:0 2px 8px rgba(16,185,129,0.25)}
 .btn-danger{background:#ef4444;color:#fff}
 .btn-warning{background:#f59e0b;color:#fff}
@@ -400,9 +392,9 @@ textarea{resize:vertical;min-height:60px}
 .btn-ghost:hover{background:#f1f5f9;color:#1e293b;border-color:#cbd5e1;box-shadow:none}
 .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 @media(max-width:768px){.grid-2{grid-template-columns:1fr}}
-@media print{.no-print{display:none!important}body{background:#fff;color:#000}}
-.tab-btn:hover{color:#4f46e5;background:#f1f5f9}
-.tab-btn.active{background:#fff;color:#4f46e5;border-color:#4f46e5;border-bottom:1px solid #fff}
+@media print{.no-print{display:none!important}body{background:#fff;color:#000}
+.tab-btn:hover{color:#3b82f6;background:#f1f5f9}
+.tab-btn.active{background:#fff;color:#3b82f6;border-color:#3b82f6;border-bottom:1px solid #fff}
 .tab-content{display:none;background:#fff;border:1px solid #e2e8f0;border-radius:0 8px 8px 8px;padding:20px;margin-bottom:16px}
 .tab-content.active{display:block}
 .alert-zone{position:fixed;top:64px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:10px;max-width:420px;min-width:260px;width:max-content}
@@ -443,8 +435,8 @@ textarea{resize:vertical;min-height:60px}
 @media(max-width:1024px){.invoice-layout{grid-template-columns:1fr}}
 .invoice-main{min-width:0}
 .invoice-sidebar{position:sticky;top:24px}
-.section-title{font-size:13px;font-weight:700;color:#4f46e5;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:12px;display:flex;align-items:center;gap:8px}
-.section-title::before{content:'';display:inline-block;width:4px;height:16px;background:linear-gradient(180deg,#4f46e5,#7c3aed);border-radius:2px}
+.section-title{font-size:13px;font-weight:700;color:#3b82f6;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.section-title::before{content:'';display:inline-block;width:4px;height:16px;background:linear-gradient(180deg,#3b82f6,#6366f1);border-radius:2px}
 .invoice-meta{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}
 @media(max-width:768px){.invoice-meta{grid-template-columns:1fr 1fr}}
 .invoice-meta .full-width{grid-column:1/-1}
@@ -461,7 +453,7 @@ textarea{resize:vertical;min-height:60px}
 .niu-required .niu-star{color:#f59e0b;font-weight:700}
 .niu-required-hint{color:#b45309;font-size:11px;margin-top:3px}
 .niu-opt-hint{color:#64748b;font-size:11px;margin-top:3px}
-.tiers-type-info{margin-top:6px;font-size:11px;color:#4f46e5}
+.tiers-type-info{margin-top:6px;font-size:11px;color:#3b82f6}
 .contact-select-wrapper{position:relative}
 .total-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;font-size:13px;color:#64748b}
 .total-row.grand-total{border-top:2px solid #e2e8f0;margin-top:8px;padding-top:12px;font-size:18px;font-weight:700;color:#1e293b}
@@ -473,7 +465,7 @@ textarea{resize:vertical;min-height:60px}
 .page-header{margin-bottom:24px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}
 .page-header h1{font-size:22px;font-weight:700;color:#1e293b;margin:0}
 .breadcrumb{font-size:12px;color:#64748b;margin-bottom:4px}
-.breadcrumb a{color:#4f46e5;text-decoration:none;font-weight:500}
+.breadcrumb a{color:#3b82f6;text-decoration:none;font-weight:500}
 .breadcrumb a:hover{text-decoration:underline}
 .client-card{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:16px;margin-bottom:16px;box-shadow:0 1px 2px rgba(0,0,0,0.04)}
 .client-card .contact-select-wrapper{position:relative}
@@ -492,8 +484,27 @@ textarea{resize:vertical;min-height:60px}
 .product-search-results{position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid #e2e8f0;border-radius:8px;margin-top:4px;max-height:200px;overflow-y:auto;z-index:50;box-shadow:0 4px 12px rgba(0,0,0,0.1)}
 .product-search-item{padding:10px 12px;cursor:pointer;border-bottom:1px solid #f1f5f9;font-size:13px}
 .product-search-item:hover{background:#f8fafc}
-.product-search-item .ref{color:#4f46e5;font-weight:600;font-size:11px}
-.product-search-item .price{color:#10b981;font-weight:600;font-size:12px;margin-left:auto}"""
+.product-search-item .ref{color:#3b82f6;font-weight:600;font-size:11px}
+.product-search-item .price{color:#10b981;font-weight:600;font-size:12px;margin-left:auto}
+/* ═══ HUB GESTION COMMERCIALE (style Sage 100) ═══ */
+.sage-hub-layout{display:grid;grid-template-columns:230px 1fr;gap:20px;align-items:start}
+.sage-hub-side{position:sticky;top:24px;background:#fff;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.05);display:flex;flex-direction:column;max-height:calc(100vh - 40px)}
+.sage-hub-side .hub-head{padding:14px 16px;background:linear-gradient(135deg,#0f172a,#1e293b);color:#fff;font-size:12px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;display:flex;align-items:center;gap:8px;white-space:nowrap;overflow:hidden}
+.sage-hub-side .hub-head svg{width:16px;height:16px;color:#38bdf8;flex-shrink:0}
+.sage-hub-nav{list-style:none;margin:0;padding:8px 0;overflow-y:auto;flex:1;overscroll-behavior:contain;scrollbar-width:thin}
+.sage-hub-nav li{margin:1px 8px}
+.sage-hub-nav a{display:flex;align-items:center;gap:9px;padding:8px 12px;border-radius:8px;color:#475569;text-decoration:none;font-size:13px;font-weight:500;border-left:3px solid transparent;transition:all .15s;min-width:0}
+.sage-hub-nav a:hover{background:#f1f5f9;color:#1e293b}
+.sage-hub-nav a.active{background:linear-gradient(90deg,rgba(59,130,246,.13),rgba(99,102,241,.06));color:#3b82f6;border-left-color:#3b82f6;font-weight:600}
+.sage-hub-nav a.active .cnt{background:#3b82f6;color:#fff}
+.sage-hub-nav .grp{font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#94a3b8;padding:12px 12px 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sage-hub-nav .cnt{margin-left:auto;background:#eef2f7;color:#64748b;font-size:10px;font-weight:700;padding:1px 7px;border-radius:12px;flex-shrink:0;min-width:20px;text-align:center}
+.sage-hub-nav .lbl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sage-hub-nav .ico{width:17px;height:17px;flex-shrink:0;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.sage-hub-nav .ico svg{width:16px;height:16px;flex-shrink:0}
+@media(max-width:1180px){.sage-hub-layout{grid-template-columns:1fr}.sage-hub-side{position:static;max-height:none}}
+"""
+
 
 SIDEBAR_ICONS = {
     "dashboard": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>',
@@ -544,7 +555,7 @@ def _sidebar(path="../.."):
             active = "active" if path == "/" else ""
         else:
             active = "active" if path.startswith(url) else ""
-        return '<li><a href="{url}" class="{active}"><span class="icon">{icon}</span><span class="label">{label}</span></a></li>'.format(
+        return '<li><a href="{url}" class="{active}"><span class="icon">{icon}</span> {label}</a></li>'.format(
             url=url, active=active, icon=SIDEBAR_ICONS[icon], label=label
         )
 
@@ -563,7 +574,7 @@ def _sidebar(path="../.."):
         nav_parts.append('<li class="nav-label">' + group_name + "</li>")
         nav_parts.extend(_item(*item) for item in group_items)
     nav = "".join(nav_parts)
-    nav += ('<li><a href="/logout" class="logout-link"><span class="icon">{icon}</span><span class="label">Deconnexion</span></a></li>').format(
+    nav += ('<li><a href="/logout" class="logout-link"><span class="icon">{icon}</span> Deconnexion</a></li>').format(
         icon=SIDEBAR_ICONS["logout"]
     )
 
@@ -731,6 +742,82 @@ def _page(body):
            + csrf_js + body + FOOTER
 
 
+# ══════════════════════════════════════════════════════════════
+# HUB GESTION COMMERCIALE — SOUS-MENU STYLE SAGE 100
+# ══════════════════════════════════════════════════════════════
+
+_SAGE_ICO = {
+    "caisse": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>',
+    "vente": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>',
+    "avoir": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v10a4 4 0 0 0 4 4h10"/><path d="M3 17a4 4 0 0 1 4 0"/><path d="M14 10l4-4 4 4"/><path d="M18 13V3"/></svg>',
+    "achat": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h2l.4 2M7 13h10l4-8H5.4"/><circle cx="9" cy="20" r="1"/><circle cx="17" cy="20" r="1"/></svg>',
+    "stock": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>',
+    "tiers": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+    "paiement": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>',
+    "rapport": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>',
+}
+
+
+def _sage_count(type_doc):
+    try:
+        with sqlite_db.get_cursor() as cur:
+            cur.execute("SELECT COUNT(*) c FROM invoices WHERE type_doc = ?", (type_doc,))
+            return cur.fetchone()["c"]
+    except Exception:
+        return 0
+
+
+def _sage_hub_sidebar(section, sub=""):
+    """Barre laterale arborescente (style Sage 100) pour les pages /pos/*."""
+    def _li(url, icon, label, cur_section=None, count=None):
+        active = "active" if cur_section == section else ""
+        badge = '<span class="cnt">{}</span>'.format(count) if count is not None else ""
+        return ('<li><a href="{}" class="{}"><span class="ico">{}</span><span class="lbl">{}</span>{}</a></li>'
+                .format(url, active, _SAGE_ICO.get(icon, ""), label, badge))
+
+    counts = {
+        "devis": _sage_count("devis"),
+        "commande": _sage_count("commande"),
+        "livraison": _sage_count("livraison"),
+        "vente": _sage_count("vente"),
+        "avoir": _sage_count("avoir"),
+    }
+    nav = []
+    nav.append('<li class="grp">Caisse</li>')
+    nav.append(_li("/pos/caisse", "caisse", "Vente POS"))
+    nav.append('<li class="grp">Ventes</li>')
+    nav.append(_li("/pos/devis", "vente", "Devis", count=counts["devis"]))
+    nav.append(_li("/pos/commandes", "vente", "Commandes", count=counts["commande"]))
+    nav.append(_li("/pos/livraisons", "vente", "Livraisons", count=counts["livraison"]))
+    nav.append(_li("/pos/factures", "vente", "Factures", count=counts["vente"]))
+    nav.append('<li class="grp">Avoirs</li>')
+    nav.append(_li("/pos/avoirs", "avoir", "Avoirs", count=counts["avoir"]))
+    nav.append('<li class="grp">Achats</li>')
+    nav.append(_li("/pos/achats/commandes", "achat", "Cmd fournisseurs"))
+    nav.append(_li("/pos/achats/receptions", "achat", "Receptions"))
+    nav.append('<li class="grp">Stocks</li>')
+    nav.append(_li("/pos/stocks", "stock", "Mouvements / Inventaire"))
+    nav.append(_li("/pos/stocks/articles", "stock", "Articles"))
+    nav.append('<li class="grp">Tiers</li>')
+    nav.append(_li("/pos/tiers", "tiers", "Clients & Fournisseurs"))
+    nav.append('<li class="grp">Reglements</li>')
+    nav.append(_li("/pos/paiements", "paiement", "Paiements"))
+    nav.append('<li class="grp">Rapports</li>')
+    nav.append(_li("/pos/rapports", "rapport", "Rapports & Editions"))
+
+    return ('<div class="sage-hub-side"><div class="hub-head">'
+            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>'
+            'Gestion Commerciale</div><ul class="sage-hub-nav">{}</ul></div>').format("".join(nav))
+
+
+def _sage_page(body, section, sub=""):
+    """Enveloppe une page /pos/* avec le layout hub + sous-menu Sage."""
+    hub_side = _sage_hub_sidebar(section, sub)
+    return _page('<div class="sage-hub-layout"><div class="sage-hub-side-wrap">'
+                 + hub_side + '</div><div class="sage-hub-main" style="min-width:0">'
+                 + body + '</div></div>')
+
+
 LOGIN_HTML = """<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>T-CONNECTOR - Connexion</title>
@@ -738,115 +825,123 @@ LOGIN_HTML = """<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
 *{margin:0;padding:0;box-sizing:border-box}
 body{
   font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
-  min-height:100vh;display:flex;align-items:center;justify-content:center;
-  background:#f4f5fa;color:#1e293b;position:relative;overflow:hidden;padding:24px;
+  min-height:100vh;display:flex;background:#f1f5f9;color:#1e293b;
 }
-body::before{
-  content:'';position:fixed;inset:-10%;z-index:0;pointer-events:none;
-  background:
-    radial-gradient(560px 420px at 12% 8%,rgba(79,70,229,.16),transparent 60%),
-    radial-gradient(620px 460px at 92% 92%,rgba(124,58,237,.14),transparent 60%),
-    radial-gradient(400px 340px at 85% 12%,rgba(16,185,129,.08),transparent 60%);
+.auth-sidebar{
+  width:260px;background:#ffffff;border-right:1px solid #e2e8f0;
+  position:fixed;top:0;left:0;bottom:0;overflow-y:auto;z-index:100;
+  display:flex;flex-direction:column;
+  box-shadow:2px 0 8px rgba(0,0,0,0.04);
 }
-body::after{
-  content:'';position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.5;
-  background-image:radial-gradient(rgba(15,23,42,.06) 1px,transparent 1px);
-  background-size:24px 24px;
-  -webkit-mask-image:radial-gradient(ellipse 70% 60% at 50% 40%,#000 40%,transparent 78%);
-  mask-image:radial-gradient(ellipse 70% 60% at 50% 40%,#000 40%,transparent 78%);
+.auth-logo{display:flex;align-items:center;gap:10px;padding:20px;border-bottom:1px solid #e2e8f0}
+.auth-logo .ico{
+  width:34px;height:34px;border-radius:9px;
+  background:linear-gradient(135deg,#3b82f6,#6366f1);
+  display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:14px;
 }
-.auth-wrap{position:relative;z-index:1;width:420px;max-width:100%}
-.brand-row{display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:22px}
-.brand-row .ico{
-  width:32px;height:32px;border-radius:9px;flex-shrink:0;
-  background:linear-gradient(135deg,#4f46e5,#7c3aed);
-  display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:13px;
-  box-shadow:0 4px 12px rgba(79,70,229,.3);
+.auth-logo span{font-size:15px;font-weight:700;color:#1e293b;letter-spacing:-0.3px}
+.auth-menu{list-style:none;padding:12px 0;flex:1}
+.auth-menu li{
+  display:flex;align-items:center;gap:12px;padding:10px 20px;
+  color:#64748b;font-size:13px;font-weight:500;
 }
-.brand-row span{font-size:14px;font-weight:700;color:#1e293b;letter-spacing:.2px}
+.auth-menu li .icon{width:20px;height:20px;display:flex;align-items:center;justify-content:center;opacity:0.7}
+.auth-menu li .icon svg{width:18px;height:18px}
+.auth-foot{padding:16px 20px;border-top:1px solid #e2e8f0;font-size:11px;color:#94a3b8;line-height:1.6}
+.auth-main{margin-left:260px;flex:1;display:flex;align-items:center;justify-content:center;padding:40px 24px;min-height:100vh}
 .card{
-  width:100%;
-  background:#fff;border:1px solid #e6e9f2;border-radius:20px;
-  padding:40px 36px;box-shadow:0 1px 2px rgba(15,23,42,.04),0 30px 60px -30px rgba(15,23,42,.28);
+  width:420px;max-width:100%;
+  background:#fff;border:1px solid #e2e8f0;border-radius:16px;
+  padding:40px 36px;box-shadow:0 10px 30px rgba(15,23,42,0.06);
 }
 .logo{
-  width:56px;height:56px;border-radius:15px;margin:0 auto 18px;
-  background:linear-gradient(135deg,#4f46e5,#7c3aed);
+  width:56px;height:56px;border-radius:14px;margin:0 auto 16px;
+  background:linear-gradient(135deg,#3b82f6,#6366f1);
   display:flex;align-items:center;justify-content:center;
-  box-shadow:0 10px 26px -6px rgba(79,70,229,.4);
+  box-shadow:0 6px 18px rgba(59,130,246,0.25);
 }
 .logo svg{width:30px;height:30px}
 h1{
-  text-align:center;font-weight:800;color:#0f172a;font-size:22px;
+  text-align:center;font-weight:700;color:#1e293b;font-size:22px;
   margin-bottom:4px;letter-spacing:-0.5px;
 }
 .sub{text-align:center;font-size:13px;color:#64748b;margin-bottom:28px}
 .field{margin-bottom:18px}
 .field label{
-  display:block;font-size:11px;font-weight:700;color:#475569;
-  margin-bottom:8px;text-transform:uppercase;letter-spacing:0.7px;
+  display:block;font-size:11px;font-weight:600;color:#475569;
+  margin-bottom:8px;text-transform:uppercase;letter-spacing:0.8px;
 }
-.field-wrap{position:relative}
-.field-wrap svg{position:absolute;left:14px;top:50%;transform:translateY(-50%);width:16px;height:16px;color:#94a3b8;pointer-events:none}
 .field input{
-  width:100%;padding:12px 14px 12px 40px;font-size:14px;
+  width:100%;padding:12px 14px;font-size:14px;
   background:#fff;color:#1e293b;
-  border:1.5px solid #e2e8f0;border-radius:11px;
+  border:1.5px solid #e2e8f0;border-radius:10px;
   font-family:inherit;transition:all 0.2s;
 }
 .field input:focus{
-  outline:none;border-color:#4f46e5;
-  box-shadow:0 0 0 4px rgba(79,70,229,0.12);
+  outline:none;border-color:#3b82f6;
+  box-shadow:0 0 0 4px rgba(59,130,246,0.1);
 }
 .field input::placeholder{color:#94a3b8}
 .btn{
-  width:100%;padding:13px;margin-top:8px;
-  background:linear-gradient(135deg,#4f46e5,#7c3aed);
-  color:#fff;border:none;border-radius:11px;
+  width:100%;padding:13px;margin-top:6px;
+  background:linear-gradient(135deg,#3b82f6,#6366f1);
+  color:#fff;border:none;border-radius:10px;
   font-size:15px;font-weight:700;cursor:pointer;
   font-family:inherit;letter-spacing:0.3px;
-  box-shadow:0 8px 20px -6px rgba(79,70,229,.45);
+  box-shadow:0 4px 16px rgba(59,130,246,0.25);
   transition:all 0.2s;display:flex;align-items:center;justify-content:center;gap:8px;
 }
 .btn:hover{
-  box-shadow:0 12px 28px -6px rgba(79,70,229,.55);
+  box-shadow:0 8px 24px rgba(59,130,246,0.35);
   transform:translateY(-1px);
 }
 .btn:active{transform:translateY(0)}
 .btn svg{width:16px;height:16px}
 .error{
-  display:flex;align-items:center;gap:8px;
-  background:#fef2f2;border:1px solid #fecaca;color:#991b1b;
-  font-size:12.5px;font-weight:600;
-  padding:11px 13px;border-radius:11px;margin-bottom:18px;
+  background:#fee2e2;border:1px solid #fca5a5;color:#991b1b;
+  font-size:13px;text-align:center;
+  padding:12px;border-radius:10px;margin-bottom:18px;
 }
 .features{
-  display:flex;justify-content:space-between;gap:8px;
-  margin-top:26px;padding-top:20px;
-  border-top:1px solid #eef0f6;
+  display:flex;justify-content:center;gap:16px;
+  margin-top:28px;padding-top:20px;
+  border-top:1px solid #e2e8f0;
 }
-.feat{text-align:center;flex:1;min-width:0}
+.feat{text-align:center;flex:1}
 .feat .ico{
-  width:32px;height:32px;border-radius:9px;margin:0 auto 6px;
+  width:34px;height:34px;border-radius:9px;margin:0 auto 6px;
   display:flex;align-items:center;justify-content:center;
+  background:#eff6ff;border:1px solid #dbeafe;
 }
-.feat .ico svg{width:15px;height:15px}
-.feat span{font-size:9.5px;color:#64748b;font-weight:600;display:block;line-height:1.3}
-.foot{text-align:center;margin-top:22px;font-size:11px;color:#94a3b8;position:relative;z-index:1}
+.feat .ico svg{width:17px;height:17px}
+.feat span{font-size:10px;color:#64748b;display:block;line-height:1.3}
+.foot{text-align:center;margin-top:24px;font-size:11px;color:#94a3b8}
+@media(max-width:768px){.auth-sidebar{display:none}.auth-main{margin-left:0;padding:24px 16px}}
 </style></head><body>
-<div class="auth-wrap">
-<div class="brand-row">
-  <div class="ico">TC</div>
-  <span>T-CONNECTOR SFEC</span>
+<div class="auth-sidebar">
+  <div class="auth-logo">
+    <div class="ico">TC</div>
+    <span>T-CONNECTOR</span>
+  </div>
+  <ul class="auth-menu">
+    <li><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg></span> Tableau de bord</li>
+    <li><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></span> Factures Sage</li>
+    <li><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span> Certification SFEC</li>
+    <li><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></span> Synchronisation</li>
+    <li><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg></span> Vente POS</li>
+  </ul>
+  <div class="auth-foot">Connecteur Sage 100<br>Certification SFEC &middot; &copy; 2025 Sodico</div>
 </div>
+
+<div class="auth-main">
 <div class="card">
   <div class="logo">
     <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
     </svg>
   </div>
-  <h1>Bon retour</h1>
-  <p class="sub">Connectez-vous a votre espace T-CONNECTOR</p>
+  <h1>T-CONNECTOR</h1>
+  <p class="sub">Connecteur Sage 100 &middot; Certification SFEC</p>
 
   {error}
 
@@ -854,17 +949,11 @@ h1{
     {csrf}
     <div class="field">
       <label>Adresse email</label>
-      <div class="field-wrap">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4z" opacity="0"/><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m2 7 10 6 10-6"/></svg>
-        <input type="email" name="email" placeholder="admin@example.com" required autofocus>
-      </div>
+      <input type="email" name="email" placeholder="admin@example.com" required autofocus>
     </div>
     <div class="field">
       <label>Mot de passe</label>
-      <div class="field-wrap">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-        <input type="password" name="password" placeholder="Entrez votre mot de passe" required>
-      </div>
+      <input type="password" name="password" placeholder="Entrez votre mot de passe" required>
     </div>
     <button type="submit" class="btn">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
@@ -874,24 +963,24 @@ h1{
 
   <div class="features">
     <div class="feat">
-      <div class="ico" style="background:#eef2ff"><svg viewBox="0 0 24 24" fill="none" stroke="#4f46e5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div>
-      <span>Facturation</span>
+      <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div>
+      <span>Facturation<br>integree</span>
     </div>
     <div class="feat">
-      <div class="ico" style="background:#ecfdf5"><svg viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
-      <span>SFEC</span>
+      <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+      <span>Certification<br>SFEC</span>
     </div>
     <div class="feat">
-      <div class="ico" style="background:#f5f3ff"><svg viewBox="0 0 24 24" fill="none" stroke="#7c3aed" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg></div>
-      <span>Sync Sage</span>
+      <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg></div>
+      <span>Synchronisation<br>Sage 100</span>
     </div>
     <div class="feat">
-      <div class="ico" style="background:#fffbeb"><svg viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></div>
-      <span>POS</span>
+      <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></div>
+      <span>Module<br>vente POS</span>
     </div>
   </div>
+  <p class="foot">T-CONNECTOR SFEC &copy; 2025 &mdash; Sodico</p>
 </div>
-<p class="foot">T-CONNECTOR SFEC &copy; 2025 &mdash; Sodico</p>
 </div>
 </body></html>"""
 
@@ -983,7 +1072,7 @@ def index():
 
     body = """
 <div class="card"><h2>Tableau de bord</h2><div class="stat-grid">
-<div class="stat"><div class="icon-chip" style="background:#eff6ff;color:#4f46e5"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div><div class="value">{sales}</div><div class="label">Factures Vente</div></div>
+<div class="stat"><div class="icon-chip" style="background:#eff6ff;color:#3b82f6"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div><div class="value">{sales}</div><div class="label">Factures Vente</div></div>
 <div class="stat"><div class="icon-chip" style="background:#fef3c7;color:#d97706"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/></svg></div><div class="value">{purchases}</div><div class="label">Factures Achat</div></div>
 <div class="stat"><div class="icon-chip" style="background:#ede9fe;color:#7c3aed"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div><div class="value">{val_count}</div><div class="label">A comptabiliser</div></div>
 <div class="stat"><div class="icon-chip" style="background:#dcfce7;color:#16a34a"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div><div class="value">{contacts}</div><div class="label">Contacts</div></div>
@@ -1152,7 +1241,7 @@ def certified_page():
 <button class="btn btn-sm no-print" onclick="resetCerts()">Reinitialiser</button>
 </div>
 </div>
-<div class="card"><h2>Liste des certifications</h2>
+<div class="card"><h2>Liste des certifications à revoir</h2>
 <table><thead>
 <tr>
 <th data-sort="numero" onclick="toggleSortC('numero')">Numero<span id="so_numero"></span></th>
@@ -2838,6 +2927,12 @@ def api_local_tax_rates():
 
 @app.route("/pos")
 @_login_required
+def pos_hub_redirect():
+    return redirect("/pos/caisse")
+
+
+@app.route("/pos/caisse")
+@_login_required
 def pos_page():
     stats = pos_engine.count_tickets()
     tickets_list = pos_engine.list_tickets(limit=8)
@@ -2848,17 +2943,13 @@ def pos_page():
     def _pos_tile(p, rank=None):
         sold = int(p.get("total_vendu", 0) or 0)
         badge = '<span class="badge-sold">TOP {}</span>'.format(rank) if rank and sold > 0 else ""
-        stock_val = int(round(p.get("stock_reel", 0) or 0))
-        stock_cls = "out" if stock_val <= 0 else ("low" if stock_val < 5 else "")
         return ('<div class="pos-tile" data-id="{pid}" data-ref="{ref}" data-barcode="{bc}" '
                 'data-des="{des}" data-prix="{prix}" data-tva="{tva}" '
                 'onclick="addToCartFromTile(this)">{badge}'
                 '<div class="pos-tile-nom">{des2}</div>'
                 '<div class="pos-tile-ref">{ref2}</div>'
-                '<div class="pos-tile-foot">'
-                '<span class="pos-tile-prix">{prix2}</span>'
-                '<span class="pos-tile-stock {stock_cls}">{stock}</span>'
-                '</div>'
+                '<div class="pos-tile-prix">{prix2} FCFA</div>'
+                '<div class="pos-tile-stock">Stock: {stock}</div>'
                 '</div>').format(
                     pid=str(p["id"]), ref=_esc(p.get("ref", "")),
                     bc=_esc(p.get("barcode", "") or ""),
@@ -2869,8 +2960,7 @@ def pos_page():
                     des2=_esc(p.get("designation", "")),
                     ref2=_esc(p.get("ref", "")),
                     prix2="{:,}".format(int(round(p.get("prix_vente", 0) or 0))),
-                    stock_cls=stock_cls,
-                    stock="{:,}".format(stock_val))
+                    stock="{:,}".format(int(round(p.get("stock_reel", 0) or 0))))
 
     top10_tiles = "".join(_pos_tile(p, i + 1) for i, p in enumerate(top_products))
     if not top10_tiles:
@@ -2879,16 +2969,12 @@ def pos_page():
 
     ticket_rows_html = ""
     for t in tickets_list["tickets"]:
-        ticket_rows_html += ('<div class="pos-last-row"><span class="num">{num}</span>'
-                              '<span class="time">{time}</span>'
-                              '<span class="amt">{amt} FCFA</span>'
-                              '<span class="pay">{pay}</span></div>').format(
-            num=_esc(t.get("numero", "")), time=_esc(t.get("date_ticket", "")[11:19] or ""),
-            amt="{:,.0f}".format(t.get("montant_ttc", 0)),
-            pay=_esc((t.get("mode_paiement", "") or "").replace("_", " "))
+        ticket_rows_html += "<tr><td>{}</td><td>{}</td><td style='text-align:right'>{:,.0f}</td><td>{}</td></tr>".format(
+            _esc(t.get("numero", "")), _esc(t.get("date_ticket", "")[11:19] or ""),
+            t.get("montant_ttc", 0), _esc(t.get("mode_paiement", ""))
         )
     if not ticket_rows_html:
-        ticket_rows_html = '<div class="pos-results-empty">Aucun ticket pour le moment</div>'
+        ticket_rows_html = '<tr><td colspan="4" style="text-align:center;color:#64748b">Aucun ticket</td></tr>'
 
     vendeur_opts_html = '<option value="">Sans vendeur</option>'
     for v in vendeurs:
@@ -2907,192 +2993,169 @@ def pos_page():
         pos_clients_html += '<option value="|{}|{}">{}</option>'.format(
             _esc(c["code"]), _esc(c["nom"]), _esc("{} - {}".format(c["code"], c["nom"])))
 
-    stats_html = ('<div class="pos-stat-pill"><b>{tj}</b><span>Tickets aujourd&#39;hui</span></div>'
-                  '<div class="pos-stat-pill"><b>{cj} FCFA</b><span>CA du jour</span></div>'
-                  '<div class="pos-stat-pill"><b>{ct} FCFA</b><span>CA total</span></div>').format(
+    stats_html = ('<span><b style="color:#0f172a">{tj}</b> tickets aujourd&#39;hui</span>'
+                  '<span><b style="color:#0f172a">{cj} FCFA</b> CA jour</span>'
+                  '<span><b style="color:#0f172a">{ct} FCFA</b> CA total</span>').format(
                       tj=str(stats.get("tickets_jour", 0)),
                       cj="{:,}".format(int(round(stats.get("ca_jour", 0)))),
                       ct="{:,}".format(int(round(stats.get("ca_total", 0)))))
 
     pos_css = """<style>
-.pos-layout{--posc-1:#4f46e5;--posc-2:#7c3aed;--posc-ink:#0f172a;--posc-sub:#64748b;--posc-line:#e6e9f2;
-  display:grid;grid-template-columns:1fr 420px;gap:20px;align-items:start}
-.pos-main{min-width:0}
-.pos-side{position:sticky;top:24px;display:flex;flex-direction:column;gap:18px}
-
-.pos-card{background:#fff;border:1px solid var(--posc-line);border-radius:18px;padding:22px;box-shadow:0 1px 2px rgba(15,23,42,.04),0 20px 40px -28px rgba(15,23,42,.28)}
-
-.pos-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:12px;flex-wrap:wrap}
-.pos-head h2{display:flex;align-items:center;gap:10px;font-size:17px;font-weight:800;color:var(--posc-ink);letter-spacing:-.2px;margin:0}
-.pos-head h2 .ic{width:34px;height:34px;flex-shrink:0;border-radius:10px;background:linear-gradient(135deg,var(--posc-1),var(--posc-2));display:flex;align-items:center;justify-content:center;color:#fff;box-shadow:0 6px 16px rgba(79,70,229,.32)}
-.pos-head h2 .ic svg{width:17px;height:17px}
-.pos-head-actions{display:flex;gap:8px}
-
-.pos-stats{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px}
-.pos-stat-pill{flex:1;min-width:130px;background:#f8fafc;border:1px solid var(--posc-line);border-radius:12px;padding:10px 14px}
-.pos-stat-pill b{display:block;font-size:16px;font-weight:800;color:var(--posc-ink);letter-spacing:-.3px}
-.pos-stat-pill span{font-size:10px;color:var(--posc-sub);font-weight:700;text-transform:uppercase;letter-spacing:.6px}
-
-.pos-scanner{display:flex;gap:14px;align-items:center;background:linear-gradient(135deg,#111827,#1e293b);border:1px solid #263449;border-radius:14px;padding:12px 16px;margin-bottom:16px;position:relative;overflow:hidden}
-.pos-scanner::before{content:'';position:absolute;inset:0;background:radial-gradient(560px 120px at 8% -40%,rgba(124,58,237,.28),transparent 60%);pointer-events:none}
-.pos-scanner .sc-icon{width:40px;height:40px;flex-shrink:0;border-radius:11px;background:rgba(129,140,248,.14);border:1px solid rgba(129,140,248,.25);color:#a5b4fc;display:flex;align-items:center;justify-content:center;position:relative}
-.pos-scanner .sc-icon svg{width:20px;height:20px}
-.pos-scanner .sc-body{flex:1;min-width:0;position:relative}
-.pos-scanner .sc-input-wrap{position:relative;display:flex;align-items:center}
-.pos-scanner input{width:100%;background:rgba(15,23,42,.6);border:1.5px solid #334155;color:#f1f5f9;font-size:14.5px;font-weight:600;letter-spacing:.3px;text-align:left;padding:11px 74px 11px 14px;border-radius:10px;font-family:inherit;transition:border-color .15s,background .15s}
-.pos-scanner input:focus{outline:none;border-color:#818cf8;background:rgba(15,23,42,.85);box-shadow:0 0 0 4px rgba(129,140,248,.18)}
-.pos-scanner input::placeholder{color:#67748f;font-weight:500;letter-spacing:.2px}
-.pos-scanner .sc-kbd{position:absolute;right:8px;top:50%;transform:translateY(-50%);display:flex;align-items:center;gap:3px;background:rgba(129,140,248,.14);border:1px solid rgba(129,140,248,.25);color:#c7d2fe;font-size:10px;font-weight:700;padding:4px 8px;border-radius:6px;letter-spacing:.3px;pointer-events:none}
-.pos-scanner .sc-kbd svg{width:11px;height:11px}
-.pos-scanner .hint{color:#8593ac;font-size:10.5px;margin-top:7px;letter-spacing:.2px;display:flex;align-items:center;gap:6px}
-.pos-scanner .hint .dot{width:6px;height:6px;border-radius:50%;background:#34d399;flex-shrink:0;box-shadow:0 0 0 3px rgba(52,211,153,.18);animation:scPulse 1.8s ease-in-out infinite}
-@keyframes scPulse{0%,100%{opacity:1}50%{opacity:.4}}
-
-.pos-toolbar{display:flex;gap:12px;align-items:center;margin-bottom:6px;flex-wrap:wrap}
-.pos-qte-mini{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--posc-sub);font-weight:700;white-space:nowrap}
-.pos-qte-mini input{width:64px;padding:7px 8px;text-align:center;font-weight:700}
-.pos-search{position:relative;flex:1;min-width:220px}
-.pos-search svg{position:absolute;left:14px;top:50%;transform:translateY(-50%);width:16px;height:16px;color:#94a3b8;pointer-events:none;flex-shrink:0}
-.pos-search input{padding-left:40px;padding-right:14px;font-size:14px;border-radius:10px}
-
-.pos-section-title{font-size:11.5px;font-weight:800;color:var(--posc-1);text-transform:uppercase;letter-spacing:.9px;margin:16px 0 10px;display:flex;align-items:center;gap:8px}
-.pos-section-title::before{content:'';display:inline-block;width:4px;height:14px;background:linear-gradient(180deg,var(--posc-1),var(--posc-2));border-radius:2px}
-
-.pos-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:12px}
-.pos-tile{background:#fff;border:1px solid var(--posc-line);border-radius:14px;padding:14px;cursor:pointer;transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease;box-shadow:0 1px 2px rgba(15,23,42,.03);user-select:none;position:relative;overflow:hidden}
-.pos-tile::after{content:'';position:absolute;left:0;right:0;bottom:0;height:3px;background:linear-gradient(90deg,var(--posc-1),var(--posc-2));transform:scaleX(0);transform-origin:left;transition:transform .18s ease}
-.pos-tile:hover{border-color:#c7d2fe;box-shadow:0 14px 28px -14px rgba(79,70,229,.35);transform:translateY(-3px)}
-.pos-tile:hover::after{transform:scaleX(1)}
-.pos-tile:active{transform:translateY(-1px) scale(.98)}
-.pos-tile-nom{font-size:13px;font-weight:700;color:var(--posc-ink);line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-bottom:6px;min-height:34px}
-.pos-tile-ref{font-size:10px;color:#94a3b8;font-weight:700;margin-bottom:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-transform:uppercase;letter-spacing:.4px}
-.pos-tile-foot{display:flex;justify-content:space-between;align-items:center;gap:6px}
-.pos-tile-prix{font-size:15px;font-weight:800;color:var(--posc-1);letter-spacing:-.2px}
-.pos-tile-stock{font-size:9.5px;font-weight:700;padding:2px 7px;border-radius:20px;background:#f0fdf4;color:#15803d;white-space:nowrap;flex-shrink:0}
-.pos-tile-stock.low{background:#fffbeb;color:#b45309}
-.pos-tile-stock.out{background:#fef2f2;color:#b91c1c}
-.pos-tile .badge-sold{position:absolute;top:10px;right:10px;background:linear-gradient(135deg,#ede9fe,#ddd6fe);color:#6d28d9;font-size:9px;font-weight:800;padding:3px 8px;border-radius:8px;letter-spacing:.3px}
-
-.pos-results{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:12px;margin-top:14px}
-.pos-results-empty{padding:28px 16px;text-align:center;color:#94a3b8;font-size:13px;border:1.5px dashed var(--posc-line);border-radius:14px;background:#fafbfe}
-
-.pos-client-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}
-
-.pos-cart-table{width:100%;border-collapse:separate;border-spacing:0 8px;margin-top:-4px}
-.pos-cart-table thead th{background:transparent;border:none;padding:0 10px 2px;font-size:9.5px}
-.pos-cart-table tbody td{background:#f8fafc;border:none;padding:10px}
-.pos-cart-table tbody tr td:first-child{border-radius:10px 0 0 10px}
-.pos-cart-table tbody tr td:last-child{border-radius:0 10px 10px 0}
-.pos-qty-stepper{display:inline-flex;align-items:center;gap:2px;background:#fff;border:1px solid var(--posc-line);border-radius:8px;padding:2px}
-.pos-qty-stepper button{width:22px;height:22px;border:none;background:transparent;color:var(--posc-1);font-weight:800;font-size:14px;cursor:pointer;border-radius:6px;line-height:1;font-family:inherit}
-.pos-qty-stepper button:hover{background:#eef2ff}
-.pos-qty-stepper input{border:none!important;width:34px!important;padding:0!important;background:transparent!important;box-shadow:none!important;font-weight:700!important}
-
-.pos-cart-empty{text-align:center;padding:36px 16px;color:#94a3b8;font-size:13px}
-.pos-cart-empty svg{width:38px;height:38px;color:#cbd5e1;margin-bottom:10px}
-
-.pos-total-box{display:flex;justify-content:space-between;align-items:center;background:linear-gradient(135deg,#0f172a,#1e293b);border-radius:14px;padding:16px 18px;margin-top:14px;box-shadow:0 12px 24px -14px rgba(15,23,42,.45)}
-.pos-total-box .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:#94a3b8;font-weight:700}
-.pos-total-box .val{font-size:24px;font-weight:800;color:#fff;letter-spacing:-.4px}
-.pos-cart-foot{display:flex;justify-content:space-between;font-size:11.5px;color:var(--posc-sub);margin-top:8px;padding:0 2px}
-
-.pos-pay-methods{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px}
-.pos-pay-btn{display:flex;flex-direction:column;align-items:center;gap:5px;padding:10px 4px;border:1.5px solid var(--posc-line);border-radius:10px;background:#fff;cursor:pointer;font-size:10px;font-weight:700;color:var(--posc-sub);transition:all .15s;font-family:inherit}
-.pos-pay-btn svg{width:16px;height:16px}
-.pos-pay-btn:hover{border-color:#c7d2fe;background:#f5f6ff;color:var(--posc-1)}
-.pos-pay-btn.active{border-color:var(--posc-1);background:linear-gradient(135deg,rgba(79,70,229,.08),rgba(124,58,237,.06));color:var(--posc-1);box-shadow:0 0 0 3px rgba(79,70,229,.1)}
-
-.pos-pay-row{display:flex;gap:10px;align-items:flex-end;margin-top:12px}
-.pos-pay-row>div{flex:1}
-.pos-monnaie{font-size:14px;font-weight:800;margin-top:10px;text-align:right;padding:9px 12px;border-radius:9px}
-.pos-monnaie:empty{padding:0;margin-top:0}
-.pos-monnaie.ok{color:#059669;background:#f0fdf4}
-.pos-monnaie.ko{color:#dc2626;background:#fef2f2}
-.pos-validate{width:100%;padding:15px;font-size:15px;margin-top:14px;border-radius:12px;font-weight:800;letter-spacing:.2px}
-.pos-last-row{display:grid;grid-template-columns:1fr auto auto;grid-template-rows:auto auto;column-gap:12px;align-items:center;padding:10px 6px;font-size:12.5px;border-bottom:1px solid #f1f5f9}
-.pos-last-row:last-child{border-bottom:none}
-.pos-last-row .num{font-weight:700;color:var(--posc-ink);grid-column:1;grid-row:1}
-.pos-last-row .time{color:#94a3b8;font-size:11px;grid-column:1;grid-row:2}
-.pos-last-row .amt{font-weight:800;color:var(--posc-1);grid-column:2;grid-row:1/3;justify-self:end}
-.pos-last-row .pay{font-size:10px;color:var(--posc-sub);text-transform:capitalize;grid-column:3;grid-row:1/3;justify-self:end;background:#f1f5f9;padding:3px 8px;border-radius:20px;font-weight:700}
-
-@media(max-width:1180px){.pos-layout{grid-template-columns:1fr}.pos-side{position:static}}
-@media(max-width:600px){.pos-client-row{grid-template-columns:1fr}}
+/* ═══ SAISIE DE CAISSE — copie style Sage 100 Espace de Vente ═══ */
+.sage-caisse{background:#e9ecef;border:1px solid #c7cdd7;border-radius:8px;padding:12px;font-size:13px}
+.sc-toolbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;background:linear-gradient(180deg,#f4f5f7,#e3e6ea);border:1px solid #c9ced7;border-radius:6px;padding:6px 8px;margin-bottom:12px;box-shadow:inset 0 1px 0 #fff}
+.sc-btn{appearance:none;border:1px solid #9aa2ad;border-radius:4px;background:linear-gradient(180deg,#fdfdfd,#e4e6e8);color:#1f2937;font:inherit;font-size:12px;font-weight:600;padding:6px 12px;cursor:pointer;box-shadow:0 1px 1px rgba(0,0,0,.08);white-space:nowrap}
+.sc-btn:hover{background:linear-gradient(180deg,#fff,#eaecee);border-color:#7d8794}
+.sc-btn:active{box-shadow:inset 0 1px 3px rgba(0,0,0,.15);transform:translateY(1px)}
+.sc-btn.primary{background:linear-gradient(180deg,#3d7dc9,#2a5f9f);border-color:#24548b;color:#fff}
+.sc-btn.primary:hover{background:linear-gradient(180deg,#4a88d4,#2f68ac)}
+.sc-btn.encaisser{background:linear-gradient(180deg,#38b56d,#1f8a4f);border-color:#1d7c47;color:#fff;font-size:13px;padding:8px 18px}
+.sc-btn.encaisser:hover{background:linear-gradient(180deg,#43c27a,#249858)}
+.sc-btn.encaisser:disabled{background:linear-gradient(180deg,#bfc6cd,#a9b0b8);border-color:#98a0a9;color:#586069;cursor:not-allowed}
+.sc-sep{width:1px;height:20px;background:#c9ced7;margin:0 4px}
+.sc-toolbar-stats{display:flex;gap:8px;align-items:center;margin-left:auto;font-size:11px;color:#334155;flex-wrap:wrap}
+.sc-toolbar-stats span{background:#fff;border:1px solid #d5dae2;border-radius:4px;padding:4px 10px;white-space:nowrap}
+.sc-toolbar-stats b{color:#16324f}
+.sc-cols{display:grid;grid-template-columns:minmax(280px,360px) 1fr;gap:12px;align-items:start}
+.sc-panel{background:#fff;border:1px solid #c7cdd7;border-radius:6px;margin-bottom:12px;overflow:hidden}
+.sc-panel-title{background:linear-gradient(180deg,#2e6ab5,#1e4e8f);color:#fff;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;padding:7px 12px;display:flex;align-items:center;gap:8px}
+.sc-panel-count{margin-left:auto;background:rgba(255,255,255,.2);border-radius:10px;padding:0 8px;font-size:11px}
+.sc-scan{margin:10px 12px 8px}
+.sc-scan input{width:100%;font-size:15px;font-weight:700;letter-spacing:1.5px;text-align:center;border:2px solid #2a5f9f;background:#f4f8fd;border-radius:4px;padding:9px 10px}
+.sc-scan input:focus{outline:none;border-color:#38bdf8;box-shadow:0 0 0 3px rgba(56,189,248,.2);background:#fff}
+.sc-hint{color:#64748b;font-size:10px;margin-top:5px;letter-spacing:0;text-align:center}
+.sc-search{margin:0 12px 8px}
+.sc-search input{width:100%;padding:8px 12px;border:1.5px solid #cfd6df;border-radius:4px;font-size:13px}
+.sc-qte-line{display:flex;align-items:center;gap:8px;margin:0 12px 10px;font-size:12px;color:#475569;font-weight:600}
+.sc-qte-line input{width:64px;padding:5px 8px}
+.sc-grid-head{font-size:10px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:#475569;background:#eef1f5;border-top:1px solid #dfe4ea;border-bottom:1px solid #dfe4ea;padding:6px 12px}
+.sc-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:6px;padding:10px 12px 4px;max-height:420px;overflow-y:auto}
+.pos-tile{background:#fff;border:1px solid #d5dae2;border-radius:4px;padding:8px;cursor:pointer;transition:all .12s;box-shadow:0 1px 2px rgba(15,23,42,.04);position:relative;overflow:hidden;user-select:none}
+.pos-tile:hover{border-color:#2a5f9f;box-shadow:0 0 0 1px #2a5f9f}
+.pos-tile:active{transform:scale(.97)}
+.pos-tile-nom{font-size:11px;font-weight:600;color:#16324f;line-height:1.2;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-bottom:3px;min-height:26px}
+.pos-tile-ref{font-size:9px;color:#8a94a3;font-weight:600;margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pos-tile-prix{font-size:13px;font-weight:800;color:#1e4e8f}
+.pos-tile-stock{font-size:9px;color:#64748b;margin-top:1px}
+.pos-tile .badge-sold{position:absolute;top:5px;right:5px;background:#fde68a;color:#92400e;font-size:8px;font-weight:700;padding:1px 5px;border-radius:4px}
+.pos-results{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:6px;padding:8px 12px 4px}
+.pos-results-empty{padding:14px;text-align:center;color:#94a3b8;font-size:12px;border:1px dashed #d5dae2;border-radius:4px;margin:8px 12px;background:#fafbfc}
+.sc-header-grid{display:grid;grid-template-columns:1.2fr 1fr 1fr 1fr;gap:10px;padding:12px}
+.fld label{display:block;color:#3d4756;font-size:10px;font-weight:700;margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px}
+.fld input,.fld select{width:100%;padding:7px 9px;font-size:13px;background:#fbfcfd}
+.sc-table{width:100%;border-collapse:collapse;font-size:12px}
+.sc-table thead th{background:linear-gradient(180deg,#eef2f7,#e2e8f0);color:#2f4a6b;font-size:10px;text-transform:uppercase;letter-spacing:.4px;font-weight:700;padding:7px 10px;border:1px solid #d3dae3;text-align:left}
+.sc-table thead th.num,.sc-table td.num{text-align:right}
+.sc-table tbody td{border:1px solid #e3e8ee;padding:6px 10px;color:#26313f;vertical-align:middle}
+.sc-table tbody tr:nth-child(even){background:#f7f9fc}
+.sc-table tbody tr:hover{background:#eef4fb}
+.sc-table td.act{text-align:center;width:30px}
+.sc-table td.ttc{font-weight:700;color:#16425b}
+.sc-art-nom{font-weight:600}
+.sc-art-ref{font-size:10px;color:#8a94a3}
+.sc-table input[type=number]{width:56px;padding:4px 6px;font-size:12px}
+.sc-del{border:1px solid #e0a8a8;background:#fdf0f0;color:#b4433c;width:20px;height:20px;line-height:1;border-radius:3px;cursor:pointer;font-weight:700}
+.sc-del:hover{background:#f7dcdc}
+.sc-empty{padding:18px 16px;text-align:center;color:#94a3b8;font-size:12px;border:1px dashed #d5dae2;margin:8px 12px;border-radius:4px;background:#fafbfc}
+.sc-pay{padding-bottom:12px}
+.sc-totaux{display:flex;gap:10px;padding:12px;flex-wrap:wrap}
+.sc-tot{background:#f4f6f8;border:1px solid #dfe4ea;border-radius:4px;padding:8px 14px;min-width:130px;text-align:right;flex:1}
+.sc-tot span{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:#5b6b7c;font-weight:700}
+.sc-tot b{font-size:17px;color:#1e293b}
+.sc-tot.big{background:linear-gradient(180deg,#1e4e8f,#173e70);border-color:#173e70}
+.sc-tot.big span{color:#cfe0f5}
+.sc-tot.big b{color:#fff;font-size:20px}
+.sc-pay-grid{display:grid;grid-template-columns:1.2fr 1fr auto auto;gap:10px;align-items:end;padding:0 12px}
+.sc-monnaie{font-size:13px;font-weight:800;padding:8px 6px;text-align:right;white-space:nowrap}
+.sc-monnaie.ok{color:#159357}
+.sc-monnaie.ko{color:#d6453d}
+@media(max-width:1180px){.sc-cols{grid-template-columns:1fr}.sc-header-grid{grid-template-columns:1fr 1fr}.sc-pay-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:760px){.sc-header-grid,.sc-pay-grid{grid-template-columns:1fr}.sc-toolbar-stats{width:100%;margin-left:0}}
 </style>"""
 
     body = pos_css + """
-<div class="pos-layout">
-<div class="pos-main">
-<div class="pos-card">
-<div class="pos-head">
-<h2><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg></span>Caisse</h2>
-<div class="pos-head-actions">
-<button class="btn btn-sm btn-ghost no-print" onclick="syncPosArticles()">Sync articles</button>
-<button class="btn btn-sm btn-ghost no-print" id="btn-stock" onclick="toggleStock()">Stock: --</button>
+<div class="sage-caisse">
+<div class="sc-toolbar no-print">
+<button class="sc-btn primary" onclick="clearCart()">Nouveau</button>
+<button class="sc-btn" onclick="addPosLineManual()">+ Ligne manuelle</button>
+<span class="sc-sep"></span>
+<button class="sc-btn" onclick="syncPosArticles()">Sync articles</button>
+<button class="sc-btn" id="btn-stock" onclick="toggleStock()">Stock: --</button>
+<div class="sc-toolbar-stats">@@STATS@@</div>
 </div>
-</div>
-<div class="pos-stats">@@STATS@@</div>
-<div class="pos-scanner">
-<div class="sc-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5V3h2v2H3zM7 5V3h4v2H7zM13 5V3h4v2h-4zM17 5V3h2v2h-2zM21 5h-2v2h2v14H3V5h2v14h14V7h2V5z"/><rect x="5" y="9" width="3" height="5"/><rect x="16" y="9" width="3" height="5"/><path d="M5 19v-2h3v2H5zM16 19v-2h3v2h-3z"/></svg></div>
-<div class="sc-body">
-<div class="sc-input-wrap">
-<input id="pos-barcode" placeholder="Scanner ou saisir un code-barres..." autocomplete="off" autofocus
+<div class="sc-cols">
+
+<div class="sc-col-left">
+<div class="sc-panel">
+<div class="sc-panel-title">Catalogue articles</div>
+<div class="sc-scan">
+<input id="pos-barcode" placeholder="Scanner code-barres / reference ... (Entree)" autocomplete="off" autofocus
   onkeydown="if(event.key==='Enter'){event.preventDefault();scanBarcode(this.value)}">
-<span class="sc-kbd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 10 4 15 9 20"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></svg>Entree</span>
+<div class="sc-hint">Scannez un article puis Entree : il est ajoute instantanement au ticket</div>
 </div>
-<div class="hint"><span class="dot"></span>Pret a scanner &mdash; l&#39;article est ajoute instantanement au ticket</div>
+<div class="sc-search">
+<input id="pos-search" placeholder="Rechercher un article (des 2 caracteres)..." autocomplete="off" oninput="posInstantSearch(this.value)">
 </div>
-</div>
-<div class="pos-toolbar">
-<div class="pos-qte-mini">Qte par defaut <input type="number" id="pos-qte" value="1" min="1"></div>
-<div class="pos-search">
-<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-<input id="pos-search" placeholder="Rechercher un article (automatique des 2 caracteres)..." autocomplete="off" oninput="posInstantSearch(this.value)">
-</div>
-</div>
-<div id="pos-products-head" class="pos-section-title">Meilleures ventes</div>
-<div id="pos-products-grid" class="pos-grid">@@TILES@@</div>
+<div class="sc-qte-line"><span>Quantite par defaut</span> <input type="number" id="pos-qte" value="1" min="1"></div>
+<div id="pos-products-head" class="sc-grid-head">Meilleures ventes</div>
+<div id="pos-products-grid" class="sc-tiles">@@TILES@@</div>
 <div id="pos-results"></div>
 </div>
 </div>
-<div class="pos-side">
-<div class="pos-card">
-<div class="pos-head"><h2><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg></span>Ticket en cours</h2></div>
-<div class="pos-client-row">
-<div><label>Client</label><select id="pos-client">@@POS_CLIENTS@@</select></div>
-<div><label>Vendeur</label><select id="pos-vendeur">@@VENDEURS@@</select></div>
+
+<div class="sc-col-right">
+
+<div class="sc-panel">
+<div class="sc-panel-title">En-tete ticket</div>
+<div class="sc-header-grid">
+<div class="fld"><label>Client</label><select id="pos-client">@@POS_CLIENTS@@</select></div>
+<div class="fld"><label>Caissier / Vendeur</label><select id="pos-vendeur">@@VENDEURS@@</select></div>
+<div class="fld"><label>Depot</label><input type="text" value="DEPOT 001" readonly></div>
+<div class="fld"><label>N&deg; ticket</label><input type="text" value="Nouveau !" readonly></div>
 </div>
-<div id="pos-cart" style="margin-top:6px">
-<table class="pos-cart-table"><thead><tr><th>Article</th><th style="text-align:center">Qte</th><th style="text-align:right">P. un.</th><th style="text-align:right">Total</th><th></th></tr></thead>
+</div>
+
+<div class="sc-panel">
+<div class="sc-panel-title">Detail du ticket <span class="sc-panel-count" id="pos-articles-count">0</span></div>
+<table class="sc-table"><thead><tr>
+<th>Article</th><th class="num">Qte</th><th class="num">P. unitaire</th><th class="num">TVA</th><th class="num">Total TTC</th><th class="act"></th>
+</tr></thead>
 <tbody id="pos-cart-body"></tbody></table>
-<div id="pos-cart-empty" class="pos-cart-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg><br>Ticket vide<br>Ajoutez un article ci-contre ou scannez un code-barres</div>
+<div id="pos-cart-empty" class="sc-empty">Ticket vide - Scannez un code-barres ou cliquez sur un article du catalogue</div>
 </div>
-<div class="pos-total-box"><span class="lbl">Total TTC</span><span class="val" id="pos-total">0 FCFA</span></div>
-<div class="pos-cart-foot"><span>Articles : <b id="pos-articles-count">0</b></span><span>HT + TVA</span></div>
-<div style="margin-top:14px">
-<label>Mode de paiement</label>
-<select id="pos-paiement" onchange="syncPayUI();calcMonnaie()" style="display:none">
+
+<div class="sc-panel sc-pay">
+<div class="sc-panel-title">Reglement</div>
+<div class="sc-totaux">
+<div class="sc-tot"><span>Total HT</span><b id="pos-total-ht">0 FCFA</b></div>
+<div class="sc-tot"><span>Total TVA</span><b id="pos-total-tva">0 FCFA</b></div>
+<div class="sc-tot big"><span>Net a payer TTC</span><b id="pos-total">0 FCFA</b></div>
+</div>
+<div class="sc-pay-grid">
+<div class="fld"><label>Mode de paiement</label>
+<select id="pos-paiement" onchange="calcMonnaie()">
 <option value="especes" selected>Especes</option>
 <option value="mobile_money">Mobile Money</option>
 <option value="virement">Virement</option>
 <option value="carte">Carte</option>
 <option value="cheque">Cheque</option>
 <option value="mixte">Mixte</option>
-</select>
-<div class="pos-pay-methods" id="pos-pay-methods"></div>
-</div>
-<div class="pos-pay-row">
-<div><label>Recu (FCFA)</label><input type="number" id="pos-recu" value="0" min="0" oninput="calcMonnaie()"></div>
-</div>
-<div id="pos-monnaie" class="pos-monnaie"></div>
-<button id="pos-validate" class="btn btn-success pos-validate" onclick="validerTicket()" disabled>Ticket vide</button>
-<div style="margin-top:8px;text-align:center">
-<button class="btn btn-sm btn-ghost" onclick="addPosLineManual()">+ Ligne manuelle</button>
-<button class="btn btn-sm btn-ghost" onclick="clearCart()">Vider</button>
+</select></div>
+<div class="fld"><label>Recu (FCFA)</label><input type="number" id="pos-recu" value="0" min="0" oninput="calcMonnaie()"></div>
+<div id="pos-monnaie" class="sc-monnaie"></div>
+<button id="pos-validate" class="sc-btn encaisser" onclick="validerTicket()" disabled>Ticket vide</button>
 </div>
 </div>
-<div class="pos-card"><div class="pos-head"><h2 style="font-size:14px"><span class="ic" style="width:28px;height:28px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></span>Derniers tickets</h2></div>
-<div>@@TICKETS@@</div></div>
+
+<div class="sc-panel">
+<div class="sc-panel-title">Derniers tickets</div>
+<table class="sc-table"><thead><tr>
+<th>Numero</th><th>Heure</th><th class="num">TTC</th><th>Paiement</th>
+</tr></thead>
+<tbody>@@TICKETS@@</tbody></table>
+</div>
+
+</div>
 </div>
 </div>
 <script>
@@ -3175,33 +3238,31 @@ function makeTileEl(p){
   d.addEventListener("click",function(){addToCart(p)});
   var nom=document.createElement("div");nom.className="pos-tile-nom";nom.textContent=p.designation;
   var ref=document.createElement("div");ref.className="pos-tile-ref";ref.textContent=p.ref||"";
-  var foot=document.createElement("div");foot.className="pos-tile-foot";
-  var prix=document.createElement("span");prix.className="pos-tile-prix";prix.textContent=(Number(p.prix_vente)||0).toLocaleString("fr-FR");
-  var stockVal=Number(p.stock_reel)||0;
-  var st=document.createElement("span");st.className="pos-tile-stock"+(stockVal<=0?" out":stockVal<5?" low":"");st.textContent=stockVal.toLocaleString("fr-FR");
-  foot.appendChild(prix);foot.appendChild(st);
-  d.appendChild(nom);d.appendChild(ref);d.appendChild(foot);
+  var prix=document.createElement("div");prix.className="pos-tile-prix";prix.textContent=(Number(p.prix_vente)||0).toLocaleString("fr-FR")+" FCFA";
+  var st=document.createElement("div");st.className="pos-tile-stock";st.textContent="Stock : "+(Number(p.stock_reel)||0);
+  d.appendChild(nom);d.appendChild(ref);d.appendChild(prix);d.appendChild(st);
   return d;
 }
 
 function renderPosCart(){
-  var body="";var total=0;var nbArt=0;
+  var body="";var totalHT=0;var totalTVA=0;var totalTTC=0;var nbArt=0;
   posCart.forEach(function(l){
-    var ttc=round2(l.quantite*l.prix_unitaire*(1+l.taux_tva/100));
-    total+=ttc;nbArt+=l.quantite;
+    var ht=round2(l.quantite*l.prix_unitaire);
+    var tva=round2(ht*l.taux_tva/100);
+    var ttc=round2(ht+tva);
+    totalHT+=ht;totalTVA+=tva;totalTTC+=ttc;nbArt+=l.quantite;
     body+="<tr>"
-      +"<td><div style='font-weight:700;font-size:12.5px'>"+_h(l.designation)+"</div><div style='font-size:10px;color:#94a3b8'>"+_h(l.ref||l.barcode||"")+"</div></td>"
-      +"<td style='text-align:center'><div class='pos-qty-stepper'>"
-      +"<button type='button' onclick='updatePosQte("+l.idx+","+(l.quantite-1)+")'>&minus;</button>"
-      +"<input type='number' value='"+l.quantite+"' min='0.5' step='0.5' onchange='updatePosQte("+l.idx+",this.value)'>"
-      +"<button type='button' onclick='updatePosQte("+l.idx+","+(l.quantite+1)+")'>+</button>"
-      +"</div></td>"
-      +"<td style='text-align:right;color:#64748b'>"+Number(l.prix_unitaire).toLocaleString("fr-FR")+"</td>"
-      +"<td style='text-align:right;font-weight:800;color:#0f172a'>"+Number(ttc).toLocaleString("fr-FR")+"</td>"
-      +"<td><button class='btn-sm btn-danger' onclick='removePosLine("+l.idx+")'>&times;</button></td></tr>";
+      +"<td><div class='sc-art-nom'>"+_h(l.designation)+"</div><div class='sc-art-ref'>"+_h(l.ref||l.barcode||"")+"</div></td>"
+      +"<td class='num'><input type='number' value='"+l.quantite+"' min='0.5' step='0.5' onchange='updatePosQte("+l.idx+",this.value)'></td>"
+      +"<td class='num'>"+Number(l.prix_unitaire).toLocaleString("fr-FR")+"</td>"
+      +"<td class='num'>"+Number(l.taux_tva).toLocaleString("fr-FR")+" %</td>"
+      +"<td class='num ttc'>"+Number(ttc).toLocaleString("fr-FR")+"</td>"
+      +"<td class='act'><button class='sc-del' title='Supprimer' onclick='removePosLine("+l.idx+")'>&times;</button></td></tr>";
   });
   document.getElementById("pos-cart-body").innerHTML=body;
-  document.getElementById("pos-total").textContent=Number(total).toLocaleString("fr-FR")+" FCFA";
+  document.getElementById("pos-total").textContent=Number(totalTTC).toLocaleString("fr-FR")+" FCFA";
+  document.getElementById("pos-total-ht").textContent=Number(totalHT).toLocaleString("fr-FR")+" FCFA";
+  document.getElementById("pos-total-tva").textContent=Number(totalTVA).toLocaleString("fr-FR")+" FCFA";
   document.getElementById("pos-articles-count").textContent=nbArt;
   document.getElementById("pos-cart-empty").style.display=posCart.length?"none":"block";
   calcMonnaie();
@@ -3219,14 +3280,14 @@ function calcMonnaie(){
   var monnaie=round2(recu-total);
   var el=document.getElementById("pos-monnaie");
   var btn=document.getElementById("pos-validate");
-  if(posCart.length===0){el.className="pos-monnaie";el.textContent="";btn.disabled=true;btn.textContent="Ticket vide";return}
+  if(posCart.length===0){el.className="sc-monnaie";el.textContent="";btn.disabled=true;btn.textContent="Ticket vide";return}
   if(mode==="especes"&&monnaie<0){
-    el.className="pos-monnaie ko";el.textContent="Manque : "+Number(Math.abs(monnaie)).toLocaleString("fr-FR")+" FCFA";
+    el.className="sc-monnaie ko";el.textContent="Manque : "+Number(Math.abs(monnaie)).toLocaleString("fr-FR")+" FCFA";
     btn.disabled=true;btn.textContent="Manque "+Number(Math.abs(monnaie)).toLocaleString("fr-FR")+" FCFA";
   }else{
-    el.className="pos-monnaie ok";
+    el.className="sc-monnaie ok";
     el.textContent=mode==="especes"?"A rendre : "+Number(monnaie).toLocaleString("fr-FR")+" FCFA":"Total : "+Number(total).toLocaleString("fr-FR")+" FCFA";
-    btn.disabled=false;btn.textContent="Valider & imprimer";
+    btn.disabled=false;btn.textContent="Encaisser";
   }
 }
 
@@ -3269,38 +3330,6 @@ window.STOCK_CONTROL = @@STOCK_CTL@@;
 function refreshStockBtn(){var b=document.getElementById("btn-stock");if(!b)return;b.textContent="Stock: "+(window.STOCK_CONTROL?"ON":"OFF");b.classList.toggle("btn-success",!!window.STOCK_CONTROL);b.classList.toggle("btn-warning",!window.STOCK_CONTROL);}
 function toggleStock(){api("POST","/api/pos/config",{stock_control:!window.STOCK_CONTROL}).then(function(d){if(d.success){window.STOCK_CONTROL=!!d.stock_control;refreshStockBtn();showToast("Controle de stock "+(window.STOCK_CONTROL?"ACTIVE":"DESACTIVE"),"ok")}else{showToast(d.error||"Erreur","err")}});}
 refreshStockBtn();
-
-var POS_PAY_METHODS=[
-  {v:"especes",l:"Especes",i:'<path d="M12 1v22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>'},
-  {v:"mobile_money",l:"Mobile",i:'<rect x="7" y="2" width="10" height="20" rx="2"/><line x1="11" y1="18" x2="13" y2="18"/>'},
-  {v:"carte",l:"Carte",i:'<rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/>'},
-  {v:"virement",l:"Virement",i:'<polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/>'},
-  {v:"cheque",l:"Cheque",i:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>'},
-  {v:"mixte",l:"Mixte",i:'<circle cx="9" cy="9" r="7"/><path d="M14.5 4.5A7 7 0 1 1 4.5 14.5"/>'}
-];
-function renderPayMethods(){
-  var wrap=document.getElementById("pos-pay-methods");if(!wrap)return;
-  var current=document.getElementById("pos-paiement").value||"especes";
-  wrap.innerHTML="";
-  POS_PAY_METHODS.forEach(function(m){
-    var b=document.createElement("button");
-    b.type="button";b.className="pos-pay-btn"+(m.v===current?" active":"");
-    b.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+m.i+'</svg><span>'+m.l+'</span>';
-    b.addEventListener("click",function(){setPayMethod(m.v)});
-    wrap.appendChild(b);
-  });
-}
-function setPayMethod(v){
-  document.getElementById("pos-paiement").value=v;
-  syncPayUI();
-  calcMonnaie();
-}
-function syncPayUI(){
-  var current=document.getElementById("pos-paiement").value;
-  var wrap=document.getElementById("pos-pay-methods");if(!wrap)return;
-  Array.prototype.forEach.call(wrap.children,function(btn,i){btn.classList.toggle("active",POS_PAY_METHODS[i].v===current)});
-}
-renderPayMethods();
 </script>""".replace("@@STATS@@", stats_html) \
         .replace("@@TILES@@", top10_tiles) \
         .replace("@@VENDEURS@@", vendeur_opts_html) \
@@ -3308,7 +3337,7 @@ renderPayMethods();
         .replace("@@POS_CLIENTS_JS@@", pos_clients_js) \
         .replace("@@TICKETS@@", ticket_rows_html) \
         .replace("@@STOCK_CTL@@", "true" if pos_engine.stock_control_enabled() else "false")
-    return _page(body)
+    return _sage_page(body, "caisse")
 
 
 @app.route("/pos/ticket/<int:ticket_id>/print")
@@ -3441,7 +3470,7 @@ td.r{{text-align:right}}
 <div class="no-print">
 <button onclick="window.print()">Imprimer</button>
 <a href="/api/pos/ticket/{ticket_id}/pdf" class="no-print" target="_blank">PDF</a>
-<a href="/pos">Retour caisse</a>
+<a href="/pos/caisse">Retour caisse</a>
 </div>
 </body></html>""".format(
         numero=_esc(ticket.get("numero", "")),
@@ -3462,6 +3491,664 @@ td.r{{text-align:right}}
         ticket_id=ticket["id"]
     )
     return body
+
+
+# ══════════════════════════════════════════════════════════════
+# HUB GESTION COMMERCIALE — PAGES DES SECTIONS
+# ══════════════════════════════════════════════════════════════
+
+def _doc_status_badge(statut):
+    cls = {"brouillon": "badge-info", "valide": "badge-ok",
+           "a_comptabiliser": "badge-warn", "a_comptabilise": "badge-ok"}.get(statut, "")
+    return '<span class="badge {}">{}</span>'.format(cls, _esc(statut or "brouillon"))
+
+
+def _doc_rows(docs, type_doc):
+    rows = ""
+    for ddoc in docs:
+        rows += ("<tr><td>{n}</td><td>{d}</td><td>{t}</td>"
+                 "<td style='text-align:right'>{m:,.0f}</td>"
+                 "<td>{s}</td><td><a class='btn btn-sm' href='/pos/{url}/view/{id}' target='_blank'>Voir</a> "
+                 "<a class='btn btn-sm' href='/pos/{url}/edit/{id}'>Editer</a></td></tr>").format(
+            n=_esc(ddoc.get("numero", "")), d=_esc(ddoc.get("date_facture", "")),
+            t=_esc(ddoc.get("tiers_nom", "")), m=abs(ddoc.get("montant_ttc", 0)),
+            s=_doc_status_badge(ddoc.get("statut", "")),
+            url="avoirs" if type_doc == "avoir" else "ventes",
+            id=ddoc.get("id", "")
+        )
+    if not rows:
+        rows = '<tr><td colspan="6" style="text-align:center;color:#64748b">Aucun document</td></tr>'
+    return rows
+
+
+def _ventes_common_page(type_doc, href_key, button_label, title):
+    res = commercial_engine.list_docs(type_doc=type_doc, limit=200)
+    rows = _doc_rows(res["docs"], type_doc)
+    body = """
+<div class="card"><h2>{title} ({nb})</h2>
+<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap" class="no-print">
+<a href="/pos/{href}/new" class="btn btn-sm btn-primary">{btn}</a>
+<button class="btn btn-sm" onclick="location.reload()">Rafraichir</button>
+</div>
+<div style="overflow-x:auto"><table><thead><tr><th>Numero</th><th>Date</th><th>Tiers</th><th style="text-align:right">Montant</th><th>Statut</th><th>Actions</th></tr></thead>
+<tbody>{rows}</tbody></table></div></div>""".format(
+        title=title, nb=res["total"], href=href_key, btn=button_label, rows=rows)
+    return _sage_page(body, href_key)
+
+
+@app.route("/pos/devis")
+@_login_required
+def pos_devis_page():
+    return _ventes_common_page("devis", "devis", "+ Nouveau devis", "Devis")
+
+
+@app.route("/pos/commandes")
+@_login_required
+def pos_commandes_page():
+    return _ventes_common_page("commande", "commandes", "+ Nouvelle commande", "Commandes clients")
+
+
+@app.route("/pos/livraisons")
+@_login_required
+def pos_livraisons_page():
+    return _ventes_common_page("livraison", "livraisons", "+ Nouvelle livraison", "Bons de livraison")
+
+
+@app.route("/pos/factures")
+@_login_required
+def pos_factures_page():
+    return _ventes_common_page("vente", "ventes", "+ Nouvelle facture", "Factures de vente")
+
+
+@app.route("/pos/ventes")
+@_login_required
+def pos_ventes_page():
+    return redirect("/pos/factures")
+
+
+@app.route("/pos/avoirs")
+@_login_required
+def pos_avoirs_page():
+    res = commercial_engine.list_docs(type_doc="avoir", limit=200)
+    rows = ""
+    for ddoc in res["docs"]:
+        rows += ("<tr><td>{n}</td><td>{d}</td><td>{t}</td>"
+                 "<td style='text-align:right'>{m:,.0f}</td>"
+                 "<td>{ref}</td><td>{s}</td>"
+                 "<td><a class='btn btn-sm' href='/pos/avoirs/view/{id}' target='_blank'>Voir</a> "
+                 "<button class='btn btn-sm btn-danger' onclick=\"delDoc('{id}')\">Suppr</button></td></tr>").format(
+            n=_esc(ddoc.get("numero", "")), d=_esc(ddoc.get("date_facture", "")),
+            t=_esc(ddoc.get("tiers_nom", "")), m=abs(ddoc.get("montant_ttc", 0)),
+            ref=_esc(ddoc.get("reference", "") or "-"), s=_doc_status_badge(ddoc.get("statut", "")),
+            id=ddoc.get("id", ""))
+    if not rows:
+        rows = '<tr><td colspan="7" style="text-align:center;color:#64748b">Aucun avoir</td></tr>'
+
+    # Statistiques avoirs
+    htotal = abs(sum(d.get("montant_ttc", 0) for d in res["docs"]))
+    body = """
+<div class="stat-grid" style="margin-bottom:16px">
+<div class="stat"><div class="value">{nb}</div><div class="label">Avoirs</div></div>
+<div class="stat"><div class="value">{ht:,.0f}</div><div class="label">Total Avoir (FCFA)</div></div>
+<div class="stat"><div class="value">{nbr}</div><div class="label">Retours marchandise</div></div>
+</div>
+<div class="card"><h2>Avoirs (Credit Notes)</h2>
+<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap" class="no-print">
+<a href="/pos/avoirs/new" class="btn btn-sm btn-primary">+ Creer un avoir</a>
+</div>
+<div style="overflow-x:auto"><table><thead><tr><th>Numero</th><th>Date</th><th>Client</th><th style="text-align:right">Montant (FCFA)</th><th>Facture d'origine</th><th>Statut</th><th>Actions</th></tr></thead>
+<tbody>{rows}</tbody></table></div></div>
+<script>
+window.NATIVE_ALERTS = true;
+function delDoc(id){{if(!confirm('Supprimer cet avoir ?'))return;api('DELETE','/api/commercial/'+id).then(function(d){{if(d.success){{showToast('Supprime','ok');setTimeout(function(){{location.reload()}},800)}}else{{showToast('Erreur: '+d.error,'err')}}}})}}
+</script>""".format(nb=res["total"], ht=htotal, nbr=res["total"], rows=rows)
+    return _sage_page(body, "avoir")
+
+
+# ── Vue / Edition d'un document commercial ──
+
+def _doc_view_page(ddoc, section):
+    lignes_rows = ""
+    for l in ddoc.get("lignes", []):
+        lignes_rows += ("<tr><td>{}</td><td style='text-align:right'>{}</td>"
+                        "<td style='text-align:right'>{:,.2f}</td><td style='text-align:right'>{}</td>"
+                        "<td style='text-align:right'>{:,.0f}</td></tr>").format(
+            _esc(l.get("designation", "")), l.get("quantite", 1),
+            l.get("prix_unitaire", 0), _esc("{}%".format(l.get("taux_tva", 18))),
+            abs(l.get("montant_ttc", 0)))
+    if not lignes_rows:
+        lignes_rows = '<tr><td colspan="5" style="text-align:center;color:#64748b">Aucune ligne</td></tr>'
+    back = {"avoir": "/pos/avoirs", "devis": "/pos/devis", "commande": "/pos/commandes",
+            "livraison": "/pos/livraisons", "vente": "/pos/factures"}.get(section, "/pos/caisse")
+    body = """
+<div class="card"><h2>{title} {numero}</h2>
+<div style="margin-bottom:12px" class="no-print">
+<a href="{back}" class="btn btn-sm">Retour</a>
+<a href="/pos/{section}/edit/{id}" class="btn btn-sm btn-primary" style="margin-left:8px">Editer</a>
+<a href="/api/commercial/{id}/pdf" class="btn btn-sm btn-primary" style="margin-left:8px;text-decoration:none" target="_blank">PDF</a>
+</div>
+<table>
+<tr><td>Numero</td><td><strong>{numero}</strong></td></tr>
+<tr><td>Type</td><td><span class="badge badge-info">{type_doc}</span></td></tr>
+<tr><td>Date</td><td>{date}</td></tr>
+<tr><td>Reference</td><td>{ref}</td></tr>
+<tr><td>Tiers</td><td>{tiers} ({tcode})</td></tr>
+<tr><td>Statut</td><td>{statut}</td></tr>
+<tr><td>Notes</td><td>{notes}</td></tr>
+</table>
+<h3 style="margin-top:16px;color:#38bdf8">Lignes</h3>
+<table><thead><tr><th>Designation</th><th style="text-align:right">Qte</th><th style="text-align:right">Prix unit.</th><th style="text-align:right">TVA</th><th style="text-align:right">TTC</th></tr></thead>
+<tbody>{lignes}</tbody></table>
+<div style="text-align:right;margin-top:12px;font-size:18px">
+<strong style="color:#38bdf8">TOTAL TTC: {:,.0f} FCFA</strong><br>
+</div></div>""".format(
+        title=commercial_engine.DOC_TYPES.get(ddoc.get("type_doc", ""), "Document"),
+        numero=_esc(ddoc.get("numero", "")), back=back, section=section, id=ddoc.get("id", ""),
+        type_doc=_esc(ddoc.get("type_doc", "")), date=_esc(ddoc.get("date_facture", "")),
+        ref=_esc(ddoc.get("reference", "") or "-"), tiers=_esc(ddoc.get("tiers_nom", "")),
+        tcode=_esc(ddoc.get("tiers_code", "")), statut=_doc_status_badge(ddoc.get("statut", "")),
+        notes=_esc(ddoc.get("notes", "") or "-"), lignes=lignes_rows, ddoc=ddoc,
+        montant=abs(ddoc.get("montant_ttc", 0)))
+    return _sage_page(body, section)
+
+
+@app.route("/pos/ventes/view/<int:doc_id>")
+@app.route("/pos/devis/view/<int:doc_id>")
+@app.route("/pos/commandes/view/<int:doc_id>")
+@app.route("/pos/livraisons/view/<int:doc_id>")
+@app.route("/pos/avoirs/view/<int:doc_id>")
+@_login_required
+def pos_doc_view(doc_id):
+    ddoc = commercial_engine.get_doc(doc_id)
+    if not ddoc:
+        return "<h1>Document non trouve</h1>", 404
+    section = ddoc.get("type_doc", "vente")
+    section = {"vente": "vente", "devis": "devis", "commande": "commande",
+               "livraison": "livraison", "avoir": "avoir"}.get(section, "vente")
+    return _doc_view_page(ddoc, section)
+
+
+@app.route("/pos/avoirs/edit/<int:doc_id>")
+@app.route("/pos/ventes/edit/<int:doc_id>")
+@app.route("/pos/devis/edit/<int:doc_id>")
+@app.route("/pos/commandes/edit/<int:doc_id>")
+@app.route("/pos/livraisons/edit/<int:doc_id>")
+@_login_required
+def pos_doc_edit(doc_id):
+    ddoc = commercial_engine.get_doc(doc_id)
+    if not ddoc:
+        return "<h1>Document non trouve</h1>", 404
+    return _commercial_form_page(ddoc)
+
+
+_FORM_TYPE = "vente"
+
+
+def _commercial_form_page(ddoc=None):
+    global _FORM_TYPE
+    is_edit = ddoc is not None
+    type_doc = ddoc.get("type_doc", "vente") if is_edit else _FORM_TYPE
+    title_map = {"vente": "Nouvelle Facture", "devis": "Nouveau Devis", "commande": "Nouvelle Commande",
+                 "livraison": "Nouvelle Livraison", "avoir": "Nouvel Avoir"}
+    if is_edit:
+        title_map = {k: "Modifier " + v.replace("Nouvel", "l'").replace("Nouveau ", "le ").replace("Nouvelle ", "la ") for k, v in title_map.items()}
+    title = title_map.get(type_doc, "Document")
+
+    numero = ddoc.get("numero", "") if is_edit else ""
+    date_facture = ddoc.get("date_facture", "") if is_edit else ""
+    reference = ddoc.get("reference", "") if is_edit else ""
+    tiers_code = ddoc.get("tiers_code", "") if is_edit else ""
+    tiers_nom = ddoc.get("tiers_nom", "") if is_edit else ""
+    tiers_niu = ddoc.get("tiers_niu", "") if is_edit else ""
+    tiers_email = ddoc.get("tiers_email", "") if is_edit else ""
+    tiers_telephone = ddoc.get("tiers_telephone", "") if is_edit else ""
+    tiers_adresse = ddoc.get("tiers_adresse", "") if is_edit else ""
+    statut = ddoc.get("statut", "brouillon") if is_edit else "brouillon"
+    notes = ddoc.get("notes", "") if is_edit else ""
+
+    lignes_json = json.dumps(ddoc.get("lignes", [])) if is_edit else "[]"
+    contacts_json = json.dumps(pos_engine.list_contacts(limit=200))
+    products_json = json.dumps(pos_engine.list_products(limit=200))
+    tax_rates_json = json.dumps(pos_engine.list_tax_rates())
+
+    doc_type_opts = ""
+    for td, lbl in commercial_engine.DOC_TYPES.items():
+        sel = " selected" if td == type_doc else ""
+        doc_type_opts += '<option value="{}"{}>{}</option>'.format(td, sel, lbl)
+
+    # Special: creation d'avoir -> proposer facture source
+    avoir_source = ""
+    if type_doc == "avoir" and not is_edit:
+        factures = commercial_engine.list_docs(type_doc="vente", limit=200)["docs"]
+        opts = '<option value="">-- Choisir une facture --</option>'
+        for f in factures:
+            opts += '<option value="{}">{} - {} ({:,.0f})</option>'.format(
+                f["id"], _esc(f.get("numero", "")), _esc(f.get("tiers_nom", "")), f.get("montant_ttc", 0))
+        avoir_source = """
+<div style="margin:12px 0"><label>Facture d'origine (remplit automatiquement pour un avoir)</label>
+<select id="avoir-source">{opts}</select>
+<label style="margin-top:8px;display:flex;align-items:center;gap:8px">
+<input type="checkbox" id="avoir-retour" checked> Retour de stock</label></div>
+<div id="avoir-msg" style="font-size:12px;color:#94a3b8;margin-top:6px"></div>""".format(opts=opts)
+
+    body = """
+<div class="card"><h2>{title}</h2>
+<form id="form-doc" onsubmit="return false;">
+<div class="grid-2">
+<div><label>Numero</label><input type="text" id="doc_numero" value="{numero}" {readonly}></div>
+<div><label>Date</label><input type="date" id="doc_date" value="{date}"></div>
+<div><label>Type document</label><select id="doc_type">{doc_type_opts}</select></div>
+<div><label>Statut</label><select id="doc_statut">
+<option value="brouillon" {s_b}>Brouillon</option>
+<option value="valide" {s_v}>Valide</option>
+<option value="a_comptabiliser" {s_a}>A comptabiliser</option></select></div>
+</div>
+{avoir_source}
+<div class="grid-2" style="margin-top:12px">
+<div><label>Code tiers</label><input type="text" id="doc_tcode" value="{tcode}"></div>
+<div><label>Nom tiers</label><input type="text" id="doc_tnom" value="{tnom}"></div>
+<div><label>NIU</label><input type="text" id="doc_tniu" value="{tniu}"></div>
+<div><label>Email</label><input type="text" id="doc_temail" value="{temail}"></div>
+<div><label>Telephone</label><input type="text" id="doc_ttel" value="{ttel}"></div>
+<div><label>Adresse</label><input type="text" id="doc_tadr" value="{tadr}"></div>
+</div>
+<div style="margin-top:16px">
+<div class="section-title">Lignes</div>
+<div id="lines-container"></div>
+<button type="button" class="btn btn-sm" onclick="addLine()" style="margin-top:10px">+ Ajouter une ligne</button>
+</div>
+<div style="margin-top:16px">
+<div class="section-title">Notes</div>
+<textarea id="doc_notes" rows="3" style="width:100%;background:#fff;border:1.5px solid #e2e8f0;color:#1e293b;padding:10px 14px;border-radius:8px;font-size:13px;font-family:inherit;resize:vertical">{notes}</textarea>
+</div>
+<div style="text-align:right;margin-top:18px;color:#0f172a">
+<strong>Total TTC: <span id="total-ttc">0</span> FCFA</strong>
+</div>
+<div style="margin-top:12px">
+<button type="button" class="btn btn-primary" onclick="saveDoc()">Enregistrer</button>
+<a href="/pos/{back}" class="btn btn-sm" style="margin-left:8px">Retour</a>
+</div>
+</form></div>
+<script>
+window.NATIVE_ALERTS = true;
+var contacts={contacts_json};
+var products={products_json};
+var taxRates={tax_rates_json};
+var existingLines={lignes_json};
+var docId={doc_id};
+var lineCounter=0;
+
+function addLine(data){{
+lineCounter++;var idx=lineCounter;
+var html='<div style="border:1px solid #e2e8f0;border-radius:8px;padding:12px;margin-bottom:8px;background:#fff" data-line="'+idx+'">'
++'<div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:8px">'
++'<div><label>Designation</label><input type="text" class="l_des" value="'+(data?data.designation:'')+'"></div>'
++'<div><label>Qte</label><input type="number" class="l_q" value="'+(data?data.quantite:1)+'" min="0" onchange="calcTotals()"></div>'
++'<div><label>Prix unit.</label><input type="number" class="l_p" value="'+(data?data.prix_unitaire:0)+'" min="0" onchange="calcTotals()"></div>'
++'<div><label>TVA</label><select class="l_t" onchange="calcTotals()"></select></div>'
++'<div style="display:flex;align-items:flex-end"><button type="button" class="btn btn-sm btn-danger" onclick="this.closest(\'[data-line]\').remove();calcTotals()">x</button></div>'
++'</div></div>';
+document.getElementById("lines-container").insertAdjacentHTML("beforeend",html);
+var row=document.querySelectorAll("[data-line]")[document.querySelectorAll("[data-line]").length-1];
+var sel=row.querySelector(".l_t");
+taxRates.forEach(function(t){{var o=document.createElement("option");o.value=t.taux;o.textContent=t.code+" ("+t.taux+"%)";if(data&&data.taux_tva==t.taux)o.selected=true;sel.appendChild(o)}});
+}}
+function calcTotals(){{
+var tot=0;
+document.querySelectorAll("[data-line]").forEach(function(row){{
+var q=parseFloat(row.querySelector(".l_q").value)||0;
+var p=parseFloat(row.querySelector(".l_p").value)||0;
+var t=parseFloat(row.querySelector(".l_t").value)||0;
+tot+=round2(q*p*(1+t/100));
+}});
+document.getElementById("total-ttc").textContent=Number(round2(tot)).toLocaleString("fr-FR");
+}}
+function round2(n){{return Math.round(n*100)/100}}
+
+function gather(){{
+var d={{}};
+d.type_doc=document.getElementById("doc_type").value;
+d.date_facture=document.getElementById("doc_date").value;
+d.statut=document.getElementById("doc_statut").value;
+d.tiers_code=document.getElementById("doc_tcode").value;
+d.tiers_nom=document.getElementById("doc_tnom").value;
+d.tiers_niu=document.getElementById("doc_tniu").value;
+d.tiers_email=document.getElementById("doc_temail").value;
+d.tiers_telephone=document.getElementById("doc_ttel").value;
+d.tiers_adresse=document.getElementById("doc_tadr").value;
+d.notes=document.getElementById("doc_notes").value;
+d.lignes=[];
+document.querySelectorAll("[data-line]").forEach(function(row){{
+var ligne={{}};
+ligne.designation=row.querySelector(".l_des").value;
+ligne.quantite=parseFloat(row.querySelector(".l_q").value)||1;
+ligne.prix_unitaire=parseFloat(row.querySelector(".l_p").value)||0;
+ligne.taux_tva=parseFloat(row.querySelector(".l_t").value)||18;
+if(ligne.designation)d.lignes.push(ligne);
+}});
+return d;
+}}
+
+function saveDoc(){{
+var d=gather();
+if(!d.lignes.length){{showToast("Ajoutez au moins une ligne","err");return}}
+var url=docId?"/api/commercial/"+docId:"/api/commercial";
+var method=docId?"PUT":"POST";
+var src=document.getElementById("avoir-source");
+var send=d;
+if(!docId&&d.type_doc==="avoir"&&src){{
+var sid=document.getElementById("avoir-source").value;
+if(sid){{
+var retro=document.getElementById("avoir-retour").checked;
+api("POST","/api/commercial/avoir",{{source_invoice_id:parseInt(sid),retour_stock:retro,date_facture:d.date_facture}}).then(function(r){{
+if(r.success){{showToast("Avoir "+r.numero+" cree","ok");setTimeout(function(){{location.href="/pos/avoirs"}},1200)}}
+else{{showToast("Erreur: "+r.error,"err")}}
+}});
+return;
+}}
+}}
+api(method,url,d).then(function(r){{
+if(r.success||r.id){{showToast("Document sauvegarde: "+(r.numero||""),"ok");setTimeout(function(){{var s={sec:(d.type_doc==="avoir"?"avoirs":d.type_doc==="vente"?"factures":d.type_doc==="devis"?"devis":d.type_doc==="commande"?"commandes":"livraisons")};location.href="/pos/"+s.sec}},900)}}
+else{{showToast("Erreur: "+(r.error||"inconnue"),"err")}}
+}}).catch(function(e){{showToast("Erreur reseau: "+e,"err")}});
+}}
+
+if(existingLines.length>0){{existingLines.forEach(function(l){{addLine(l)}})}}
+else{{addLine()}}
+calcTotals();
+</script>""".format(
+        title=title, numero=_esc(numero), date=date_facture, doc_type_opts=doc_type_opts,
+        readonly="readonly" if is_edit else "",
+        s_b="selected" if statut == "brouillon" else "", s_v="selected" if statut == "valide" else "",
+        s_a="selected" if statut == "a_comptabiliser" else "",
+        avoir_source=avoir_source,
+        tcode=_esc(tiers_code), tnom=_esc(tiers_nom), tniu=_esc(tiers_niu),
+        temail=_esc(tiers_email), ttel=_esc(tiers_telephone), tadr=_esc(tiers_adresse),
+        notes=_esc(notes), back=type_doc,
+        contacts_json=contacts_json, products_json=products_json, tax_rates_json=tax_rates_json,
+        lignes_json=lignes_json, doc_id=ddoc["id"] if is_edit else "null"
+    )
+    section = type_doc if type_doc != "vente" else "factures"
+    return _sage_page(body, section)
+
+
+@app.route("/pos/ventes/new")
+@app.route("/pos/devis/new")
+@app.route("/pos/commandes/new")
+@app.route("/pos/livraisons/new")
+@app.route("/pos/avoirs/new")
+@_login_required
+def pos_doc_new():
+    td = request.path.split("/")[2]
+    type_map = {"ventes": "vente", "devis": "devis", "commandes": "commande",
+                "livraisons": "livraison", "avoirs": "avoir"}
+    type_doc = type_map.get(td, "vente")
+    # Pour command/new et autres, on passe le type via une variable
+    global _FORM_TYPE
+    _FORM_TYPE = type_doc
+    return _commercial_form_page()
+
+
+# ── Tiers / Stocks / Paiements / Rapports ──
+
+@app.route("/pos/tiers")
+@_login_required
+def pos_tiers_page():
+    clients = pos_engine.list_contacts(type_filter="client", limit=200)
+    fournisseurs = [c for c in pos_engine.list_contacts(type_filter="fournisseur", limit=200)]
+    def _table(liste, typ):
+        rows = ""
+        for c in liste:
+            rows += ("<tr><td>{code}</td><td>{nom}</td><td>{niu}</td><td>{tel}</td>"
+                     "<td>{ville}</td><td><span class='badge {act}'>{stxt}</span></td></tr>").format(
+                code=_esc(c.get("code", "")), nom=_esc(c.get("nom", "")),
+                niu=_esc(c.get("niu", "") or "-"), tel=_esc(c.get("telephone", "") or "-"),
+                ville=_esc(c.get("ville", "") or "-"),
+                act="badge-ok" if c.get("est_actif") else "badge-err",
+                stxt="Actif" if c.get("est_actif") else "Inactif")
+        if not rows:
+            rows = '<tr><td colspan="6" style="text-align:center;color:#64748b">Aucun(e) {}</td></tr>'.format(typ)
+        return rows
+    body = """
+<div class="card"><h2>Clients ({})</h2>
+<div style="overflow-x:auto"><table><thead><tr><th>Code</th><th>Nom</th><th>NIU</th><th>Telephone</th><th>Ville</th><th>Statut</th></tr></thead>
+<tbody>{}</tbody></table></div></div>
+<div class="card" style="margin-top:16px"><h2>Fournisseurs ({})</h2>
+<div style="overflow-x:auto"><table><thead><tr><th>Code</th><th>Nom</th><th>NIU</th><th>Telephone</th><th>Ville</th><th>Statut</th></tr></thead>
+<tbody>{}</tbody></table></div></div>
+<div style="margin-top:16px"><a href="/clients" class="btn btn-sm btn-primary">Gerer les contacts</a></div>""".format(
+        len(clients), _table(clients, "client"), len(fournisseurs), _table(fournisseurs, "fournisseur"))
+    return _sage_page(body, "tiers")
+
+
+@app.route("/pos/stocks")
+@_login_required
+def pos_stocks_page():
+    products = pos_engine.list_products(limit=500)
+    rows = ""
+    for p in products:
+        rows += ("<tr><td>{ref}</td><td>{des}</td><td>{fam}</td><td style='text-align:right'>{px:,.0f}</td>"
+                 "<td style='text-align:right'>{a:,.0f}</td><td style='text-align:right'>{v:,.0f}</td></tr>").format(
+            ref=_esc(p.get("ref", "")), des=_esc(p.get("designation", "")), fam=_esc(p.get("famille", "") or "-"),
+            px=p.get("prix_vente", 0), a=p.get("stock_reel", 0), v=p.get("stock_reel", 0) * (p.get("prix_achat", 0) or p.get("prix_vente", 0)))
+    if not rows:
+        rows = '<tr><td colspan="6" style="text-align:center;color:#64748b">Aucun article</td></tr>'
+    qser = sum(p.get("stock_reel", 0) for p in products)
+    body = """
+<div class="stat-grid" style="margin-bottom:16px">
+<div class="stat"><div class="value">{nb}</div><div class="label">Articles</div></div>
+<div class="stat"><div class="value">{qte:,.0f}</div><div class="label">Unites en stock</div></div>
+</div>
+<div class="card"><h2>Mouvements de stock / Inventaire</h2>
+<div style="margin-bottom:12px" class="no-print">
+<a href="/pos/stocks/articles" class="btn btn-sm btn-primary">Gerer les articles</a>
+<button class="btn btn-sm" onclick="location.reload()">Rafraichir</button>
+</div>
+<div style="overflow-x:auto"><table><thead><tr><th>Ref</th><th>Designation</th><th>Famille</th><th style="text-align:right">PV (FCFA)</th><th style="text-align:right">Stock</th><th style="text-align:right">Valeur</th></tr></thead>
+<tbody>{rows}</tbody></table></div></div>""".format(
+        nb=len(products), qte=qser, rows=rows)
+    return _sage_page(body, "stock")
+
+
+@app.route("/pos/stocks/articles")
+@_login_required
+def pos_stock_articles_page():
+    products = pos_engine.list_products(limit=500)
+    rows = ""
+    for p in products:
+        rows += ("<tr><td>{ref}</td><td>{des}</td><td>{fam}</td><td style='text-align:right'>{px:,.0f}</td>"
+                 "<td style='text-align:right'>{a:,.0f}</td>"
+                 "<td><button class='btn btn-sm' onclick=\"editProd({id})\">Editer</button></td></tr>").format(
+            ref=_esc(p.get("ref", "")), des=_esc(p.get("designation", "")), fam=_esc(p.get("famille", "") or "-"),
+            px=p.get("prix_vente", 0), a=p.get("stock_reel", 0), id=p.get("id", ""))
+    body = """
+<div class="card"><h2>Articles ({})</h2>
+<button class="btn btn-sm btn-primary" onclick="newProd()" style="margin-bottom:12px">+ Nouvel article</button>
+<div style="overflow-x:auto"><table><thead><tr><th>Ref</th><th>Designation</th><th>Famille</th><th style="text-align:right">PV (FCFA)</th><th style="text-align:right">Stock</th><th>Actions</th></tr></thead>
+<tbody>{rows}</tbody></table></div>
+<script>
+window.NATIVE_ALERTS=true;
+function newProd(){{var ref=prompt('Reference article:');if(!ref)return;var des=prompt('Designation:');if(!des)return;var px=parseFloat(prompt('Prix de vente (FCFA):'))||0;var st=parseFloat(prompt('Stock initial:'))||0;api('POST','/api/commercial/product',{{ref:ref,designation:des,prix_vente:px,stock_reel:st}}).then(function(d){{showToast(d.success?'Article cree':'Erreur: '+d.error,d.success?'ok':'err');if(d.success)setTimeout(function(){{location.reload()}},800)}})}}
+function editProd(id){{location.href='/pos/stocks/articles/'+id}}
+</script></div>""".format(len(products), rows=rows)
+    return _sage_page(body, "stock")
+
+
+@app.route("/pos/paiements")
+@_login_required
+def pos_paiements_page():
+    res = commercial_engine.list_docs(type_doc="vente", limit=200)
+    rows = ""
+    total_impaye = 0
+    for ddoc in res["docs"]:
+        rest = ddoc.get("montant_restant", 0)
+        if rest > 0:
+            total_impaye += rest
+        rows += ("<tr><td>{n}</td><td>{d}</td><td>{t}</td><td style='text-align:right'>{m:,.0f}</td>"
+                 "<td style='text-align:right'>{r:,.0f}</td><td>{s}</td></tr>").format(
+            n=_esc(ddoc.get("numero", "")), d=_esc(ddoc.get("date_facture", "")),
+            t=_esc(ddoc.get("tiers_nom", "")), m=ddoc.get("montant_ttc", 0), r=rest,
+            s='<span class="badge badge-err">Impaye</span>' if rest > 0 else '<span class="badge badge-ok">Solde</span>')
+    if not rows:
+        rows = '<tr><td colspan="6" style="text-align:center;color:#64748b">Aucune facture</td></tr>'
+    body = """
+<div class="stat-grid" style="margin-bottom:16px">
+<div class="stat"><div class="value">{imp:,.0f}</div><div class="label">Total impayes (FCFA)</div></div>
+</div>
+<div class="card"><h2>Reglements / Paiements</h2>
+<div style="overflow-x:auto"><table><thead><tr><th>Numero</th><th>Date</th><th>Tiers</th><th style="text-align:right">TTC</th><th style="text-align:right">Restant</th><th>Statut</th></tr></thead>
+<tbody>{rows}</tbody></table></div></div>""".format(imp=total_impaye, rows=rows)
+    return _sage_page(body, "paiement")
+
+
+@app.route("/pos/rapports")
+@_login_required
+def pos_rapports_page():
+    stats = commercial_engine.doc_stats()
+    cc = pos_engine.count_tickets()
+    def _stat_card(nb, montant, label):
+        return ('<div class="stat"><div class="value">{nb}</div><div class="label">{label}</div>'
+                '<div style="font-size:11px;color:#64748b">{m:,.0f} FCFA</div></div>').format(
+            nb=nb, label=label, m=montant)
+    cards = "".join([
+        '<div class="card"><h2>Gestion Commerciale — Rapports</h2><div class="stat-grid">',
+        _stat_card(stats["vente"]["nb"], stats["vente"]["montant"], "Factures vente"),
+        _stat_card(stats["devis"]["nb"], stats["devis"]["montant"], "Devis"),
+        _stat_card(stats["commande"]["nb"], stats["commande"]["montant"], "Commandes"),
+        _stat_card(stats["livraison"]["nb"], stats["livraison"]["montant"], "Livraisons"),
+        _stat_card(stats["avoir"]["nb"], stats["avoir"]["montant"], "Avoirs"),
+        _stat_card(cc.get("tickets_jour", 0), cc.get("ca_jour", 0), "Caisse aujourd'hui"),
+        _stat_card(cc.get("total", 0), cc.get("ca_total", 0), "Tickets caisse"),
+        '</div></div>',
+    ])
+    return _sage_page(cards, "rapport")
+
+
+# ── API COMMERCIAL ──
+
+@app.route("/api/commercial", methods=["GET"])
+@_login_required
+def api_commercial_list():
+    res = commercial_engine.list_docs(
+        type_doc=request.args.get("type") or None,
+        statut=request.args.get("statut") or None,
+        search=request.args.get("search") or None,
+        limit=min(int(request.args.get("limit", 200)), 500)
+    )
+    return jsonify(res)
+
+
+@app.route("/api/commercial", methods=["POST"])
+@_login_required
+def api_commercial_create():
+    data = request.get_json(silent=True) or {}
+    try:
+        res = commercial_engine.create_doc(data)
+        return jsonify({"success": True, **res})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
+
+@app.route("/api/commercial/<int:doc_id>", methods=["PUT"])
+@_login_required
+def api_commercial_update(doc_id):
+    data = request.get_json(silent=True) or {}
+    try:
+        res = commercial_engine.update_doc(doc_id, data)
+        if not res:
+            return jsonify({"success": False, "error": "Document non trouve"}), 404
+        return jsonify({"success": True, "id": doc_id})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
+
+@app.route("/api/commercial/<int:doc_id>", methods=["DELETE"])
+@_login_required
+def api_commercial_delete(doc_id):
+    try:
+        ok = commercial_engine.delete_doc(doc_id)
+        return jsonify({"success": ok})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
+
+@app.route("/api/commercial/avoir", methods=["POST"])
+@_login_required
+def api_commercial_avoir():
+    data = request.get_json(silent=True) or {}
+    source_invoice_id = data.get("source_invoice_id")
+    if not source_invoice_id:
+        return jsonify({"success": False, "error": "source_invoice_id requis"}), 400
+    try:
+        res = commercial_engine.create_avoir_from_invoice(int(source_invoice_id), data)
+        if not res:
+            return jsonify({"success": False, "error": "Facture source non trouvee ou non valable"}), 404
+        return jsonify({"success": True, **res})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
+
+@app.route("/api/commercial/product", methods=["POST"])
+@_login_required
+def api_commercial_product():
+    data = request.get_json(silent=True) or {}
+    try:
+        res = pos_engine.create_product(data)
+        return jsonify(res)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
+
+@app.route("/pos/stocks/articles/<int:prod_id>")
+@_login_required
+def pos_stock_article_edit(prod_id):
+    p = None
+    with sqlite_db.get_cursor() as cur:
+        cur.execute("SELECT * FROM products WHERE id = ?", (prod_id,))
+        row = cur.fetchone()
+        if row:
+            p = sqlite_db.row_to_dict(row)
+    if not p:
+        return "<h1>Article non trouve</h1>", 404
+    body = """
+<div class="card"><h2>Article {ref}</h2>
+<form id="form-prod" onsubmit="return false;">
+<div class="grid-2">
+<div><label>Reference</label><input type="text" id="p_ref" value="{ref}"></div>
+<div><label>Designation</label><input type="text" id="p_des" value="{des}"></div>
+<div><label>Famille</label><input type="text" id="p_fam" value="{fam}"></div>
+<div><label>Code-barres</label><input type="text" id="p_bc" value="{bc}"></div>
+<div><label>Prix de vente (FCFA)</label><input type="number" id="p_pv" value="{pv}"></div>
+<div><label>Prix d'achat (FCFA)</label><input type="number" id="p_pa" value="{pa}"></div>
+<div><label>TVA (%)</label><input type="number" id="p_tva" value="{tva}"></div>
+<div><label>Stock</label><input type="number" id="p_st" value="{st}"></div>
+</div>
+<div style="margin-top:16px">
+<button type="button" class="btn btn-primary" onclick="saveProd()">Enregistrer</button>
+<a href="/pos/stocks/articles" class="btn btn-sm" style="margin-left:8px">Retour</a>
+</div>
+</form></div>
+<script>
+window.NATIVE_ALERTS=true;
+function saveProd(){{
+api('PUT','/api/commercial/product/{id}',{{ref:document.getElementById('p_ref').value,designation:document.getElementById('p_des').value,famille:document.getElementById('p_fam').value,barcode:document.getElementById('p_bc').value,prix_vente:parseFloat(document.getElementById('p_pv').value)||0,prix_achat:parseFloat(document.getElementById('p_pa').value)||0,tva_code:String(document.getElementById('p_tva').value)||'18',stock_reel:parseFloat(document.getElementById('p_st').value)||0}}).then(function(d){{showToast(d.success?'Sauvegarde':'Erreur: '+d.error,d.success?'ok':'err');if(d.success)setTimeout(function(){{location.href='/pos/stocks/articles'}},800)}})
+}}
+</script>""".format(
+        ref=_esc(p.get("ref", "")), des=_esc(p.get("designation", "")), fam=_esc(p.get("famille", "")),
+        bc=_esc(p.get("barcode", "")), pv=p.get("prix_vente", 0), pa=p.get("prix_achat", 0),
+        tva=p.get("tva_code", "18"), st=p.get("stock_reel", 0), id=prod_id)
+    return _sage_page(body, "stock")
+
+
+@app.route("/api/commercial/product/<int:prod_id>", methods=["PUT"])
+@_login_required
+def api_commercial_product_update(prod_id):
+    data = request.get_json(silent=True) or {}
+    try:
+        res = pos_engine.update_product(prod_id, data)
+        return jsonify(res)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
 
 
 # ── API POS ──
@@ -4009,7 +4696,7 @@ function saveContact() {{
         rows=rows,
         contacts_json=__import__("json").dumps(contacts),
         csrf_json=json.dumps(_get_csrf_token()),
-        toast=ALERT_ZONE
+        toast=TOAST
     )
     return render_template_string(html)
 

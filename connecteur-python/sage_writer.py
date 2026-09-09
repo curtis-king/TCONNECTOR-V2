@@ -21,6 +21,42 @@ def _get_sage_domaine_type():
     return {"vente_domaine": 0, "vente_type": 6, "achat_domaine": 1}
 
 
+def _lookup_tiers_name(invoice):
+    try:
+        with get_sqlite_cursor() as cur:
+            cur.execute("""
+                SELECT tiers_nom, tiers_niu, tiers_telephone, reference
+                FROM invoices WHERE id = ?
+            """, (invoice.get("id"),))
+            row = cur.fetchone()
+            if not row:
+                return ""
+            return (row["tiers_nom"] or "").strip()
+    except Exception:
+        return ""
+
+
+def _ensure_tiers_exists(cur, tiers_code, invoice):
+    """Verifie que le compte tiers existe dans F_COMPTET; sinon le cree."""
+    if not tiers_code:
+        return False
+    cur.execute("SELECT CT_Num FROM F_COMPTET WHERE CT_Num = ?", (tiers_code,))
+    if cur.fetchone():
+        return True
+
+    intitule = _lookup_tiers_name(invoice) or tiers_code
+    try:
+        cur.execute("""
+            INSERT INTO F_COMPTET (CT_Num, CT_Intitule, CT_Type, CT_Reglement, CT_Souche)
+            VALUES (?, ?, 0, 1, ?)
+        """, (tiers_code, intitule, tiers_code))
+        logger.warning("Compte tiers cree dans Sage: %s (%s)", tiers_code, intitule)
+        return True
+    except Exception as e:
+        logger.error("Creation compte tiers %s echouee: %s", tiers_code, e)
+        return False
+
+
 def write_invoice_to_sage(invoice):
     cursor_ctx = _get_sage_cursor()
     if cursor_ctx is None:
@@ -41,6 +77,8 @@ def write_invoice_to_sage(invoice):
 
     try:
         with cursor_ctx as cur:
+            _ensure_tiers_exists(cur, tiers_val, invoice)
+
             sql = """
                 INSERT INTO F_DOCENTETE (
                     DO_Domaine, DO_Type, DO_Piece, DO_Date,

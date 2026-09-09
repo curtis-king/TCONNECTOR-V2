@@ -377,6 +377,10 @@ def find_product_by_barcode(barcode):
     with get_cursor() as cur:
         cur.execute("SELECT * FROM products WHERE barcode = ? AND est_actif = 1", (barcode,))
         row = cur.fetchone()
+        if row:
+            return row_to_dict(row)
+        cur.execute("SELECT * FROM products WHERE ref = ? AND est_actif = 1", (barcode,))
+        row = cur.fetchone()
         return row_to_dict(row) if row else None
 
 

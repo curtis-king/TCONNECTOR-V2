@@ -24,3 +24,5 @@ connecteur-python/data/
 .idea/
 .DS_Store
 Thumbs.db
+# Kimi project memory
+.kimi-memory/

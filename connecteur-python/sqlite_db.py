@@ -352,6 +352,14 @@ def _seed_default_settings():
         "default_tva_code": "18",
         "company_logo_path": "",
         "ticket_message": "Merci pour votre achat !",
+        "doc_prefix_vente": "FA", "doc_next_vente": "1", "doc_format_vente": "FA{:06d}",
+        "doc_prefix_devis": "DEV", "doc_next_devis": "1", "doc_format_devis": "DEV{:06d}",
+        "doc_prefix_commande": "CMD", "doc_next_commande": "1", "doc_format_commande": "CMD{:06d}",
+        "doc_prefix_livraison": "BL", "doc_next_livraison": "1", "doc_format_livraison": "BL{:06d}",
+        "doc_prefix_avoir": "AV", "doc_next_avoir": "1", "doc_format_avoir": "AV{:06d}",
+        "doc_prefix_achat": "FAC", "doc_next_achat": "1", "doc_format_achat": "FAC{:06d}",
+        "doc_prefix_cmd_fourn": "CF", "doc_next_cmd_fourn": "1", "doc_format_cmd_fourn": "CF{:06d}",
+        "doc_prefix_reception": "BC", "doc_next_reception": "1", "doc_format_reception": "BC{:06d}",
     }
     with get_cursor() as cur:
         for key, value in defaults.items():
@@ -435,6 +443,42 @@ def generate_ticket_number():
                 cur.execute(
                     "UPDATE settings SET value = ?, updated_at = datetime('now') WHERE key = 'pos_next_number'",
                     (str(num + 1),)
+                )
+                return numero
+            num += 1
+
+
+# Prefixes de numerotation par type de document commercial (style Sage 100)
+# type_doc -> (cle prefixe, cle compteur, format par defaut)
+DOC_PREFIX_CONFIG = {
+    "vente":      ("doc_prefix_vente",      "doc_next_vente",      "FA{:06d}"),
+    "devis":      ("doc_prefix_devis",      "doc_next_devis",      "DEV{:06d}"),
+    "commande":   ("doc_prefix_commande",   "doc_next_commande",   "CMD{:06d}"),
+    "livraison":  ("doc_prefix_livraison",  "doc_next_livraison",  "BL{:06d}"),
+    "avoir":      ("doc_prefix_avoir",      "doc_next_avoir",      "AV{:06d}"),
+    "achat":      ("doc_prefix_achat",      "doc_next_achat",      "FAC{:06d}"),
+    "cmd_fourn":  ("doc_prefix_cmd_fourn",  "doc_next_cmd_fourn",  "CF{:06d}"),
+    "reception":  ("doc_prefix_reception",  "doc_next_reception",  "BC{:06d}"),
+}
+
+
+def generate_doc_number(type_doc="vente"):
+    """Genere un numero de document commercial par type (Devis, Cmd, BL, Avoir, Facture...)."""
+    cfg = DOC_PREFIX_CONFIG.get(type_doc, DOC_PREFIX_CONFIG["vente"])
+    prefix_key, next_key, default_fmt = cfg
+    prefix = get_setting(prefix_key, default_fmt.split("{")[0])
+    fmt = get_setting("doc_format_" + type_doc, default_fmt)
+    with get_cursor() as cur:
+        cur.execute("SELECT value FROM settings WHERE key = ?", (next_key,))
+        row = cur.fetchone()
+        num = int(row["value"]) if row else 1
+        while True:
+            numero = fmt.format(num)
+            cur.execute("SELECT id FROM invoices WHERE numero = ?", (numero,))
+            if not cur.fetchone():
+                cur.execute(
+                    "UPDATE settings SET value = ?, updated_at = datetime('now') WHERE key = ?",
+                    (str(num + 1), next_key)
                 )
                 return numero
             num += 1

@@ -1,8 +1,14 @@
+import hashlib
 import logging
 from sqlite_db import get_cursor
 from database import fetch_articles
 
 logger = logging.getLogger("t-connector.articles")
+
+
+def _generate_barcode(ref):
+    h = hashlib.md5(ref.encode("utf-8")).hexdigest()[:13]
+    return h
 
 
 def _upsert_products(articles):
@@ -16,6 +22,8 @@ def _upsert_products(articles):
 
             designation = art.get("designation") or ref
             barcode = art.get("barcode") or ""
+            if not barcode:
+                barcode = _generate_barcode(ref)
             famille = art.get("famille") or ""
             unite = art.get("unite") or "U"
             tva_code = art.get("tva_code")
@@ -47,12 +55,14 @@ def _upsert_products(articles):
                 est_actif = 1
 
             cur.execute(
-                "SELECT id FROM products WHERE ref = ? OR sage_ar_ref = ?",
+                "SELECT id, barcode FROM products WHERE ref = ? OR sage_ar_ref = ?",
                 (ref, ref)
             )
             row = cur.fetchone()
 
             if row:
+                existing_bc = (row["barcode"] or "").strip()
+                final_barcode = barcode if barcode else (existing_bc or _generate_barcode(ref))
                 cur.execute("""
                     UPDATE products SET
                         barcode = ?, designation = ?, famille = ?,
@@ -62,7 +72,7 @@ def _upsert_products(articles):
                         updated_at = datetime('now')
                     WHERE id = ?
                 """, (
-                    barcode, designation, famille, nature, prix_vente, prix_achat,
+                    final_barcode, designation, famille, nature, prix_vente, prix_achat,
                     tva_code, unite, stock, est_actif, ref, row["id"]
                 ))
                 updated += 1
