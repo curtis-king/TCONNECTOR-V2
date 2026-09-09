@@ -3,98 +3,68 @@ import sys
 import logging
 import signal
 import threading
-from logging.handlers import RotatingFileHandler
+import subprocess
 
-if getattr(sys, 'frozen', False):
-    SCRIPT_DIR = os.path.dirname(sys.executable)
-else:
-    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+from app.core.paths import base_dir, data_dir
+from app.core.logging_setup import setup_logging
+from app.config.manager import load_config, get_config
+from app.integration.sage.database import close_pool
+from app.storage.db import init_database, get_cursor
+from app.sync.connectivity import check_now, start_background_check, stop_background_check
+from app.sync.scheduler import start_all, stop_all
+from app.web.app import create_app
+
+SCRIPT_DIR = base_dir()
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-from config_manager import load_config, get_config
-from database import close_pool
-from sync_engine import start_polling, stop_polling
-from sync_bidirectional import start_bi_sync
-from dashboard import app
-from connectivity import check_now, start_background_check, stop_background_check
-
-LOG_FORMAT = "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
-MAX_LOG_SIZE = 5 * 1024 * 1024
-LOG_BACKUP_COUNT = 3
+app = create_app()
 
 
-def setup_logging():
-    log_dir = os.path.join(SCRIPT_DIR, "data")
-    os.makedirs(log_dir, exist_ok=True)
-
-    log_level = get_config().get("log_level", "info").upper()
-    numeric_level = getattr(logging, log_level, logging.INFO)
-
-    file_handler = RotatingFileHandler(
-        os.path.join(log_dir, "output.log"),
-        maxBytes=MAX_LOG_SIZE,
-        backupCount=LOG_BACKUP_COUNT,
-        encoding="utf-8",
-    )
-
-    stream_handler = logging.StreamHandler(sys.stdout)
-
-    logging.basicConfig(level=numeric_level, format=LOG_FORMAT, handlers=[file_handler, stream_handler])
-
-    error_handler = RotatingFileHandler(
-        os.path.join(log_dir, "error.log"),
-        maxBytes=MAX_LOG_SIZE,
-        backupCount=LOG_BACKUP_COUNT,
-        encoding="utf-8",
-    )
-    error_handler.setLevel(logging.ERROR)
-    error_handler.setFormatter(logging.Formatter(LOG_FORMAT))
-    logging.getLogger().addHandler(error_handler)
+def _init_sqlite_and_seed(logger):
+    try:
+        init_database()
+        logger.info("SQLite local initialise (data/tconnector.db)")
+        try:
+            from app.web.auth.user_auth import ensure_schema, migrate_admin_from_config
+            ensure_schema()
+            admin_id = migrate_admin_from_config()
+            if admin_id:
+                logger.info("Compte administrateur initial cree (id=%s)", admin_id)
+        except Exception as e:
+            logger.warning("Init authentification: %s", e)
+        try:
+            from app.sync.article_sync import sync_articles_from_sage
+            result = sync_articles_from_sage()
+            logger.info("Sync articles Sage au demarrage: %s", result)
+        except Exception as e:
+            logger.warning("Sync articles au demarrage: %s", e)
+        try:
+            from app.domain.seed import seed_vendeurs, seed_clients, seed_products
+            seed_vendeurs()
+            seed_clients()
+            with get_cursor() as cur:
+                cur.execute("SELECT COUNT(*) AS c FROM products")
+                nb_articles = cur.fetchone()["c"]
+            if not nb_articles:
+                logger.warning("Aucun article disponible - seed de demonstration (fallback hors-ligne)")
+                seed_products()
+        except Exception as e:
+            logger.warning("Seed data: %s", e)
+    except Exception as e:
+        logger.error("Erreur init SQLite: %s", e)
 
 
 def main():
     load_config()
-    setup_logging()
+    setup_logging(log_level=get_config().get("log_level", "info"))
     logger = logging.getLogger("t-connector.main")
 
     logger.info("=" * 60)
     logger.info("T-CONNECTOR SFEC - Demarrage")
     logger.info("=" * 60)
 
-    try:
-        import sqlite_db
-        sqlite_db.init_database()
-        logger.info("SQLite local initialise (data/tconnector.db)")
-        try:
-            import user_auth
-            user_auth.ensure_schema()
-            admin_id = user_auth.migrate_admin_from_config()
-            if admin_id:
-                logger.info("Compte administrateur initial cree (id=%s)", admin_id)
-        except Exception as e:
-            logger.warning("Init authentification: %s", e)
-        try:
-            import article_sync
-            result = article_sync.sync_articles_from_sage()
-            logger.info("Sync articles Sage au demarrage: %s", result)
-        except Exception as e:
-            logger.warning("Sync articles au demarrage: %s", e)
-        try:
-            import seed_data
-            seed_data.seed_vendeurs()
-            seed_data.seed_clients()
-            import sqlite_db as _sdb
-            with _sdb.get_cursor() as cur:
-                cur.execute("SELECT COUNT(*) AS c FROM products")
-                nb_articles = cur.fetchone()["c"]
-            if not nb_articles:
-                logger.warning("Aucun article disponible - seed de demonstration (fallback hors-ligne)")
-                seed_data.seed_products()
-        except Exception as e:
-            logger.warning("Seed data: %s", e)
-    except Exception as e:
-        logger.error("Erreur init SQLite: %s", e)
+    _init_sqlite_and_seed(logger)
 
     logger.info("Verification de la connectivite internet...")
     online = check_now()
@@ -112,8 +82,7 @@ def main():
 
     def shutdown_handler(signum, frame):
         logger.info("Signal recu (%s) - Arret en cours...", signum)
-        stop_polling()
-        stop_background_check()
+        stop_all()
         close_pool()
         logger.info("T-CONNECTOR arrete proprement")
         sys.exit(0)
@@ -121,20 +90,8 @@ def main():
     signal.signal(signal.SIGINT, shutdown_handler)
     signal.signal(signal.SIGTERM, shutdown_handler)
 
-    def _background_init():
-        logger.info("Demarrage du polling intelligent...")
-        start_polling()
-        _db_cfg = get_config().get("database", {})
-        _interval = max(_db_cfg.get("polling_interval_ms", 30000) // 1000, 15)
-        logger.info("Demarrage de la sync bidirectionnelle (intervalle: %ds)...", _interval)
-        start_bi_sync(interval=_interval)
-
-    init_thread = threading.Thread(target=_background_init, daemon=True, name="sfec-init")
+    init_thread = threading.Thread(target=start_all, daemon=True, name="sfec-init")
     init_thread.start()
-
-    from sync_engine import sync_sfec_invoices
-    sfec_thread = threading.Thread(target=sync_sfec_invoices, daemon=True, name="sfec-cache-init")
-    sfec_thread.start()
 
     logger.info("Demarrage du dashboard sur %s:%d", dash_host, dash_port)
 
@@ -147,20 +104,17 @@ def main():
             logger.warning("waitress non installe - utilisation du serveur Flask (dev)")
             app.run(host=dash_host, port=dash_port, use_reloader=False, debug=False, threaded=True)
     except KeyboardInterrupt:
-        stop_polling()
-        stop_background_check()
+        stop_all()
         close_pool()
         logger.info("T-CONNECTOR arrete")
     except Exception as e:
         logger.error("Erreur fatale: %s", e)
-        stop_polling()
-        stop_background_check()
+        stop_all()
         close_pool()
         raise
 
 
 if __name__ == "__main__":
-    import subprocess
     if getattr(sys, 'frozen', False) and len(sys.argv) > 1:
         cmd = sys.argv[1].lower()
         if cmd == "--install-service":

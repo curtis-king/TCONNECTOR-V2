@@ -9,7 +9,7 @@ echo   T-CONNECTOR SFEC - Mode Developpement
 echo ============================================
 echo.
 
-cd /d "%~dp0"
+cd /d "%~dp0..\.."
 
 python --version >nul 2>&1
 if errorlevel 1 (

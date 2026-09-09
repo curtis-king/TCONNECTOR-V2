@@ -1,0 +1,3 @@
+# Dépendances Windows : base commune + pywin32 (services Windows).
+-r requirements.txt
+pywin32>=305

@@ -9,7 +9,8 @@ echo   T-CONNECTOR SFEC - Installation Service
 echo ============================================
 echo.
 
-cd /d "%~dp0"
+REM Racine du projet = 2 niveaux au-dessus de scripts\windows\
+cd /d "%~dp0..\.."
 
 REM Verifier Python
 python --version >nul 2>&1
@@ -21,8 +22,10 @@ if errorlevel 1 (
     exit /b 1
 )
 
+set "ROOT=%~dp0..\.."
+
 echo [1/5] Installation des dependances...
-pip install -r requirements.txt
+pip install -r "%ROOT%\requirements.txt"
 if errorlevel 1 (
     echo [ERREUR] Echec installation des dependances
     pause
@@ -45,16 +48,16 @@ if errorlevel 1 (
 REM Installer via NSSM
 set SERVICE_NAME=TConnectorSFEC
 set PYTHON_PATH=python
-set SCRIPT_PATH=%~dp0main.py
+set SCRIPT_PATH=%ROOT%\main.py
 
 echo Creation du service NSSM: %SERVICE_NAME%
 nssm install %SERVICE_NAME% "%PYTHON_PATH%" "%SCRIPT_PATH%"
 nssm set %SERVICE_NAME% DisplayName "T-CONNECTOR SFEC - Connecteur Facturation Electronique"
 nssm set %SERVICE_NAME% Description "Connecteur Python pour la certification SFEC"
 nssm set %SERVICE_NAME% Start SERVICE_AUTO_START
-nssm set %SERVICE_NAME% AppDirectory "%~dp0"
-nssm set %SERVICE_NAME% AppStdout "%~dp0data\output.log"
-nssm set %SERVICE_NAME% AppStderr "%~dp0data\error.log"
+nssm set %SERVICE_NAME% AppDirectory "%ROOT%"
+nssm set %SERVICE_NAME% AppStdout "%ROOT%\data\output.log"
+nssm set %SERVICE_NAME% AppStderr "%ROOT%\data\error.log"
 nssm set %SERVICE_NAME% AppRotateFiles 1
 nssm set %SERVICE_NAME% AppRotateBytes 10485760
 
@@ -65,7 +68,7 @@ echo.
 echo [OK] Service installe et demarre!
 echo.
 echo Verifiez: http://localhost:3000
-echo Logs: %~dp0data\output.log
+echo Logs: %ROOT%\data\output.log
 goto :end
 
 :install_pyservice
@@ -74,14 +77,14 @@ echo Installation via pywin32...
 echo.
 
 REM Creer le script d'installation du service
-echo import win32serviceutil > "%~dp0_install_svc.py"
-echo import sys >> "%~dp0_install_svc.py"
-echo sys.path.insert(0, "%~dp0.") >> "%~dp0_install_svc.py"
-echo from service import TConnectorService >> "%~dp0_install_svc.py"
-echo win32serviceutil.HandleCommandLine(TConnectorService) >> "%~dp0_install_svc.py"
+echo import win32serviceutil > "%ROOT%\_install_svc.py"
+echo import sys >> "%ROOT%\_install_svc.py"
+echo sys.path.insert(0, "%ROOT%\.") >> "%ROOT%\_install_svc.py"
+echo from service import TConnectorService >> "%ROOT%\_install_svc.py"
+echo win32serviceutil.HandleCommandLine(TConnectorService) >> "%ROOT%\_install_svc.py"
 
 echo Installation du service Windows...
-python "%~dp0_install_svc.py" install
+python "%ROOT%\_install_svc.py" install
 if errorlevel 1 (
     echo [ERREUR] Echec installation service
     pause
@@ -95,7 +98,7 @@ sc description TConnectorSFEC "Connecteur Python pour la certification SFEC - Sy
 echo Demarrage du service...
 sc start TConnectorSFEC
 
-del "%~dp0_install_svc.py" 2>nul
+del "%ROOT%\_install_svc.py" 2>nul
 
 echo.
 echo [OK] Service installe et demarre!
