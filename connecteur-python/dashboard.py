@@ -566,8 +566,9 @@ textarea{resize:vertical;min-height:60px}
 .product-search-item .price{color:#10b981;font-weight:600;font-size:12px;margin-left:auto}
 /* ═══ HUB GESTION COMMERCIALE (style Sage 100) ═══ */
 .sage-hub-layout{display:grid;grid-template-columns:230px 1fr;gap:20px;align-items:start}
+.sage-hub-side-wrap{min-width:0;width:100%}
 .sage-hub-side{position:sticky;top:24px;background:#fff;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.05);display:flex;flex-direction:column;max-height:calc(100vh - 40px)}
-.sage-hub-side .hub-head{padding:14px 16px;background:linear-gradient(135deg,#0f172a,#1e293b);color:#fff;font-size:12px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;display:flex;align-items:center;gap:8px;white-space:nowrap;overflow:hidden}
+.sage-hub-side .hub-head{padding:12px 16px;min-height:44px;background:linear-gradient(135deg,#0f172a,#1e293b);color:#fff;font-size:12px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;display:flex;align-items:center;gap:8px;white-space:nowrap;overflow:hidden}
 .sage-hub-side .hub-head svg{width:16px;height:16px;color:#38bdf8;flex-shrink:0}
 .sage-hub-nav{list-style:none;margin:0;padding:8px 0;overflow-y:auto;flex:1;overscroll-behavior:contain;scrollbar-width:thin}
 .sage-hub-nav li{margin:1px 8px}
@@ -580,7 +581,7 @@ textarea{resize:vertical;min-height:60px}
 .sage-hub-nav .lbl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sage-hub-nav .ico{width:17px;height:17px;flex-shrink:0;display:flex;align-items:center;justify-content:center;overflow:hidden}
 .sage-hub-nav .ico svg{width:16px;height:16px;flex-shrink:0}
-@media(max-width:1180px){.sage-hub-layout{grid-template-columns:1fr}.sage-hub-side{position:static;max-height:none}}
+@media(max-width:1180px){.sage-hub-layout{grid-template-columns:1fr}.sage-hub-side{position:static;max-height:none;border-radius:10px}.sage-hub-side .sage-hub-nav{display:flex;align-items:center;gap:4px;overflow-x:auto;padding:8px 10px;flex-wrap:nowrap;scrollbar-width:thin}.sage-hub-side .sage-hub-nav .grp{display:none}.sage-hub-side .sage-hub-nav li{margin:0;flex-shrink:0}.sage-hub-side .sage-hub-nav a{white-space:nowrap;padding:6px 10px}.sage-hub-side .sage-hub-nav .ico{display:none}}
 """
 
 
@@ -862,14 +863,14 @@ def _sage_hub_sidebar(section, sub=""):
     }
     nav = []
     nav.append('<li class="grp">Caisse</li>')
-    nav.append(_li("/pos/caisse", "caisse", "Vente POS"))
+    nav.append(_li("/pos/caisse", "caisse", "Vente POS", cur_section="caisse"))
     nav.append('<li class="grp">Ventes</li>')
-    nav.append(_li("/pos/devis", "vente", "Devis", count=counts["devis"]))
-    nav.append(_li("/pos/commandes", "vente", "Commandes", count=counts["commande"]))
-    nav.append(_li("/pos/livraisons", "vente", "Livraisons", count=counts["livraison"]))
-    nav.append(_li("/pos/factures", "vente", "Factures", count=counts["vente"]))
+    nav.append(_li("/pos/devis", "vente", "Devis", cur_section="devis", count=counts["devis"]))
+    nav.append(_li("/pos/commandes", "vente", "Commandes", cur_section="commande", count=counts["commande"]))
+    nav.append(_li("/pos/livraisons", "vente", "Livraisons", cur_section="livraison", count=counts["livraison"]))
+    nav.append(_li("/pos/factures", "vente", "Factures", cur_section="vente", count=counts["vente"]))
     nav.append('<li class="grp">Avoirs</li>')
-    nav.append(_li("/pos/avoirs", "avoir", "Avoirs", count=counts["avoir"]))
+    nav.append(_li("/pos/avoirs", "avoir", "Avoirs", cur_section="avoir", count=counts["avoir"]))
     nav.append('<li class="grp">Achats</li>')
     nav.append(_li("/pos/achats/commandes", "achat", "Cmd fournisseurs"))
     nav.append(_li("/pos/achats/receptions", "achat", "Receptions"))
@@ -892,7 +893,7 @@ def _sage_page(body, section, sub=""):
     """Enveloppe une page /pos/* avec le layout hub + sous-menu Sage."""
     hub_side = _sage_hub_sidebar(section, sub)
     return _page('<div class="sage-hub-layout"><div class="sage-hub-side-wrap">'
-                 + hub_side + '</div><div class="sage-hub-main" style="min-width:0">'
+                  + '</div><div class="sage-hub-main" style="min-width:0">'
                  + body + '</div></div>')
 
 

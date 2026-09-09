@@ -59,4 +59,11 @@ Au lieu de `position:static;max-height:none` en pleine largeur à <1180 px, gard
 
 ---
 
-*En attente de validation pour exécution.*
+*✅ Exécuté le 09/09/2026 — validé par le client.*
+
+**Résultat des vérifications :**
+- `python -m py_compile dashboard.py` : OK.
+- L'item courant s'active sur les 6 pages testées : `/pos/caisse` (Vente POS), `/pos/devis`, `/pos/commandes`, `/pos/livraisons`, `/pos/factures`, `/pos/avoirs` → HTTP 200 + `class="active"` dans `.sage-hub-nav`.
+- ⚠️ Sections réelles des routes au **pluriel** (`commandes`, `livraisons`, `ventes`) confirmées et appliquées.
+- CSS : `.sage-hub-side-wrap{min-width:0}`, `hub-head` 44 px, media <1180 px → menu POS en rangée d'onglets horizontale à scroll (groupes et icônes masqués).
+- Snapshots : `rendered_caisse.html` + `rendered_caisse_apres.html` (mèmes, code final).
