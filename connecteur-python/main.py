@@ -161,6 +161,7 @@ def main():
 
 if __name__ == "__main__":
     import subprocess
+    print("Lancement")
     if getattr(sys, 'frozen', False) and len(sys.argv) > 1:
         cmd = sys.argv[1].lower()
         if cmd == "--install-service":
