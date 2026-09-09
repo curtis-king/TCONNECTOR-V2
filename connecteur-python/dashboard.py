@@ -1562,15 +1562,15 @@ body{{font-family:'Segoe UI',-apple-system,Roboto,sans-serif;background:#eef2f6;
 .inv-title{{text-align:right}}
 .inv-title h1{{font-size:30px;letter-spacing:7px;font-weight:800;color:#fff;text-transform:uppercase}}
 .inv-title .sub{{font-size:12px;color:#9ec5ff;margin-top:3px;letter-spacing:1px}}
-.strip{{display:flex;align-items:center;gap:8px;background:#ecfdf5;border-bottom:1px solid #a7f3d0;padding:10px 34px;font-size:12px;color:#065f46}}
-.strip b{{color:#047857}}
+.strip{{display:flex;align-items:center;gap:8px;background:#D5D8D7;border-bottom:1px solid #414443;padding:10px 34px;font-size:12px;color:#202020}}
+.strip b{{color:#202020}}
 .body{{padding:22px 34px 8px}}
 .kpis{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}}
-.kpi{{border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;background:#f8fafc}}
+.kpi{{border:1px solid #e2e8f0;border-radius:2px;padding:10px 12px;background:#f8fafc}}
 .kpi .k{{font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:#64748b;font-weight:700}}
 .kpi .v{{font-size:14px;font-weight:700;color:#0f172a;margin-top:3px}}
 .parties{{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px}}
-.part{{border:1px solid #e2e8f0;border-radius:10px;padding:14px 16px}}
+.part{{border:1px solid #e2e8f0;border-radius:2px;padding:14px 16px}}
 .part h3{{font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:#1e3a8a;margin-bottom:8px}}
 .part .name{{font-weight:700;font-size:14px;color:#0f172a;margin-bottom:4px}}
 .part .big{{font-size:20px}}
@@ -1580,19 +1580,19 @@ thead th{{background:#f1f5f9;color:#334155;text-transform:uppercase;font-size:10
 tbody td{{padding:9px 10px;border-bottom:1px solid #eef1f5;color:#1f2937}}
 tbody tr:nth-child(even){{background:#fafbfc}}
 .num{{text-align:right;font-variant-numeric:tabular-nums}}
-.totals{{border-top:2px solid #e2e8f0;background:#fafbfc;border-radius:0 0 10px 10px;margin-top:8px}}
+.totals{{border-top:2px solid #e2e8f0;background:#fafbfc;border-radius:0 0 2px 2px;margin-top:8px}}
 .tot{{display:flex;justify-content:space-between;padding:7px 14px;font-size:12.5px;color:#475569}}
 .tot b{{color:#0f172a}}
 .tot.grand{{background:#122a4d;color:#fff;font-size:15px;font-weight:800;padding:11px 14px;margin-top:2px}}
 .tot.grand b{{color:#fff}}
 .mots{{font-size:12px;color:#334155;margin-top:12px;padding:10px 14px;border-left:3px solid #1e3a8a;background:#f8fafc;line-height:1.55}}
-.cert{{border:1px solid #d1fae5;border-radius:10px;background:#f0fdf4;padding:14px 16px;margin-top:18px}}
-.cert h3{{font-size:12px;color:#065f46;margin-bottom:8px;text-transform:uppercase;letter-spacing:.6px}}
+.cert{{border:1px solid #EBF8F2;border-radius:2px;background:#EEF3FC;padding:14px 16px;margin-top:18px}}
+.cert h3{{font-size:12px;color:#010725;margin-bottom:8px;text-transform:uppercase;letter-spacing:.6px}}
 .cert table{{width:100%}}
 .cert td{{padding:4px 6px;border:none;font-size:11.5px;vertical-align:top}}
-.cert td:first-child{{color:#166534;font-weight:700;white-space:nowrap;width:170px}}
-.cert .siglong{{word-break:break-all;font-family:Consolas,monospace;font-size:9.5px;color:#065f46}}
-.qr{{margin:16px 0 4px;text-align:center;padding:18px;border:1px dashed #cbd5e1;border-radius:10px;background:#f8fafc}}
+.cert td:first-child{{color:#010725;font-weight:700;white-space:nowrap;width:170px}}
+.cert .siglong{{word-break:break-all;font-family:Consolas,monospace;font-size:9.5px;color:#010725}}
+.qr{{margin:16px 0 4px;text-align:center;padding:18px;border:1px dashed #cbd5e1;border-radius:2px;background:#f8fafc}}
 .qr h3{{font-size:12px;color:#334155;margin-bottom:10px;text-transform:uppercase;letter-spacing:.6px}}
 .qr p{{font-size:11px;color:#64748b;margin-top:8px}}
 .qr-img{{width:130px;height:130px;image-rendering:pixelated}}
@@ -3212,29 +3212,67 @@ def pos_page():
         pos_clients_html += '<option value="|{}|{}">{}</option>'.format(
             _esc(c["code"]), _esc(c["nom"]), _esc("{} - {}".format(c["code"], c["nom"])))
 
-    stats_html = ('<span><b style="color:#0f172a">{tj}</b> tickets aujourd&#39;hui</span>'
-                  '<span><b style="color:#0f172a">{cj} FCFA</b> CA jour</span>'
-                  '<span><b style="color:#0f172a">{ct} FCFA</b> CA total</span>').format(
-                      tj=str(stats.get("tickets_jour", 0)),
-                      cj="{:,}".format(int(round(stats.get("ca_jour", 0)))),
-                      ct="{:,}".format(int(round(stats.get("ca_total", 0)))))
+    _f_num = lambda v: "{:,}".format(int(round(v))).replace(",", "\u00a0")
+    import time as _time
+    today_line = _time.strftime("%d/%m/%Y")
+    stats_html = (
+        '<div class="sc-kpis no-print">'
+        '<div class="sc-kpi sc-kpi-blue">'
+        '<div class="sc-kpi-ico"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" '
+        'stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9a3 3 0 0 1 0 6v3h20v-3a3 3 0 0 1 0-6V6H2v3z"/>'
+        '<circle cx="12" cy="12" r="1.4"/></svg></div>'
+        '<div class="sc-kpi-txt"><span class="sc-kpi-label">Tickets du jour</span>'
+        '<div class="sc-kpi-val">{tj}</div></div></div>'
+        '<div class="sc-kpi sc-kpi-green">'
+        '<div class="sc-kpi-ico"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" '
+        'stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="6" width="21" height="12" rx="2"/>'
+        '<circle cx="12" cy="12" r="2.4"/><path d="M5.5 9.2h.01M18.5 14.8h.01"/></svg></div>'
+        '<div class="sc-kpi-txt"><span class="sc-kpi-label">CA du jour</span>'
+        '<div class="sc-kpi-val">{cj} FCFA</div></div></div>'
+        '<div class="sc-kpi sc-kpi-navy">'
+        '<div class="sc-kpi-ico"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" '
+        'stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg></div>'
+        '<div class="sc-kpi-txt"><span class="sc-kpi-label">CA total</span>'
+        '<div class="sc-kpi-val">{ct} FCFA</div></div></div>'
+        '</div>'
+    ).format(
+        tj=_f_num(stats.get("tickets_jour", 0)),
+        cj=_f_num(stats.get("ca_jour", 0)),
+        ct=_f_num(stats.get("ca_total", 0)))
 
     pos_css = """<style>
 /* ═══ SAISIE DE CAISSE — copie style Sage 100 Espace de Vente ═══ */
 .sage-caisse{background:#e9ecef;border:1px solid #c7cdd7;border-radius:8px;padding:12px;font-size:13px}
-.sc-toolbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;background:linear-gradient(180deg,#f4f5f7,#e3e6ea);border:1px solid #c9ced7;border-radius:6px;padding:6px 8px;margin-bottom:12px;box-shadow:inset 0 1px 0 #fff}
-.sc-btn{appearance:none;border:1px solid #9aa2ad;border-radius:4px;background:linear-gradient(180deg,#fdfdfd,#e4e6e8);color:#1f2937;font:inherit;font-size:12px;font-weight:600;padding:6px 12px;cursor:pointer;box-shadow:0 1px 1px rgba(0,0,0,.08);white-space:nowrap}
+.sc-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;background:linear-gradient(180deg,#f4f5f7,#e6e9ee);border:1px solid #c9ced7;border-radius:6px;padding:10px 12px;margin-bottom:10px;box-shadow:inset 0 1px 0 #fff}
+.sc-head-title{display:flex;align-items:center;gap:10px}
+.sc-head-ico{width:34px;height:34px;border-radius:8px;background:linear-gradient(135deg,#3d7dc9,#1e4e8f);color:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.sc-head-name{font-size:15px;font-weight:800;color:#16324f;letter-spacing:.2px;line-height:1.1}
+.sc-head-sub{font-size:11px;color:#64748b;margin-top:2px}
+.sc-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.sc-btn{appearance:none;border:1px solid #9aa2ad;border-radius:4px;background:linear-gradient(180deg,#fdfdfd,#e4e6e8);color:#1f2937;font:inherit;font-size:12px;font-weight:600;padding:6px 12px;min-height:32px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 1px 1px rgba(0,0,0,.08);white-space:nowrap}
 .sc-btn:hover{background:linear-gradient(180deg,#fff,#eaecee);border-color:#7d8794}
 .sc-btn:active{box-shadow:inset 0 1px 3px rgba(0,0,0,.15);transform:translateY(1px)}
 .sc-btn.primary{background:linear-gradient(180deg,#3d7dc9,#2a5f9f);border-color:#24548b;color:#fff}
 .sc-btn.primary:hover{background:linear-gradient(180deg,#4a88d4,#2f68ac)}
+.sc-btn.btn-success{background:linear-gradient(180deg,#3fbf72,#1f8a4f);border-color:#1d7c47;color:#fff}
+.sc-btn.btn-success:hover{background:linear-gradient(180deg,#4bc87f,#249858)}
+.sc-btn.btn-warning{background:linear-gradient(180deg,#f0ad4e,#d2852a);border-color:#c97a22;color:#fff}
+.sc-btn.btn-warning:hover{background:linear-gradient(180deg,#f4b861,#d68f38)}
 .sc-btn.encaisser{background:linear-gradient(180deg,#38b56d,#1f8a4f);border-color:#1d7c47;color:#fff;font-size:13px;padding:8px 18px}
 .sc-btn.encaisser:hover{background:linear-gradient(180deg,#43c27a,#249858)}
 .sc-btn.encaisser:disabled{background:linear-gradient(180deg,#bfc6cd,#a9b0b8);border-color:#98a0a9;color:#586069;cursor:not-allowed}
-.sc-sep{width:1px;height:20px;background:#c9ced7;margin:0 4px}
-.sc-toolbar-stats{display:flex;gap:8px;align-items:center;margin-left:auto;font-size:11px;color:#334155;flex-wrap:wrap}
-.sc-toolbar-stats span{background:#fff;border:1px solid #d5dae2;border-radius:4px;padding:4px 10px;white-space:nowrap}
-.sc-toolbar-stats b{color:#16324f}
+.sc-kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px}
+.sc-kpi{background:#fff;border:1px solid #c9ced7;border-radius:6px;padding:10px 12px;display:flex;align-items:center;gap:10px;box-shadow:0 1px 2px rgba(15,23,42,.05);min-width:0}
+.sc-kpi-ico{width:38px;height:38px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.sc-kpi-blue .sc-kpi-ico{background:#dbeafe;color:#1d4ed8}
+.sc-kpi-green .sc-kpi-ico{background:#dcfce7;color:#15803d}
+.sc-kpi-navy .sc-kpi-ico{background:#d8e2f0;color:#122a4d}
+.sc-kpi-txt{min-width:0}
+.sc-kpi-label{display:block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sc-kpi-val{font-size:17px;font-weight:800;color:#0f172a;margin-top:2px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.sc-kpi-blue .sc-kpi-val{color:#1d4ed8}
+.sc-kpi-green .sc-kpi-val{color:#15803d}
+.sc-kpi-navy .sc-kpi-val{color:#122a4d}
 .sc-cols{display:grid;grid-template-columns:minmax(280px,360px) 1fr;gap:12px;align-items:start}
 .sc-panel{background:#fff;border:1px solid #c7cdd7;border-radius:6px;margin-bottom:12px;overflow:hidden}
 .sc-panel-title{background:linear-gradient(180deg,#2e6ab5,#1e4e8f);color:#fff;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;padding:7px 12px;display:flex;align-items:center;gap:8px}
@@ -3289,19 +3327,27 @@ def pos_page():
 .sc-monnaie.ok{color:#159357}
 .sc-monnaie.ko{color:#d6453d}
 @media(max-width:1180px){.sc-cols{grid-template-columns:1fr}.sc-header-grid{grid-template-columns:1fr 1fr}.sc-pay-grid{grid-template-columns:1fr 1fr}}
-@media(max-width:760px){.sc-header-grid,.sc-pay-grid{grid-template-columns:1fr}.sc-toolbar-stats{width:100%;margin-left:0}}
+@media(max-width:760px){.sc-header-grid,.sc-pay-grid{grid-template-columns:1fr}.sc-kpis{grid-template-columns:1fr}.sc-head{flex-direction:column;align-items:stretch}.sc-head-title{justify-content:center}.sc-actions{justify-content:flex-start}}
 </style>"""
 
     body = pos_css + """
 <div class="sage-caisse">
-<div class="sc-toolbar no-print">
+<div class="sc-head no-print">
+<div class="sc-head-title">
+<div class="sc-head-ico"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12v18l-2-2-2 2-2-2-2 2-2-2-2 2V3z"/><path d="M9 8h6M9 12h6"/></svg></div>
+<div>
+<div class="sc-head-name">Saisie de caisse</div>
+<div class="sc-head-sub">@@TODAY@@ &middot; Depot 001</div>
+</div>
+</div>
+<div class="sc-actions">
 <button class="sc-btn primary" onclick="clearCart()">Nouveau</button>
 <button class="sc-btn" onclick="addPosLineManual()">+ Ligne manuelle</button>
-<span class="sc-sep"></span>
 <button class="sc-btn" onclick="syncPosArticles()">Sync articles</button>
 <button class="sc-btn" id="btn-stock" onclick="toggleStock()">Stock: --</button>
-<div class="sc-toolbar-stats">@@STATS@@</div>
 </div>
+</div>
+@@STATS@@
 <div class="sc-cols">
 
 <div class="sc-col-left">
@@ -3555,7 +3601,8 @@ refreshStockBtn();
         .replace("@@POS_CLIENTS@@", pos_clients_html) \
         .replace("@@POS_CLIENTS_JS@@", pos_clients_js) \
         .replace("@@TICKETS@@", ticket_rows_html) \
-        .replace("@@STOCK_CTL@@", "true" if pos_engine.stock_control_enabled() else "false")
+        .replace("@@STOCK_CTL@@", "true" if pos_engine.stock_control_enabled() else "false") \
+        .replace("@@TODAY@@", _esc(today_line))
     return _sage_page(body, "caisse")
 
 

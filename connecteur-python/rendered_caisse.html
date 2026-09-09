@@ -1,0 +1,685 @@
+<!DOCTYPE html><html lang='fr'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><meta name='referrer' content='no-referrer'><title>T-CONNECTOR &middot; Vente POS</title><style>*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',Tahoma,sans-serif;background:#f1f5f9;color:#1e293b;min-height:100vh;display:flex}
+.sidebar{width:250px;background:#ffffff;border-right:1px solid #e2e8f0;padding:0;position:fixed;top:0;left:0;bottom:0;overflow-y:auto;z-index:100;box-shadow:2px 0 16px rgba(15,23,42,0.05);display:flex;flex-direction:column;transition:width 0.25s ease}
+.sidebar.collapsed{width:76px}
+.sidebar.collapsed .sidebar-top{justify-content:center;padding:16px 6px 14px}
+.sidebar.collapsed .sidebar-logo{display:none}
+.sidebar.collapsed ~ .main-content{margin-left:76px;max-width:calc(100vw - 76px)}
+.sidebar-top{display:flex;align-items:center;justify-content:space-between;padding:18px 16px 14px;border-bottom:1px solid #eef2f7}
+.sidebar-logo{display:flex;align-items:center;gap:10px;text-decoration:none}
+.sidebar-logo .icon{width:34px;height:34px;flex-shrink:0;border-radius:10px;background:linear-gradient(135deg,#3b82f6,#6366f1);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:14px;box-shadow:0 4px 10px rgba(59,130,246,0.3)}
+.sidebar-logo span{font-size:15px;font-weight:700;color:#1e293b;letter-spacing:-0.3px;white-space:nowrap;transition:opacity 0.2s}
+.sidebar-toggle{width:32px;height:32px;flex-shrink:0;border:none;border-radius:8px;background:#f1f5f9;color:#64748b;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all 0.18s}
+.sidebar-toggle:hover{background:#e2e8f0;color:#1e293b}
+.sidebar-toggle svg{width:18px;height:18px}
+.sidebar-nav{list-style:none;padding:8px 0;margin:0;flex:1;overflow-y:auto}
+.sidebar.collapsed .sidebar-logo span,
+.sidebar.collapsed .sidebar-nav .nav-label,
+.sidebar.collapsed .sidebar-nav li a span:not(.icon),
+.sidebar.collapsed .sidebar-foot .net-indicator span:not(.net-dot){display:none}
+.sidebar.collapsed .sidebar-nav li a{justify-content:center;padding:11px 0}
+.sidebar.collapsed .sidebar-nav li a .icon{margin:0}
+.sidebar.collapsed .sidebar-toggle svg{transform:rotate(180deg)}
+.sidebar-foot{position:sticky;bottom:0;background:#ffffff;padding:14px 20px;border-top:1px solid #eef2f7}
+.net-indicator{display:flex;align-items:center;gap:8px;font-size:12px;color:#64748b}
+.net-dot{width:10px;height:10px;border-radius:50%;display:inline-block;flex-shrink:0}
+.net-dot.on{background:#10b981;box-shadow:0 0 0 3px rgba(16,185,129,0.2)}
+.net-dot.off{background:#ef4444;box-shadow:0 0 0 3px rgba(239,68,68,0.2)}
+.net-dot.unknown{background:#f59e0b;box-shadow:0 0 0 3px rgba(245,158,11,0.2)}
+.sidebar-nav{list-style:none;padding:0;margin:0}
+.sidebar-nav li{margin:2px 8px 2px 10px}
+.sidebar-nav li a{display:flex;align-items:center;gap:12px;padding:10px 14px;color:#64748b;text-decoration:none;font-size:13px;font-weight:500;transition:all 0.18s;border-radius:10px;border-left:3px solid transparent}
+.sidebar-nav li a:hover{background:#f1f5f9;color:#1e293b}
+.sidebar-nav li a.active{background:linear-gradient(90deg,rgba(59,130,246,0.12),rgba(99,102,241,0.06));color:#3b82f6;border-left-color:#3b82f6;font-weight:600;box-shadow:inset 0 0 0 1px rgba(59,130,246,0.08)}
+.sidebar-nav .icon{width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:15px;opacity:0.75;transition:all 0.18s}
+.sidebar-nav .icon svg{width:18px;height:18px}
+.sidebar-nav li a:hover .icon,.sidebar-nav li a.active .icon{opacity:1}
+.sidebar-nav .nav-label{font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#94a3b8;padding:16px 22px 6px}
+.sidebar-nav li a .logout{color:#dc2626}
+.sidebar-nav li a.logout-link{color:#dc2626}
+.sidebar-nav li a.logout-link:hover{background:#fef2f2;color:#b91c1c}
+.main-content{margin-left:250px;flex:1;padding:24px 32px;max-width:calc(100vw - 250px);transition:margin-left 0.25s ease}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:10px 12px;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid #eef2f7;flex-wrap:wrap}
+.topbar-title{font-size:21px;font-weight:700;color:#0f172a}
+.topbar-actions{display:flex;align-items:center;gap:10px}
+.user-chip{display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid #e2e8f0;border-radius:999px;padding:6px 14px;font-size:12px;font-weight:600;color:#334155}
+.user-chip .ava{width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg,#3b82f6,#6366f1);color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700}
+.page-header{margin-bottom:24px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}
+.page-header h1{font-size:22px;font-weight:700;color:#1e293b;margin:0}
+.breadcrumb{font-size:12px;color:#64748b;margin-bottom:4px}
+.breadcrumb a{color:#3b82f6;text-decoration:none;font-weight:500}
+.breadcrumb a:hover{text-decoration:underline}
+.card{background:#fff;border-radius:14px;border:1px solid #e2e8f0;padding:20px;margin-bottom:16px;box-shadow:0 1px 3px rgba(15,23,42,0.04)}
+.card h2{font-size:15px;font-weight:600;color:#1e293b;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.card h2::before{content:'';display:inline-block;width:4px;height:18px;background:linear-gradient(180deg,#3b82f6,#6366f1);border-radius:2px}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:16px}
+.stat{background:#fff;border-radius:12px;padding:18px;border:1px solid #e2e8f0;transition:all 0.2s;position:relative;overflow:hidden}
+.stat::after{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,#3b82f6,#6366f1);opacity:0;transition:opacity 0.2s}
+.stat:hover{box-shadow:0 8px 20px rgba(15,23,42,0.07);transform:translateY(-3px);border-color:#cbd5e1}
+.stat:hover::after{opacity:1}
+.stat .value{font-size:26px;font-weight:700;color:#0f172a;margin-bottom:4px;letter-spacing:-0.5px}
+.stat .label{font-size:12px;color:#64748b;font-weight:500}
+.stat .icon-chip{width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;margin-bottom:12px}
+.stat .icon-chip svg{width:19px;height:19px}
+.badge{display:inline-block;padding:3px 10px;border-radius:6px;font-size:11px;font-weight:600}
+.badge-ok{background:#dcfce7;color:#166534}
+.badge-err{background:#fee2e2;color:#991b1b}
+.badge-warn{background:#fef3c7;color:#92400e}
+.badge-info{background:#dbeafe;color:#1e40af}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{background:#f8fafc;color:#64748b;text-align:left;padding:10px 12px;border-bottom:2px solid #e2e8f0;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;font-weight:600}
+td{padding:10px 12px;border-bottom:1px solid #f1f5f9;color:#334155}
+tr:hover{background:#f8fafc}
+label{display:block;color:#475569;font-size:11px;font-weight:600;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px}
+input[type=text],input[type=password],input[type=number],input[type=email],input[type=date],select,textarea{
+  background:#fff;border:1.5px solid #e2e8f0;color:#1e293b;
+  padding:9px 12px;border-radius:8px;width:100%;font-size:13px;
+  font-family:inherit;transition:all 0.2s;
+}
+input:focus,select:focus,textarea:focus{
+  outline:none;border-color:#3b82f6;
+  box-shadow:0 0 0 3px rgba(59,130,246,0.1);
+  background:#fff;
+}
+input::placeholder{color:#94a3b8}
+select{cursor:pointer;appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 12px center;padding-right:36px}
+textarea{resize:vertical;min-height:60px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 16px;border-radius:8px;border:none;cursor:pointer;font-size:13px;font-weight:600;transition:all 0.15s;text-decoration:none}
+.btn:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,0.1)}
+.btn:active{transform:translateY(0)}
+.btn-primary{background:linear-gradient(135deg,#3b82f6,#6366f1);color:#fff;box-shadow:0 2px 8px rgba(59,130,246,0.25)}
+.btn-primary:hover{box-shadow:0 4px 16px rgba(59,130,246,0.35)}
+.btn-success{background:linear-gradient(135deg,#10b981,#059669);color:#fff;box-shadow:0 2px 8px rgba(16,185,129,0.25)}
+.btn-danger{background:#ef4444;color:#fff}
+.btn-warning{background:#f59e0b;color:#fff}
+.btn-sm{padding:5px 12px;font-size:11px;border-radius:7px}
+.btn-ghost{background:transparent;color:#64748b;border:1px solid #e2e8f0}
+.btn-ghost:hover{background:#f1f5f9;color:#1e293b;border-color:#cbd5e1;box-shadow:none}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:768px){.grid-2{grid-template-columns:1fr}}
+@media print{.no-print{display:none!important}body{background:#fff;color:#000}
+.tab-btn:hover{color:#3b82f6;background:#f1f5f9}
+.tab-btn.active{background:#fff;color:#3b82f6;border-color:#3b82f6;border-bottom:1px solid #fff}
+.tab-content{display:none;background:#fff;border:1px solid #e2e8f0;border-radius:0 8px 8px 8px;padding:20px;margin-bottom:16px}
+.tab-content.active{display:block}
+.alert-zone{position:fixed;top:64px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:10px;max-width:420px;min-width:260px;width:max-content}
+.alert-card{display:flex;align-items:flex-start;gap:10px;padding:12px 14px;border-radius:10px;font-size:13px;font-weight:600;box-shadow:0 4px 14px rgba(15,23,42,0.18);border:1px solid;animation:alertIn .22s ease-out}
+.alert-card .alert-icon{flex:none;margin-top:1px;width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff}
+.alert-card .alert-msg{flex:1;line-height:1.45;word-break:break-word}
+.alert-card .alert-x{cursor:pointer;flex:none;border:0;background:transparent;font-size:16px;line-height:1;opacity:.5;color:inherit;padding:2px;margin-left:2px}
+.alert-card .alert-x:hover{opacity:1}
+@keyframes alertIn{from{opacity:0;transform:translateX(14px)}to{opacity:1;transform:none}}
+.alert-card.alert-out{opacity:0;transform:translateX(14px);transition:opacity .25s,transform .25s}
+.alert-ok{border-color:#86efac;background:#f0fdf4;color:#166534}
+.alert-ok .alert-icon{background:#22c55e}
+.alert-err{border-color:#fca5a5;background:#fef2f2;color:#991b1b}
+.alert-err .alert-icon{background:#ef4444}
+.alert-warn{border-color:#fcd34d;background:#fffbeb;color:#92400e}
+.alert-warn .alert-icon{background:#f59e0b}
+.alert-info{border-color:#93c5fd;background:#eff6ff;color:#1e40af}
+.alert-info .alert-icon{background:#3b82f6}
+.alert-overlay{position:fixed;inset:0;z-index:10000;background:rgba(15,23,42,0.55);display:flex;align-items:center;justify-content:center;padding:16px;animation:fadeIn .18s ease-out;backdrop-filter:blur(2px)}
+.alert-overlay.alert-out{opacity:0;transition:opacity .2s}
+.alert-dialog{background:#fff;border-radius:14px;box-shadow:0 20px 60px rgba(15,23,42,0.45);width:100%;max-width:460px;border:1px solid #e2e8f0;overflow:hidden;animation:dlgIn .2s ease-out;text-align:left}
+.alert-dialog.alert-out{transform:scale(.96);transition:transform .2s}
+.alert-dialog-head{display:flex;align-items:center;gap:10px;padding:16px 18px 0;font-weight:700;font-size:15px;color:#0f172a}
+.alert-dialog-icon{flex:none;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;background:#64748b}
+.alert-dialog-msg{padding:12px 18px 4px;font-size:13px;color:#334155;line-height:1.55;white-space:pre-wrap;word-break:break-word}
+.alert-dialog-actions{display:flex;justify-content:flex-end;gap:8px;padding:16px 18px 18px}
+@keyframes dlgIn{from{opacity:0;transform:translateY(8px) scale(.97)}to{opacity:1;transform:none}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.alert-dialog.alert-err .alert-dialog-icon{background:#ef4444}
+.alert-dialog.alert-warn .alert-dialog-icon{background:#f59e0b}
+.alert-dialog.alert-ok .alert-dialog-icon{background:#22c55e}
+.alert-dialog.alert-info .alert-dialog-icon{background:#3b82f6}
+.net-indicator{display:flex;align-items:center;gap:6px;font-size:12px;color:#64748b}
+.form-row{margin-bottom:8px}
+.desc{font-size:11px;color:#64748b;margin-top:2px}
+.queue-badge{background:#ede9fe;color:#5b21b6;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
+.invoice-layout{display:grid;grid-template-columns:1fr 360px;gap:20px;align-items:start}
+@media(max-width:1024px){.invoice-layout{grid-template-columns:1fr}}
+.invoice-main{min-width:0}
+.invoice-sidebar{position:sticky;top:24px}
+.section-title{font-size:13px;font-weight:700;color:#3b82f6;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.section-title::before{content:'';display:inline-block;width:4px;height:16px;background:linear-gradient(180deg,#3b82f6,#6366f1);border-radius:2px}
+.invoice-meta{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}
+@media(max-width:768px){.invoice-meta{grid-template-columns:1fr 1fr}}
+.invoice-meta .full-width{grid-column:1/-1}
+.line-item{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:14px;margin-bottom:10px;transition:all 0.2s;box-shadow:0 1px 2px rgba(0,0,0,0.04)}
+.line-item:hover{border-color:#cbd5e1;box-shadow:0 4px 12px rgba(0,0,0,0.08)}
+.line-item-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.line-item-title{font-size:12px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.5px}
+.line-item-grid{display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:10px;align-items:end}
+@media(max-width:768px){.line-item-grid{grid-template-columns:1fr 1fr;gap:8px}.line-item-grid .full-width-mobile{grid-column:1/-1}}
+.line-item-actions{display:flex;gap:6px;align-items:center}
+.totals-panel{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:20px;position:sticky;top:24px;box-shadow:0 1px 3px rgba(0,0,0,0.04)}
+.totals-panel h3{color:#1e293b;font-size:14px;margin-bottom:16px;padding-bottom:10px;border-bottom:1px solid #e2e8f0}
+.niu-required input{border-color:#f59e0b!important;background:#fffbeb!important}
+.niu-required .niu-star{color:#f59e0b;font-weight:700}
+.niu-required-hint{color:#b45309;font-size:11px;margin-top:3px}
+.niu-opt-hint{color:#64748b;font-size:11px;margin-top:3px}
+.tiers-type-info{margin-top:6px;font-size:11px;color:#3b82f6}
+.contact-select-wrapper{position:relative}
+.total-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;font-size:13px;color:#64748b}
+.total-row.grand-total{border-top:2px solid #e2e8f0;margin-top:8px;padding-top:12px;font-size:18px;font-weight:700;color:#1e293b}
+.total-row .total-label{font-weight:600;text-transform:uppercase;letter-spacing:0.5px;font-size:11px}
+.total-row .total-value{font-weight:700;color:#1e293b}
+.form-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:20px;padding-top:16px;border-top:1px solid #e2e8f0}
+.form-actions .btn{flex:1;min-width:140px;justify-content:center;display:inline-flex;align-items:center;justify-content:center;padding:12px 20px;font-size:14px}
+@media(max-width:768px){.form-actions .btn{min-width:100%}}
+.page-header{margin-bottom:24px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}
+.page-header h1{font-size:22px;font-weight:700;color:#1e293b;margin:0}
+.breadcrumb{font-size:12px;color:#64748b;margin-bottom:4px}
+.breadcrumb a{color:#3b82f6;text-decoration:none;font-weight:500}
+.breadcrumb a:hover{text-decoration:underline}
+.client-card{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:16px;margin-bottom:16px;box-shadow:0 1px 2px rgba(0,0,0,0.04)}
+.client-card .contact-select-wrapper{position:relative}
+.client-card .contact-select-wrapper::after{content:'▼';position:absolute;right:12px;bottom:12px;font-size:10px;color:#64748b;pointer-events:none}
+.invoice-header-card{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:20px;margin-bottom:16px;box-shadow:0 1px 2px rgba(0,0,0,0.04)}
+.invoice-header-card .grid-2{gap:12px}
+.invoice-header-card label{font-size:10px;letter-spacing:0.8px;color:#64748b}
+.invoice-header-card input,.invoice-header-card select{padding:8px 12px;font-size:12px;border:1.5px solid #e2e8f0;background:#fff}
+.status-badge{display:inline-block;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px}
+.status-brouillon{background:#f1f5f9;color:#475569}
+.status-valide{background:#dcfce7;color:#166534}
+.status-a_comptabiliser{background:#dbeafe;color:#1e40af}
+.line-empty{text-align:center;padding:40px 20px;color:#94a3b8;font-size:13px}
+.line-empty .icon{font-size:40px;margin-bottom:10px;opacity:0.4}
+.product-search-wrapper{position:relative}
+.product-search-results{position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid #e2e8f0;border-radius:8px;margin-top:4px;max-height:200px;overflow-y:auto;z-index:50;box-shadow:0 4px 12px rgba(0,0,0,0.1)}
+.product-search-item{padding:10px 12px;cursor:pointer;border-bottom:1px solid #f1f5f9;font-size:13px}
+.product-search-item:hover{background:#f8fafc}
+.product-search-item .ref{color:#3b82f6;font-weight:600;font-size:11px}
+.product-search-item .price{color:#10b981;font-weight:600;font-size:12px;margin-left:auto}
+/* ═══ HUB GESTION COMMERCIALE (style Sage 100) ═══ */
+.sage-hub-layout{display:grid;grid-template-columns:230px 1fr;gap:20px;align-items:start}
+.sage-hub-side{position:sticky;top:24px;background:#fff;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.05);display:flex;flex-direction:column;max-height:calc(100vh - 40px)}
+.sage-hub-side .hub-head{padding:14px 16px;background:linear-gradient(135deg,#0f172a,#1e293b);color:#fff;font-size:12px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;display:flex;align-items:center;gap:8px;white-space:nowrap;overflow:hidden}
+.sage-hub-side .hub-head svg{width:16px;height:16px;color:#38bdf8;flex-shrink:0}
+.sage-hub-nav{list-style:none;margin:0;padding:8px 0;overflow-y:auto;flex:1;overscroll-behavior:contain;scrollbar-width:thin}
+.sage-hub-nav li{margin:1px 8px}
+.sage-hub-nav a{display:flex;align-items:center;gap:9px;padding:8px 12px;border-radius:8px;color:#475569;text-decoration:none;font-size:13px;font-weight:500;border-left:3px solid transparent;transition:all .15s;min-width:0}
+.sage-hub-nav a:hover{background:#f1f5f9;color:#1e293b}
+.sage-hub-nav a.active{background:linear-gradient(90deg,rgba(59,130,246,.13),rgba(99,102,241,.06));color:#3b82f6;border-left-color:#3b82f6;font-weight:600}
+.sage-hub-nav a.active .cnt{background:#3b82f6;color:#fff}
+.sage-hub-nav .grp{font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#94a3b8;padding:12px 12px 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sage-hub-nav .cnt{margin-left:auto;background:#eef2f7;color:#64748b;font-size:10px;font-weight:700;padding:1px 7px;border-radius:12px;flex-shrink:0;min-width:20px;text-align:center}
+.sage-hub-nav .lbl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sage-hub-nav .ico{width:17px;height:17px;flex-shrink:0;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.sage-hub-nav .ico svg{width:16px;height:16px;flex-shrink:0}
+@media(max-width:1180px){.sage-hub-layout{grid-template-columns:1fr}.sage-hub-side{position:static;max-height:none}}
+</style></head><body><div class="sidebar">
+  <div class="sidebar-top">
+    <a href="/" class="sidebar-logo">
+      <div class="icon">TC</div>
+      <span>T-CONNECTOR</span>
+    </a>
+    <button class="sidebar-toggle no-print" onclick="toggleSidebar()" aria-label="Replier le menu">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
+  </div>
+  <ul class="sidebar-nav"><li class="nav-label">Principal</li><li><a href="/" class=""><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg></span> Dashboard</a></li><li><a href="/invoices" class=""><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></span> Factures Sage</a></li><li><a href="/billing" class=""><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg></span> Facturation</a></li><li><a href="/pos" class="active"><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg></span> Vente POS</a></li><li class="nav-label">Gestion</li><li><a href="/clients" class=""><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span> Clients</a></li><li><a href="/sales" class=""><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></span> Historique</a></li><li><a href="/vendeurs" class=""><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span> Vendeurs</a></li><li><a href="/pending" class=""><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 22h14"/><path d="M5 2h14"/><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/></svg></span> En attente</a></li><li><a href="/certified" class=""><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></span> Certifiees</a></li><li><a href="/utilisateurs" class=""><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span> Utilisateurs</a></li><li><a href="/config" class=""><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span> Config</a></li><li><a href="/logout" class="logout-link"><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg></span> Deconnexion</a></li></ul>
+  <div class="sidebar-foot">
+    <div class="net-indicator">
+      <span class="net-dot unknown" id="net-dot"></span>
+      <span id="net-label" style="font-size:11px;font-weight:600">...</span>
+    </div>
+  </div>
+</div>
+<div class="main-content"><div class="topbar"><div class="topbar-title">Vente POS</div><div class="topbar-actions"><button class="btn btn-sm btn-primary no-print" onclick="syncNow()">Synchroniser</button><span class="user-chip"><span class="ava">T</span><span>t@t.fr<span style="color:#64748b;font-weight:500"> &middot; Administrateur</span></span></span><a class="btn btn-sm btn-ghost no-print" href="/compte/mot-de-passe">Mot de passe</a><a class="btn btn-sm btn-ghost no-print" href="/logout">Deconnexion</a></div></div><script>window.CSRF_TOKEN=gDCRodkTnjklIRJiLVmMKoAx3jpSc6wmtjnFq7bKLWg;</script><div class="sage-hub-layout"><div class="sage-hub-side-wrap"><div class="sage-hub-side"><div class="hub-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>Gestion Commerciale</div><ul class="sage-hub-nav"><li class="grp">Caisse</li><li><a href="/pos/caisse" class=""><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg></span><span class="lbl">Vente POS</span></a></li><li class="grp">Ventes</li><li><a href="/pos/devis" class=""><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></span><span class="lbl">Devis</span><span class="cnt">0</span></a></li><li><a href="/pos/commandes" class=""><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></span><span class="lbl">Commandes</span><span class="cnt">0</span></a></li><li><a href="/pos/livraisons" class=""><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></span><span class="lbl">Livraisons</span><span class="cnt">0</span></a></li><li><a href="/pos/factures" class=""><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></span><span class="lbl">Factures</span><span class="cnt">18</span></a></li><li class="grp">Avoirs</li><li><a href="/pos/avoirs" class=""><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v10a4 4 0 0 0 4 4h10"/><path d="M3 17a4 4 0 0 1 4 0"/><path d="M14 10l4-4 4 4"/><path d="M18 13V3"/></svg></span><span class="lbl">Avoirs</span><span class="cnt">0</span></a></li><li class="grp">Achats</li><li><a href="/pos/achats/commandes" class=""><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h2l.4 2M7 13h10l4-8H5.4"/><circle cx="9" cy="20" r="1"/><circle cx="17" cy="20" r="1"/></svg></span><span class="lbl">Cmd fournisseurs</span></a></li><li><a href="/pos/achats/receptions" class=""><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h2l.4 2M7 13h10l4-8H5.4"/><circle cx="9" cy="20" r="1"/><circle cx="17" cy="20" r="1"/></svg></span><span class="lbl">Receptions</span></a></li><li class="grp">Stocks</li><li><a href="/pos/stocks" class=""><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></span><span class="lbl">Mouvements / Inventaire</span></a></li><li><a href="/pos/stocks/articles" class=""><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></span><span class="lbl">Articles</span></a></li><li class="grp">Tiers</li><li><a href="/pos/tiers" class=""><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span><span class="lbl">Clients & Fournisseurs</span></a></li><li class="grp">Reglements</li><li><a href="/pos/paiements" class=""><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg></span><span class="lbl">Paiements</span></a></li><li class="grp">Rapports</li><li><a href="/pos/rapports" class=""><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></span><span class="lbl">Rapports & Editions</span></a></li></ul></div></div><div class="sage-hub-main" style="min-width:0"><style>
+/* ═══ SAISIE DE CAISSE — copie style Sage 100 Espace de Vente ═══ */
+.sage-caisse{background:#e9ecef;border:1px solid #c7cdd7;border-radius:8px;padding:12px;font-size:13px}
+.sc-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;background:linear-gradient(180deg,#f4f5f7,#e6e9ee);border:1px solid #c9ced7;border-radius:6px;padding:10px 12px;margin-bottom:10px;box-shadow:inset 0 1px 0 #fff}
+.sc-head-title{display:flex;align-items:center;gap:10px}
+.sc-head-ico{width:34px;height:34px;border-radius:8px;background:linear-gradient(135deg,#3d7dc9,#1e4e8f);color:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.sc-head-name{font-size:15px;font-weight:800;color:#16324f;letter-spacing:.2px;line-height:1.1}
+.sc-head-sub{font-size:11px;color:#64748b;margin-top:2px}
+.sc-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.sc-btn{appearance:none;border:1px solid #9aa2ad;border-radius:4px;background:linear-gradient(180deg,#fdfdfd,#e4e6e8);color:#1f2937;font:inherit;font-size:12px;font-weight:600;padding:6px 12px;min-height:32px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 1px 1px rgba(0,0,0,.08);white-space:nowrap}
+.sc-btn:hover{background:linear-gradient(180deg,#fff,#eaecee);border-color:#7d8794}
+.sc-btn:active{box-shadow:inset 0 1px 3px rgba(0,0,0,.15);transform:translateY(1px)}
+.sc-btn.primary{background:linear-gradient(180deg,#3d7dc9,#2a5f9f);border-color:#24548b;color:#fff}
+.sc-btn.primary:hover{background:linear-gradient(180deg,#4a88d4,#2f68ac)}
+.sc-btn.btn-success{background:linear-gradient(180deg,#3fbf72,#1f8a4f);border-color:#1d7c47;color:#fff}
+.sc-btn.btn-success:hover{background:linear-gradient(180deg,#4bc87f,#249858)}
+.sc-btn.btn-warning{background:linear-gradient(180deg,#f0ad4e,#d2852a);border-color:#c97a22;color:#fff}
+.sc-btn.btn-warning:hover{background:linear-gradient(180deg,#f4b861,#d68f38)}
+.sc-btn.encaisser{background:linear-gradient(180deg,#38b56d,#1f8a4f);border-color:#1d7c47;color:#fff;font-size:13px;padding:8px 18px}
+.sc-btn.encaisser:hover{background:linear-gradient(180deg,#43c27a,#249858)}
+.sc-btn.encaisser:disabled{background:linear-gradient(180deg,#bfc6cd,#a9b0b8);border-color:#98a0a9;color:#586069;cursor:not-allowed}
+.sc-kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px}
+.sc-kpi{background:#fff;border:1px solid #c9ced7;border-radius:6px;padding:10px 12px;display:flex;align-items:center;gap:10px;box-shadow:0 1px 2px rgba(15,23,42,.05);min-width:0}
+.sc-kpi-ico{width:38px;height:38px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.sc-kpi-blue .sc-kpi-ico{background:#dbeafe;color:#1d4ed8}
+.sc-kpi-green .sc-kpi-ico{background:#dcfce7;color:#15803d}
+.sc-kpi-navy .sc-kpi-ico{background:#d8e2f0;color:#122a4d}
+.sc-kpi-txt{min-width:0}
+.sc-kpi-label{display:block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sc-kpi-val{font-size:17px;font-weight:800;color:#0f172a;margin-top:2px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.sc-kpi-blue .sc-kpi-val{color:#1d4ed8}
+.sc-kpi-green .sc-kpi-val{color:#15803d}
+.sc-kpi-navy .sc-kpi-val{color:#122a4d}
+.sc-cols{display:grid;grid-template-columns:minmax(280px,360px) 1fr;gap:12px;align-items:start}
+.sc-panel{background:#fff;border:1px solid #c7cdd7;border-radius:6px;margin-bottom:12px;overflow:hidden}
+.sc-panel-title{background:linear-gradient(180deg,#2e6ab5,#1e4e8f);color:#fff;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;padding:7px 12px;display:flex;align-items:center;gap:8px}
+.sc-panel-count{margin-left:auto;background:rgba(255,255,255,.2);border-radius:10px;padding:0 8px;font-size:11px}
+.sc-scan{margin:10px 12px 8px}
+.sc-scan input{width:100%;font-size:15px;font-weight:700;letter-spacing:1.5px;text-align:center;border:2px solid #2a5f9f;background:#f4f8fd;border-radius:4px;padding:9px 10px}
+.sc-scan input:focus{outline:none;border-color:#38bdf8;box-shadow:0 0 0 3px rgba(56,189,248,.2);background:#fff}
+.sc-hint{color:#64748b;font-size:10px;margin-top:5px;letter-spacing:0;text-align:center}
+.sc-search{margin:0 12px 8px}
+.sc-search input{width:100%;padding:8px 12px;border:1.5px solid #cfd6df;border-radius:4px;font-size:13px}
+.sc-qte-line{display:flex;align-items:center;gap:8px;margin:0 12px 10px;font-size:12px;color:#475569;font-weight:600}
+.sc-qte-line input{width:64px;padding:5px 8px}
+.sc-grid-head{font-size:10px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:#475569;background:#eef1f5;border-top:1px solid #dfe4ea;border-bottom:1px solid #dfe4ea;padding:6px 12px}
+.sc-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:6px;padding:10px 12px 4px;max-height:420px;overflow-y:auto}
+.pos-tile{background:#fff;border:1px solid #d5dae2;border-radius:4px;padding:8px;cursor:pointer;transition:all .12s;box-shadow:0 1px 2px rgba(15,23,42,.04);position:relative;overflow:hidden;user-select:none}
+.pos-tile:hover{border-color:#2a5f9f;box-shadow:0 0 0 1px #2a5f9f}
+.pos-tile:active{transform:scale(.97)}
+.pos-tile-nom{font-size:11px;font-weight:600;color:#16324f;line-height:1.2;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-bottom:3px;min-height:26px}
+.pos-tile-ref{font-size:9px;color:#8a94a3;font-weight:600;margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pos-tile-prix{font-size:13px;font-weight:800;color:#1e4e8f}
+.pos-tile-stock{font-size:9px;color:#64748b;margin-top:1px}
+.pos-tile .badge-sold{position:absolute;top:5px;right:5px;background:#fde68a;color:#92400e;font-size:8px;font-weight:700;padding:1px 5px;border-radius:4px}
+.pos-results{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:6px;padding:8px 12px 4px}
+.pos-results-empty{padding:14px;text-align:center;color:#94a3b8;font-size:12px;border:1px dashed #d5dae2;border-radius:4px;margin:8px 12px;background:#fafbfc}
+.sc-header-grid{display:grid;grid-template-columns:1.2fr 1fr 1fr 1fr;gap:10px;padding:12px}
+.fld label{display:block;color:#3d4756;font-size:10px;font-weight:700;margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px}
+.fld input,.fld select{width:100%;padding:7px 9px;font-size:13px;background:#fbfcfd}
+.sc-table{width:100%;border-collapse:collapse;font-size:12px}
+.sc-table thead th{background:linear-gradient(180deg,#eef2f7,#e2e8f0);color:#2f4a6b;font-size:10px;text-transform:uppercase;letter-spacing:.4px;font-weight:700;padding:7px 10px;border:1px solid #d3dae3;text-align:left}
+.sc-table thead th.num,.sc-table td.num{text-align:right}
+.sc-table tbody td{border:1px solid #e3e8ee;padding:6px 10px;color:#26313f;vertical-align:middle}
+.sc-table tbody tr:nth-child(even){background:#f7f9fc}
+.sc-table tbody tr:hover{background:#eef4fb}
+.sc-table td.act{text-align:center;width:30px}
+.sc-table td.ttc{font-weight:700;color:#16425b}
+.sc-art-nom{font-weight:600}
+.sc-art-ref{font-size:10px;color:#8a94a3}
+.sc-table input[type=number]{width:56px;padding:4px 6px;font-size:12px}
+.sc-del{border:1px solid #e0a8a8;background:#fdf0f0;color:#b4433c;width:20px;height:20px;line-height:1;border-radius:3px;cursor:pointer;font-weight:700}
+.sc-del:hover{background:#f7dcdc}
+.sc-empty{padding:18px 16px;text-align:center;color:#94a3b8;font-size:12px;border:1px dashed #d5dae2;margin:8px 12px;border-radius:4px;background:#fafbfc}
+.sc-pay{padding-bottom:12px}
+.sc-totaux{display:flex;gap:10px;padding:12px;flex-wrap:wrap}
+.sc-tot{background:#f4f6f8;border:1px solid #dfe4ea;border-radius:4px;padding:8px 14px;min-width:130px;text-align:right;flex:1}
+.sc-tot span{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:#5b6b7c;font-weight:700}
+.sc-tot b{font-size:17px;color:#1e293b}
+.sc-tot.big{background:linear-gradient(180deg,#1e4e8f,#173e70);border-color:#173e70}
+.sc-tot.big span{color:#cfe0f5}
+.sc-tot.big b{color:#fff;font-size:20px}
+.sc-pay-grid{display:grid;grid-template-columns:1.2fr 1fr auto auto;gap:10px;align-items:end;padding:0 12px}
+.sc-monnaie{font-size:13px;font-weight:800;padding:8px 6px;text-align:right;white-space:nowrap}
+.sc-monnaie.ok{color:#159357}
+.sc-monnaie.ko{color:#d6453d}
+@media(max-width:1180px){.sc-cols{grid-template-columns:1fr}.sc-header-grid{grid-template-columns:1fr 1fr}.sc-pay-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:760px){.sc-header-grid,.sc-pay-grid{grid-template-columns:1fr}.sc-kpis{grid-template-columns:1fr}.sc-head{flex-direction:column;align-items:stretch}.sc-head-title{justify-content:center}.sc-actions{justify-content:flex-start}}
+</style>
+<div class="sage-caisse">
+<div class="sc-head no-print">
+<div class="sc-head-title">
+<div class="sc-head-ico"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12v18l-2-2-2 2-2-2-2 2-2-2-2 2V3z"/><path d="M9 8h6M9 12h6"/></svg></div>
+<div>
+<div class="sc-head-name">Saisie de caisse</div>
+<div class="sc-head-sub">09/09/2026 &middot; Depot 001</div>
+</div>
+</div>
+<div class="sc-actions">
+<button class="sc-btn primary" onclick="clearCart()">Nouveau</button>
+<button class="sc-btn" onclick="addPosLineManual()">+ Ligne manuelle</button>
+<button class="sc-btn" onclick="syncPosArticles()">Sync articles</button>
+<button class="sc-btn" id="btn-stock" onclick="toggleStock()">Stock: --</button>
+</div>
+</div>
+<div class="sc-kpis no-print"><div class="sc-kpi sc-kpi-blue"><div class="sc-kpi-ico"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9a3 3 0 0 1 0 6v3h20v-3a3 3 0 0 1 0-6V6H2v3z"/><circle cx="12" cy="12" r="1.4"/></svg></div><div class="sc-kpi-txt"><span class="sc-kpi-label">Tickets du jour</span><div class="sc-kpi-val">0</div></div></div><div class="sc-kpi sc-kpi-green"><div class="sc-kpi-ico"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="6" width="21" height="12" rx="2"/><circle cx="12" cy="12" r="2.4"/><path d="M5.5 9.2h.01M18.5 14.8h.01"/></svg></div><div class="sc-kpi-txt"><span class="sc-kpi-label">CA du jour</span><div class="sc-kpi-val">0 FCFA</div></div></div><div class="sc-kpi sc-kpi-navy"><div class="sc-kpi-ico"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg></div><div class="sc-kpi-txt"><span class="sc-kpi-label">CA total</span><div class="sc-kpi-val">622 148 FCFA</div></div></div></div>
+<div class="sc-cols">
+
+<div class="sc-col-left">
+<div class="sc-panel">
+<div class="sc-panel-title">Catalogue articles</div>
+<div class="sc-scan">
+<input id="pos-barcode" placeholder="Scanner code-barres / reference ... (Entree)" autocomplete="off" autofocus
+  onkeydown="if(event.key==='Enter'){event.preventDefault();scanBarcode(this.value)}">
+<div class="sc-hint">Scannez un article puis Entree : il est ajoute instantanement au ticket</div>
+</div>
+<div class="sc-search">
+<input id="pos-search" placeholder="Rechercher un article (des 2 caracteres)..." autocomplete="off" oninput="posInstantSearch(this.value)">
+</div>
+<div class="sc-qte-line"><span>Quantite par defaut</span> <input type="number" id="pos-qte" value="1" min="1"></div>
+<div id="pos-products-head" class="sc-grid-head">Meilleures ventes</div>
+<div id="pos-products-grid" class="sc-tiles"><div class="pos-tile" data-id="17" data-ref="CAS-FIL-017" data-barcode="4408417340789" data-des="Casque audio filaire" data-prix="15000.0" data-tva="18" onclick="addToCartFromTile(this)"><span class="badge-sold">TOP 1</span><div class="pos-tile-nom">Casque audio filaire</div><div class="pos-tile-ref">CAS-FIL-017</div><div class="pos-tile-prix">15,000 FCFA</div><div class="pos-tile-stock">Stock: 60</div></div><div class="pos-tile" data-id="87" data-ref="ART-0029" data-barcode="" data-des="Amidon 1kg" data-prix="1100.0" data-tva="18" onclick="addToCartFromTile(this)"><span class="badge-sold">TOP 2</span><div class="pos-tile-nom">Amidon 1kg</div><div class="pos-tile-ref">ART-0029</div><div class="pos-tile-prix">1,100 FCFA</div><div class="pos-tile-stock">Stock: 0</div></div><div class="pos-tile" data-id="80" data-ref="ART-0022" data-barcode="" data-des="Arachide grillée 500g" data-prix="1900.0" data-tva="18" onclick="addToCartFromTile(this)"><span class="badge-sold">TOP 3</span><div class="pos-tile-nom">Arachide grillée 500g</div><div class="pos-tile-ref">ART-0022</div><div class="pos-tile-prix">1,900 FCFA</div><div class="pos-tile-stock">Stock: 0</div></div><div class="pos-tile" data-id="37" data-ref="ALL-MRG-037" data-barcode="7192932034390" data-des="Alliance mariage inox" data-prix="42000.0" data-tva="18" onclick="addToCartFromTile(this)"><span class="badge-sold">TOP 4</span><div class="pos-tile-nom">Alliance mariage inox</div><div class="pos-tile-ref">ALL-MRG-037</div><div class="pos-tile-prix">42,000 FCFA</div><div class="pos-tile-stock">Stock: 194</div></div><div class="pos-tile" data-id="92" data-ref="BAAR01" data-barcode="21731006" data-des="Bague Argent" data-prix="372.0" data-tva="18" onclick="addToCartFromTile(this)"><span class="badge-sold">TOP 5</span><div class="pos-tile-nom">Bague Argent</div><div class="pos-tile-ref">BAAR01</div><div class="pos-tile-prix">372 FCFA</div><div class="pos-tile-stock">Stock: 16</div></div><div class="pos-tile" data-id="167" data-ref="ARG09" data-barcode="f051c8dc42bca" data-des="Bague Argent ajustable" data-prix="52000.0" data-tva="18" onclick="addToCartFromTile(this)"><span class="badge-sold">TOP 6</span><div class="pos-tile-nom">Bague Argent ajustable</div><div class="pos-tile-ref">ARG09</div><div class="pos-tile-prix">52,000 FCFA</div><div class="pos-tile-stock">Stock: 0</div></div><div class="pos-tile" data-id="11" data-ref="CLV-AZR-011" data-barcode="2017717847808" data-des="Clavier USB AZERTY" data-prix="8500.0" data-tva="0" onclick="addToCartFromTile(this)"><span class="badge-sold">TOP 7</span><div class="pos-tile-nom">Clavier USB AZERTY</div><div class="pos-tile-ref">CLV-AZR-011</div><div class="pos-tile-prix">8,500 FCFA</div><div class="pos-tile-stock">Stock: 196</div></div><div class="pos-tile" data-id="8" data-ref="CLI-9K-008" data-barcode="8020947069019" data-des="Climatiseur split 9000BTU" data-prix="280000.0" data-tva="0" onclick="addToCartFromTile(this)"><span class="badge-sold">TOP 8</span><div class="pos-tile-nom">Climatiseur split 9000BTU</div><div class="pos-tile-ref">CLI-9K-008</div><div class="pos-tile-prix">280,000 FCFA</div><div class="pos-tile-stock">Stock: 162</div></div><div class="pos-tile" data-id="107" data-ref="HAIGUILLE" data-barcode="41c8c2ea8d0ff" data-des="Aiguille pour horloge" data-prix="11.5" data-tva="18" onclick="addToCartFromTile(this)"><div class="pos-tile-nom">Aiguille pour horloge</div><div class="pos-tile-ref">HAIGUILLE</div><div class="pos-tile-prix">12 FCFA</div><div class="pos-tile-stock">Stock: 18</div></div><div class="pos-tile" data-id="134" data-ref="SVMATETAN" data-barcode="19911885" data-des="Appareil de contrôle de l&#x27;étanchéîté montres" data-prix="7040.0" data-tva="18" onclick="addToCartFromTile(this)"><div class="pos-tile-nom">Appareil de contrôle de l&#x27;étanchéîté montres</div><div class="pos-tile-ref">SVMATETAN</div><div class="pos-tile-prix">7,040 FCFA</div><div class="pos-tile-stock">Stock: 3</div></div></div>
+<div id="pos-results"></div>
+</div>
+</div>
+
+<div class="sc-col-right">
+
+<div class="sc-panel">
+<div class="sc-panel-title">En-tete ticket</div>
+<div class="sc-header-grid">
+<div class="fld"><label>Client</label><select id="pos-client"><option value="|CLI-CPT|Client comptoir" selected>Client comptoir</option><option value="|CLI-005|CARREFOUR MARKET">CLI-005 - CARREFOUR MARKET</option><option value="|CLI-CPT|Client comptoir">CLI-CPT - Client comptoir</option><option value="|CLI-009|ENTREPRISE KOKI">CLI-009 - ENTREPRISE KOKI</option><option value="|CLI-001|Entreprise OBAMA">CLI-001 - Entreprise OBAMA</option><option value="|CLI-004|HOTEL MERIDIAN">CLI-004 - HOTEL MERIDIAN</option><option value="|CLI-008|PHARMACIE CENTRALE">CLI-008 - PHARMACIE CENTRALE</option><option value="|CLI-002|SARL PETRO-CONGO">CLI-002 - SARL PETRO-CONGO</option><option value="|CLI-006|SNC MABANGA">CLI-006 - SNC MABANGA</option><option value="|CLI-003|SOCIAL ASSURANCE">CLI-003 - SOCIAL ASSURANCE</option><option value="|CLI-010|SUPERMARCHÉ LUX">CLI-010 - SUPERMARCHÉ LUX</option><option value="|CLI-007|TECHNO STORE">CLI-007 - TECHNO STORE</option></select></div>
+<div class="fld"><label>Caissier / Vendeur</label><select id="pos-vendeur"><option value="">Sans vendeur</option><option value="1">admin Admin</option><option value="3">Sarah Ikobo</option><option value="2">Paul Moukonda</option></select></div>
+<div class="fld"><label>Depot</label><input type="text" value="DEPOT 001" readonly></div>
+<div class="fld"><label>N&deg; ticket</label><input type="text" value="Nouveau !" readonly></div>
+</div>
+</div>
+
+<div class="sc-panel">
+<div class="sc-panel-title">Detail du ticket <span class="sc-panel-count" id="pos-articles-count">0</span></div>
+<table class="sc-table"><thead><tr>
+<th>Article</th><th class="num">Qte</th><th class="num">P. unitaire</th><th class="num">TVA</th><th class="num">Total TTC</th><th class="act"></th>
+</tr></thead>
+<tbody id="pos-cart-body"></tbody></table>
+<div id="pos-cart-empty" class="sc-empty">Ticket vide - Scannez un code-barres ou cliquez sur un article du catalogue</div>
+</div>
+
+<div class="sc-panel sc-pay">
+<div class="sc-panel-title">Reglement</div>
+<div class="sc-totaux">
+<div class="sc-tot"><span>Total HT</span><b id="pos-total-ht">0 FCFA</b></div>
+<div class="sc-tot"><span>Total TVA</span><b id="pos-total-tva">0 FCFA</b></div>
+<div class="sc-tot big"><span>Net a payer TTC</span><b id="pos-total">0 FCFA</b></div>
+</div>
+<div class="sc-pay-grid">
+<div class="fld"><label>Mode de paiement</label>
+<select id="pos-paiement" onchange="calcMonnaie()">
+<option value="especes" selected>Especes</option>
+<option value="mobile_money">Mobile Money</option>
+<option value="virement">Virement</option>
+<option value="carte">Carte</option>
+<option value="cheque">Cheque</option>
+<option value="mixte">Mixte</option>
+</select></div>
+<div class="fld"><label>Recu (FCFA)</label><input type="number" id="pos-recu" value="0" min="0" oninput="calcMonnaie()"></div>
+<div id="pos-monnaie" class="sc-monnaie"></div>
+<button id="pos-validate" class="sc-btn encaisser" onclick="validerTicket()" disabled>Ticket vide</button>
+</div>
+</div>
+
+<div class="sc-panel">
+<div class="sc-panel-title">Derniers tickets</div>
+<table class="sc-table"><thead><tr>
+<th>Numero</th><th>Heure</th><th class="num">TTC</th><th>Paiement</th>
+</tr></thead>
+<tbody><tr><td>TK000021</td><td>15:21:24</td><td style='text-align:right'>35,839</td><td>especes</td></tr><tr><td>TK000020</td><td>14:26:40</td><td style='text-align:right'>61,799</td><td>especes</td></tr><tr><td>TK000019</td><td>15:19:28</td><td style='text-align:right'>3,540</td><td>especes</td></tr><tr><td>TK000018</td><td>16:34:45</td><td style='text-align:right'>2,242</td><td>especes</td></tr><tr><td>TK000017</td><td>16:32:09</td><td style='text-align:right'>17,700</td><td>especes</td></tr><tr><td>TK000016</td><td>19:13:12</td><td style='text-align:right'>1,298</td><td>especes</td></tr><tr><td>TK000014</td><td>19:05:25</td><td style='text-align:right'>17,700</td><td>especes</td></tr><tr><td>TK000013</td><td>18:41:42</td><td style='text-align:right'>2,242</td><td>especes</td></tr></tbody></table>
+</div>
+
+</div>
+</div>
+</div>
+<script>
+var posCart=[];
+var posLineIdx=0;
+var posSearchTimer=null;
+var posClients=[{"id": 5, "code": "CLI-005", "nom": "CARREFOUR MARKET"}, {"id": 27, "code": "CLI-CPT", "nom": "Client comptoir"}, {"id": 9, "code": "CLI-009", "nom": "ENTREPRISE KOKI"}, {"id": 1, "code": "CLI-001", "nom": "Entreprise OBAMA"}, {"id": 4, "code": "CLI-004", "nom": "HOTEL MERIDIAN"}, {"id": 8, "code": "CLI-008", "nom": "PHARMACIE CENTRALE"}, {"id": 2, "code": "CLI-002", "nom": "SARL PETRO-CONGO"}, {"id": 6, "code": "CLI-006", "nom": "SNC MABANGA"}, {"id": 3, "code": "CLI-003", "nom": "SOCIAL ASSURANCE"}, {"id": 10, "code": "CLI-010", "nom": "SUPERMARCHÉ LUX"}, {"id": 7, "code": "CLI-007", "nom": "TECHNO STORE"}];
+window.NATIVE_ALERTS = true;
+
+function _h(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
+
+function getPosClientData(v){
+  v=String(v||"");
+  if(v==="|CLI-CPT|Client comptoir"){var c=posClients.filter(function(x){return x.code==="CLI-CPT"})[0];return {code:"CLI-CPT",nom:"Client comptoir",id:c?c.id:null};}
+  var parts=v.split("|");
+  if(parts.length>=3){return {code:parts[1],nom:parts.slice(2).join("|"),id:null};}
+  return {code:"",nom:"Client comptoir",id:null};
+}
+
+function addToCartFromTile(elm){
+  addToCart({id:elm.getAttribute("data-id"),ref:elm.getAttribute("data-ref"),barcode:elm.getAttribute("data-barcode")||"",designation:elm.getAttribute("data-des"),prix_vente:parseFloat(elm.getAttribute("data-prix"))||0,tva_code:elm.getAttribute("data-tva")||"18"});
+}
+
+function addToCart(p){
+  if(!p||!p.designation)return;
+  var q=parseInt(document.getElementById("pos-qte").value)||1;if(q<1)q=1;
+  var exist=null;
+  if(p.ref){exist=posCart.filter(function(l){return l.ref&&l.ref===p.ref})[0]}
+  if(exist){exist.quantite=round2(exist.quantite+q)}
+  else{posLineIdx++;posCart.push({idx:posLineIdx,ref:p.ref||"",barcode:p.barcode||"",designation:p.designation,prix_unitaire:parseFloat(p.prix_vente)||0,quantite:q,taux_tva:parseFloat(p.tva_code)||18,product_id:p.id||null})}
+  renderPosCart();
+}
+
+function addPosLineManual(){
+  var desc=prompt("Designation de la ligne :");if(!desc||!desc.trim())return;
+  var prix=parseFloat(prompt("Prix unitaire (FCFA) :"))||0;
+  var q=parseInt(document.getElementById("pos-qte").value)||1;
+  posLineIdx++;posCart.push({idx:posLineIdx,ref:"",barcode:"",designation:desc.trim(),prix_unitaire:prix,quantite:q,taux_tva:18,product_id:null});
+  renderPosCart();
+}
+
+function scanBarcode(code){
+  code=(code||"").trim();
+  var bi=document.getElementById("pos-barcode");
+  if(!code){bi.focus();return}
+  fetch("/api/products/barcode?code="+encodeURIComponent(code)).then(function(r){return r.json()}).then(function(d){
+    if(d.found){addToCart(d.product)}
+    else{showToast("Code-barres inconnu : "+code,"err")}
+    bi.value="";bi.focus();
+  }).catch(function(){showToast("Erreur scan","err");bi.value="";bi.focus()});
+}
+
+function posInstantSearch(raw){
+  raw=(raw||"").trim();
+  clearTimeout(posSearchTimer);
+  var grid=document.getElementById("pos-products-grid");
+  var head=document.getElementById("pos-products-head");
+  var results=document.getElementById("pos-results");
+  if(raw.length===0){
+    head.textContent="Meilleures ventes";
+    grid.style.display="grid";
+    results.innerHTML="";
+    return;
+  }
+  if(raw.length===1){return;}
+  grid.style.display="none";
+  results.innerHTML='<div class="pos-results-empty">Recherche...</div>';
+  posSearchTimer=setTimeout(function(){
+    fetch("/api/pos/products/search?q="+encodeURIComponent(raw)).then(function(r){return r.json()}).then(function(list){
+      if(!Array.isArray(list)||!list.length){head.textContent="Aucun resultat";results.innerHTML='<div class="pos-results-empty">Aucun article pour &laquo; '+_h(raw)+' &raquo;</div>';return}
+      head.textContent=list.length+" article(s) trouve(s)";
+      results.innerHTML="";
+      list.forEach(function(p){results.appendChild(makeTileEl(p))});
+    }).catch(function(){results.innerHTML='<div class="pos-results-empty">Erreur de recherche</div>'});
+  },250);
+}
+
+function makeTileEl(p){
+  var d=document.createElement("div");d.className="pos-tile";
+  d.addEventListener("click",function(){addToCart(p)});
+  var nom=document.createElement("div");nom.className="pos-tile-nom";nom.textContent=p.designation;
+  var ref=document.createElement("div");ref.className="pos-tile-ref";ref.textContent=p.ref||"";
+  var prix=document.createElement("div");prix.className="pos-tile-prix";prix.textContent=(Number(p.prix_vente)||0).toLocaleString("fr-FR")+" FCFA";
+  var st=document.createElement("div");st.className="pos-tile-stock";st.textContent="Stock : "+(Number(p.stock_reel)||0);
+  d.appendChild(nom);d.appendChild(ref);d.appendChild(prix);d.appendChild(st);
+  return d;
+}
+
+function renderPosCart(){
+  var body="";var totalHT=0;var totalTVA=0;var totalTTC=0;var nbArt=0;
+  posCart.forEach(function(l){
+    var ht=round2(l.quantite*l.prix_unitaire);
+    var tva=round2(ht*l.taux_tva/100);
+    var ttc=round2(ht+tva);
+    totalHT+=ht;totalTVA+=tva;totalTTC+=ttc;nbArt+=l.quantite;
+    body+="<tr>"
+      +"<td><div class='sc-art-nom'>"+_h(l.designation)+"</div><div class='sc-art-ref'>"+_h(l.ref||l.barcode||"")+"</div></td>"
+      +"<td class='num'><input type='number' value='"+l.quantite+"' min='0.5' step='0.5' onchange='updatePosQte("+l.idx+",this.value)'></td>"
+      +"<td class='num'>"+Number(l.prix_unitaire).toLocaleString("fr-FR")+"</td>"
+      +"<td class='num'>"+Number(l.taux_tva).toLocaleString("fr-FR")+" %</td>"
+      +"<td class='num ttc'>"+Number(ttc).toLocaleString("fr-FR")+"</td>"
+      +"<td class='act'><button class='sc-del' title='Supprimer' onclick='removePosLine("+l.idx+")'>&times;</button></td></tr>";
+  });
+  document.getElementById("pos-cart-body").innerHTML=body;
+  document.getElementById("pos-total").textContent=Number(totalTTC).toLocaleString("fr-FR")+" FCFA";
+  document.getElementById("pos-total-ht").textContent=Number(totalHT).toLocaleString("fr-FR")+" FCFA";
+  document.getElementById("pos-total-tva").textContent=Number(totalTVA).toLocaleString("fr-FR")+" FCFA";
+  document.getElementById("pos-articles-count").textContent=nbArt;
+  document.getElementById("pos-cart-empty").style.display=posCart.length?"none":"block";
+  calcMonnaie();
+}
+
+function updatePosQte(idx,val){var l=posCart.filter(function(x){return x.idx===idx})[0];if(l){l.quantite=parseFloat(val)||1;renderPosCart()}}
+function removePosLine(idx){posCart=posCart.filter(function(l){return l.idx!==idx});renderPosCart()}
+function clearCart(){posCart=[];posLineIdx=0;renderPosCart()}
+function round2(n){return Math.round(n*100)/100}
+
+function calcMonnaie(){
+  var total=0;posCart.forEach(function(l){total+=round2(l.quantite*l.prix_unitaire*(1+l.taux_tva/100))});
+  var recu=parseFloat(document.getElementById("pos-recu").value)||0;
+  var mode=document.getElementById("pos-paiement").value;
+  var monnaie=round2(recu-total);
+  var el=document.getElementById("pos-monnaie");
+  var btn=document.getElementById("pos-validate");
+  if(posCart.length===0){el.className="sc-monnaie";el.textContent="";btn.disabled=true;btn.textContent="Ticket vide";return}
+  if(mode==="especes"&&monnaie<0){
+    el.className="sc-monnaie ko";el.textContent="Manque : "+Number(Math.abs(monnaie)).toLocaleString("fr-FR")+" FCFA";
+    btn.disabled=true;btn.textContent="Manque "+Number(Math.abs(monnaie)).toLocaleString("fr-FR")+" FCFA";
+  }else{
+    el.className="sc-monnaie ok";
+    el.textContent=mode==="especes"?"A rendre : "+Number(monnaie).toLocaleString("fr-FR")+" FCFA":"Total : "+Number(total).toLocaleString("fr-FR")+" FCFA";
+    btn.disabled=false;btn.textContent="Encaisser";
+  }
+}
+
+function validerTicket(){
+  if(posCart.length===0){showToast("Ticket vide","err");return}
+  var lignes=[];
+  posCart.forEach(function(l){lignes.push({designation:l.designation,quantite:l.quantite,prix_unitaire:l.prix_unitaire,taux_tva:l.taux_tva,code_article:l.ref,code_compte:"",famille:"",barcode:l.barcode||"",product_id:l.product_id||null})});
+  var vid=document.getElementById("pos-vendeur").value;
+  var pcd=getPosClientData(document.getElementById("pos-client").value);
+  var data={tiers_nom:pcd.nom||"Client comptoir",
+            tiers_code:pcd.code||"",
+            contact_id:pcd.id||null,
+            mode_paiement:document.getElementById("pos-paiement").value,
+            montant_recu:parseFloat(document.getElementById("pos-recu").value)||0,
+            vendeur_id:vid?parseInt(vid):null,lignes:lignes};
+  var btn=document.getElementById("pos-validate");
+  btn.disabled=true;btn.textContent="Validation...";
+  api("POST","/api/pos/ticket",data).then(function(d){
+    if(d.success){
+      var msg="Ticket "+d.numero+" valide";
+      if(d.invoice_numero){msg+=" - Facture "+d.invoice_numero}
+      if(d.sfec_ok){msg+=" - SFEC certifiee ("+String(d.sfec_num_certif||"").slice(0,20)+")"}
+      else if(d.sfec_error){msg+=" - SFEC: "+String(d.sfec_error).slice(0,40)}
+      msg+=" - Monnaie : "+Number(d.monnaie_rendue||0).toLocaleString("fr-FR")+" FCFA";
+      if(d.sage_ok){msg+=" - ecrite dans Sage"}
+      showToast(msg,(d.sfec_ok&&d.sage_ok)?"ok":"warn");
+      clearCart();
+      document.getElementById("pos-recu").value=0;
+      document.getElementById("pos-client").selectedIndex=0;
+      setTimeout(function(){location.href="/pos/ticket/"+d.id+"/print"},1400);
+    }else{
+      btn.disabled=false;btn.textContent="Valider & imprimer";
+      showToast("Erreur : "+d.error,"err");
+    }
+  }).catch(function(e){btn.disabled=false;btn.textContent="Valider & imprimer";showToast("Erreur : "+e,"err")});
+}
+
+function syncPosArticles(){api("POST","/api/articles/sync",{}).then(function(d){alert(d.message||"Sync OK");setTimeout(function(){location.reload()},2500)}).catch(function(e){alert("Erreur : "+e)})}
+window.STOCK_CONTROL = true;
+function refreshStockBtn(){var b=document.getElementById("btn-stock");if(!b)return;b.textContent="Stock: "+(window.STOCK_CONTROL?"ON":"OFF");b.classList.toggle("btn-success",!!window.STOCK_CONTROL);b.classList.toggle("btn-warning",!window.STOCK_CONTROL);}
+function toggleStock(){api("POST","/api/pos/config",{stock_control:!window.STOCK_CONTROL}).then(function(d){if(d.success){window.STOCK_CONTROL=!!d.stock_control;refreshStockBtn();showToast("Controle de stock "+(window.STOCK_CONTROL?"ACTIVE":"DESACTIVE"),"ok")}else{showToast(d.error||"Erreur","err")}});}
+refreshStockBtn();
+</script></div></div></div>
+<div class="alert-zone" id="alert-zone" aria-live="polite"></div>
+<script>
+var _alertTimers = {};
+function showToast(msg, type) {
+  type = type || "ok";
+  var scanFeed = (type === "err") && (msg.indexOf("Code-barres inconnu") === 0 || msg.indexOf("Erreur scan") === 0);
+  if (window.NATIVE_ALERTS && !scanFeed) { alert(msg); return; }
+  if (window.POS_DIALOG_ALERTS && type === "err" && !scanFeed) {
+    showDialog(msg, "err");
+    return;
+  }
+  var zone = document.getElementById("alert-zone");
+  if (!zone) return;
+  var key = type + "::" + msg;
+  var prev = null;
+  for (var i = 0; i < zone.children.length; i++) {
+    if (zone.children[i].getAttribute("data-key") === key) { prev = zone.children[i]; break; }
+  }
+  if (prev) { clearTimeout(_alertTimers[key]); zone.removeChild(prev); }
+  var card = document.createElement("div");
+  card.className = "alert-card alert-" + type;
+  card.setAttribute("data-key", key);
+  var icon = "✔";
+  if (type === "info") icon = "i";
+  else if (type === "warn") icon = "!";
+  else if (type === "err") icon = "✖";
+  card.innerHTML = '<span class="alert-icon">' + icon + '</span><span class="alert-msg"></span><button class="alert-x" role="button" aria-label="Fermer">×</button>';
+  card.querySelector(".alert-msg").textContent = msg;
+  var close = card.querySelector(".alert-x");
+  close.onclick = function() { dismissAlert(card, key); };
+  zone.appendChild(card);
+  var delay = type === "warn" ? 7000 : (type === "err" ? 12000 : 3800);
+  _alertTimers[key] = setTimeout(function() { dismissAlert(card, key); }, delay);
+  while (zone.children.length > 4) {
+    var old = zone.children[0];
+    dismissAlert(old, old.getAttribute("data-key"));
+  }
+}
+function dismissAlert(card, key) {
+  if (!card) return;
+  if (_alertTimers[key]) clearTimeout(_alertTimers[key]);
+  delete _alertTimers[key];
+  card.classList.add("alert-out");
+  setTimeout(function() { if (card.parentNode) card.parentNode.removeChild(card); }, 260);
+}
+function showDialog(msg, type, title) {
+  type = type || "info";
+  var root = document.getElementById("dialog-root");
+  if (!root) { root = document.createElement("div"); root.id = "dialog-root"; document.body.appendChild(root); }
+  var icons = {ok: "✔", info: "i", warn: "!", err: "✖"};
+  var t = title || (type === "err" ? "Erreur" : type === "warn" ? "Attention" : type === "ok" ? "Succes" : "Information");
+  root.innerHTML = '<div class="alert-overlay" id="dlg-overlay">'
+    + '<div class="alert-dialog alert-' + type + '" role="dialog" aria-modal="true">'
+    + '<div class="alert-dialog-head"><span class="alert-dialog-icon">' + (icons[type] || "i") + '</span><span class="alert-dialog-title"></span></div>'
+    + '<div class="alert-dialog-msg"></div>'
+    + '<div class="alert-dialog-actions"><button class="btn" id="dlg-ok">OK</button></div>'
+    + '</div></div>';
+  root.querySelector(".alert-dialog-title").textContent = t;
+  root.querySelector(".alert-dialog-msg").textContent = msg;
+  var overlay = root.querySelector("#dlg-overlay");
+  var dialog = root.querySelector(".alert-dialog");
+  function close() {
+    if (document.getElementById("dlg-ok")) document.removeEventListener("keydown", onKey);
+    overlay.classList.add("alert-out");
+    dialog.classList.add("alert-out");
+    setTimeout(function() { if (root.parentNode) root.parentNode.removeChild(root); }, 200);
+  }
+  function onKey(e) { if (e.key === "Escape") close(); }
+  document.addEventListener("keydown", onKey);
+  root.querySelector("#dlg-ok").onclick = close;
+  overlay.addEventListener("click", function(e) { if (e.target === overlay) close(); });
+  var ok = root.querySelector("#dlg-ok");
+  if (ok) ok.focus();
+}
+function checkConnectivity() {
+  fetch("/api/connectivity").then(function(r){return r.json()}).then(function(d){
+    var dot = document.getElementById("net-dot");
+    var lbl = document.getElementById("net-label");
+    if (d.online) {
+      dot.className = "net-dot on";
+      lbl.textContent = "EN LIGNE";
+    } else {
+      dot.className = "net-dot off";
+      lbl.textContent = "HORS LIGNE";
+    }
+  }).catch(function(){
+    document.getElementById("net-dot").className = "net-dot off";
+    document.getElementById("net-label").textContent = "HORS LIGNE";
+  });
+}
+checkConnectivity();
+setInterval(checkConnectivity, 15000);
+</script>
+<script>
+function api(m,u,b){function call(t){var h={"Content-Type":"application/json"};if(t){window.CSRF_TOKEN=t;h["X-CSRF-Token"]=t}return fetch(u,{method:m,headers:h,body:b?JSON.stringify(b):undefined}).then(function(r){return r.json().then(function(d){if((r.status===400||r.status===403)&&d&&d.error&&d.error.indexOf("CSRF")>=0&&!t){return fetch("/api/csrf").then(function(r){return r.json()}).then(function(x){return call(x.token)})}return d})})}if(window.CSRF_TOKEN)return call(window.CSRF_TOKEN);return fetch("/api/csrf").then(function(r){return r.json()}).then(function(d){return call(d.token)})}
+function syncNow(){showToast("Sync en cours...","info");api("POST","/api/sync").then(function(d){showToast(d.message||"OK","ok");setTimeout(function(){location.reload()},2000)})}
+function switchTab(id){document.querySelectorAll(".tab-btn").forEach(function(b){b.classList.remove("active")});document.querySelectorAll(".tab-content").forEach(function(c){c.classList.remove("active")});document.getElementById("tab-btn-"+id).classList.add("active");document.getElementById("tab-"+id).classList.add("active")}
+function saveForm(formId, url, next){var f=document.getElementById(formId);var d=new FormData(f);var obj={};d.forEach(function(v,k){obj[k]=v});api("POST",url,obj).then(function(r){if(r.ok){showToast("Sauvegarde OK","ok");if(next)next()}else{showToast("Erreur: "+(r.error||"inconnue"),"err")}}).catch(function(e){showToast("Erreur reseau: "+e,"err")})}
+function toggleSidebar(){var s=document.querySelector(".sidebar");if(!s)return;var c=s.classList.toggle("collapsed");try{localStorage.setItem("tconn_sidebar",c?"1":"0")}catch(e){}}
+(function(){try{if(localStorage.getItem("tconn_sidebar")==="1"){var s=document.querySelector(".sidebar");if(s)s.classList.add("collapsed")}}catch(e){}})();
+</script></body></html>

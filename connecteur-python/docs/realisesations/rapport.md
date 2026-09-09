@@ -158,7 +158,26 @@ Ces mentions sont toutes intégrées dans la nouvelle facture `print_certified`.
 
 ---
 
-## 9. Fichiers / artefacts
+## 10. Refonte de l'en-tête de la caisse `/pos/caisse` (09/09/2026)
+
+**Objectif** : aligner et nettoyer le bloc supérieur de la caisse (boutons + statistiques en désordre).
+
+**Réalisé :**
+- **Rangée titre** `.sc-head` : icône gratuit + « Saisie de caisse » + sous-titre `09/09/2026 · Depot 001` (date du jour injectée côté Python).
+- **Rangée actions** `.sc-actions` : les 4 boutons (Nouveau, + Ligne manuelle, Sync articles, Stock) alignés à droite, hauteur uniforme (32 px), `gap` propre ; suppression du séparateur `.sc-sep`.
+- **Barre KPI** `.sc-kpis` : 3 cartes alignées avec icône SVG, libellé et valeur :
+  - Tickets du jour (bleu), CA du jour (vert), CA total (bleu marine).
+  - Couleurs inline `style="color:#0f172a"` supprimées (classes CSS).
+  - Nombres formatés avec séparateur d'espace insécable (`622 148 FCFA`, plus de `1250` brut).
+- **Bouton Stock** : styles propres `.sc-btn.btn-success / .btn-warning` (au lieu de classes inexistantes), JS `toggleStock()`/`refreshStockBtn()` inchangés.
+- **Responsive** : 1180 px (resserrement), 760 px (KPI 1 colonne, titre et actions empilés).
+- **Vérifications** : compile OK, rendu HTTP 200, hooks JS intacts, aperçu `rendered_caisse.html` généré pour contrôle visuel.
+
+**Fichier :** `dashboard.py` — `pos_page()` (ligne ~3153) + `stats_html` + `pos_css`.
+
+---
+
+## 11. Fichiers / artefacts
 
 **Principale modification :**
 - `connecteur-python/dashboard.py`
