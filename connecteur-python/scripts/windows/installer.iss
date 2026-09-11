@@ -16,7 +16,7 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 DefaultDirName={autopf}\TConnector
 DefaultGroupName={#MyAppName}
-OutputDir=..\installer
+OutputDir=..\..\installer
 OutputBaseFilename=TConnector-Setup-{#MyAppVersion}
 Compression=lzma2/ultra64
 SolidCompression=yes
@@ -33,9 +33,9 @@ UninstallDisplayIcon={app}\TConnector.exe
 Name: "french"; MessagesFile: "compiler:Languages\French.isl"
 
 [Files]
-Source: "..\dist\TConnector\TConnector.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\dist\TConnector\_internal\*"; DestDir: "{app}\_internal"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\dist\TConnector\config.json"; DestDir: "{app}"; Flags: ignoreversion onlyifdoesntexist uninsneveruninstall
+Source: "..\..\dist\TConnector\TConnector.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\dist\TConnector\_internal\*"; DestDir: "{app}\_internal"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\dist\TConnector\config.json"; DestDir: "{app}"; Flags: ignoreversion onlyifdoesntexist uninsneveruninstall
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

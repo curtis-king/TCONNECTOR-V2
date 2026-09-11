@@ -1,0 +1,3 @@
+# Dépendances Linux : base commune (sans pywin32).
+# Nécessite le driver ODBC Microsoft SQL Server (msodbcsql17/18), voir docs.
+-r requirements.txt

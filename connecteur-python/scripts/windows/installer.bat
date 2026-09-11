@@ -7,6 +7,9 @@ echo    Systeme de Facturation Electronique Certifie
 echo ============================================================
 echo.
 
+REM Racine du projet = 2 niveaux au-dessus de scripts\windows\
+set "ROOT=%~dp0..\.."
+
 :: Verifier admin
 net session >nul 2>&1
 if %errorlevel% neq 0 (
@@ -26,7 +29,7 @@ if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
 
 :: Copier les fichiers
 echo [1/4] Copie des fichiers...
-xcopy /E /I /Y "%~dp0TConnector\*" "%INSTALL_DIR%\" >nul 2>&1
+xcopy /E /I /Y "%ROOT%\TConnector\*" "%INSTALL_DIR%\" >nul 2>&1
 if %errorlevel% neq 0 (
     echo [ERREUR] Echec de la copie des fichiers
     pause
