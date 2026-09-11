@@ -519,7 +519,7 @@ def _page(body):
         sync=('<button class="btn btn-sm btn-primary no-print" onclick="syncNow()">Synchroniser</button>' if page_key != "config" else ""),
         initial=_esc(initial), email=_esc(email), role_label=_esc(role_label)
     )
-    csrf_js = '<script>window.CSRF_TOKEN=' + _esc(_get_csrf_token()) + ';</script>'
+    csrf_js = f'<script>window.CSRF_TOKEN="{_esc(_get_csrf_token())}";</script>'
     return "<!DOCTYPE html><html lang='fr'><head><meta charset='utf-8'>" \
            "<meta name='viewport' content='width=device-width,initial-scale=1'>" \
            "<meta name='referrer' content='no-referrer'>" \
@@ -2352,7 +2352,7 @@ def _invoice_form_page(inv):
           </div>
           <div><label>Code tiers</label><input type="text" id="tiers_code" name="tiers_code" value="{tiers_code}"></div>
           <div><label>Nom</label><input type="text" id="tiers_nom" name="tiers_nom" value="{tiers_nom}"></div>
-          <div id="niu-field"><label id="niu-label">NIU</label><input type="text" id="tiers_niu" name="tiers_niu" value="{tiers_niu}"><div class="niu-required-hint" id="niu-hint" style="display:none"></div></div>
+          <div id="niu-field"><label id="niu-label">NIU</label><input type="text" id="tiers_niu" minlength="16" maxlength="17" name="tiers_niu" value="{tiers_niu}"><div class="niu-required-hint" id="niu-hint" style="display:none"></div></div>
           <div><label>Email</label><input type="email" id="tiers_email" name="tiers_email" value="{tiers_email}"></div>
           <div><label>Telephone</label><input type="text" id="tiers_telephone" name="tiers_telephone" value="{tiers_telephone}"></div>
           <div class="full-width"><label>Adresse</label><input type="text" id="tiers_adresse" name="tiers_adresse" value="{tiers_adresse}"></div>
@@ -2422,7 +2422,7 @@ function initContactSelect(){{var cs=document.getElementById("contact-select");c
 
 function validateTiersNiu(){{var t=document.querySelector("select[name='tiers_type']").value;var niu=document.getElementById("tiers_niu").value.trim();if(t==="business"||t==="government"){{if(!niu){{showToast("NIU obligatoire pour la certification SFEC (type: "+t+")","err");document.getElementById("tiers_niu").focus();return false}}}}return true}}
 
-function addLine(data){{lineCounter++;var idx=lineCounter;var html='<div class="line-item" id="line-'+idx+'"><div class="line-item-header"><span class="line-item-title">Ligne #'+idx+'</span><div class="line-item-actions"><button type="button" class="btn btn-sm btn-danger" onclick="removeLine('+idx+')">Supprimer</button></div></div><div class="line-item-grid"><div><label>Designation</label><input type="text" name="l_design_'+idx+'" value="'+(data?data.designation:"")+'" list="products-list"></div><div><label>Qte</label><input type="number" name="l_qte_'+idx+'" value="'+(data?data.quantite:1)+'" step="0.01" min="0" onchange="calcLine('+idx+')"></div><div><label>Prix unitaire</label><input type="number" name="l_prix_'+idx+'" value="'+(data?data.prix_unitaire:0)+'" step="0.01" min="0" onchange="calcLine('+idx+')"></div><div><label>TVA %</label><select name="l_tva_'+idx+'" onchange="calcLine('+idx+')"></select></div><div><label>HT</label><input type="text" id="l_ht_'+idx+'" readonly value="'+(data?data.montant_ht:0)+'"></div><div><label>TTC</label><input type="text" id="l_ttc_'+idx+'" readonly value="'+(data?data.montant_ttc:0)+'"></div></div><input type="hidden" name="l_code_article_'+idx+'" value="'+(data?data.code_article:"")+'"><input type="hidden" name="l_famille_'+idx+'" value="'+(data?data.famille:"")+'"></div>';
+function addLine(data){{lineCounter++;var idx=lineCounter;var html='<div class="line-item" id="line-'+idx+'"><div class="line-item-header"><span class="line-item-title">Ligne #'+idx+'</span><div class="line-item-actions"><button type="button" class="btn btn-sm btn-danger" onclick="removeLine('+idx+')">Supprimer</button></div></div><div class="line-item-grid"><div><label>Designation</label><input type="text" required name="l_design_'+idx+'" value="'+(data?data.designation:"")+'" list="products-list"></div><div><label>Qte</label><input type="number" name="l_qte_'+idx+'" value="'+(data?data.quantite:1)+'" step="0.01" min="0" onchange="calcLine('+idx+')"></div><div><label>Prix unitaire</label><input type="number" name="l_prix_'+idx+'" value="'+(data?data.prix_unitaire:0)+'" step="0.01" min="0" onchange="calcLine('+idx+')"></div><div><label>TVA %</label><select name="l_tva_'+idx+'" onchange="calcLine('+idx+')"></select></div><div><label>HT</label><input type="text" id="l_ht_'+idx+'" readonly value="'+(data?data.montant_ht:0)+'"></div><div><label>TTC</label><input type="text" id="l_ttc_'+idx+'" readonly value="'+(data?data.montant_ttc:0)+'"></div></div><input type="hidden" name="l_code_article_'+idx+'" value="'+(data?data.code_article:"")+'"><input type="hidden" name="l_famille_'+idx+'" value="'+(data?data.famille:"")+'"></div>';
 document.getElementById("lines-container").insertAdjacentHTML("beforeend",html);
 var sel=document.querySelector("select[name='l_tva_"+idx+"']");taxRates.forEach(function(t){{sel.innerHTML+='<option value="'+t.taux+'"'+(data&&data.taux_tva==t.taux?" selected":"")+'>'+t.code+' ('+t.taux+'%)</option>'}});
 if(data)calcLine(idx)}}
