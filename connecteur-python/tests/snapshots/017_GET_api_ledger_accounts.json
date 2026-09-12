@@ -1,0 +1,13 @@
+{
+  "file": "017_GET_api_ledger_accounts.json",
+  "endpoint": "api_ledger_accounts",
+  "methods": [
+    "GET"
+  ],
+  "path": "/api/ledger-accounts",
+  "status_code": 200,
+  "content_type": "application/json",
+  "encoding": "text",
+  "body": "[]\n",
+  "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+}

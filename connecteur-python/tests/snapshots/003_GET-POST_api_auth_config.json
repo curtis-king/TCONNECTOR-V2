@@ -1,0 +1,14 @@
+{
+  "file": "003_GET-POST_api_auth_config.json",
+  "endpoint": "api_auth_config",
+  "methods": [
+    "GET",
+    "POST"
+  ],
+  "path": "/api/auth/config",
+  "status_code": 200,
+  "content_type": "application/json",
+  "encoding": "text",
+  "body": "{\"config\":{\"https_only\":false,\"lock_minutes\":15,\"max_attempts\":5,\"provider\":\"local\",\"session_idle_minutes\":60,\"session_max_age_hours\":24}}\n",
+  "sha256": "183002be0f41eaa7ff3003f5fb95167b25a9890d26522db1e0b59f8e74375ac4"
+}

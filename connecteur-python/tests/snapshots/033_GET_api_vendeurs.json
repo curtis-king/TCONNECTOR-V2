@@ -1,0 +1,13 @@
+{
+  "file": "033_GET_api_vendeurs.json",
+  "endpoint": "api_list_vendeurs",
+  "methods": [
+    "GET"
+  ],
+  "path": "/api/vendeurs",
+  "status_code": 200,
+  "content_type": "application/json",
+  "encoding": "text",
+  "body": "{\"total\":0,\"vendeurs\":[]}\n",
+  "sha256": "536581879edad10a80e6117768616d34ef74c2df3cb91756a4f39d4b73b51cbc"
+}

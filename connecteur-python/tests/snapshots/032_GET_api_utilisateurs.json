@@ -1,0 +1,13 @@
+{
+  "file": "032_GET_api_utilisateurs.json",
+  "endpoint": "api_list_comptes",
+  "methods": [
+    "GET"
+  ],
+  "path": "/api/utilisateurs",
+  "status_code": 200,
+  "content_type": "application/json",
+  "encoding": "text",
+  "body": "{\"comptes\":[{\"created_at\":\"2026-09-12 19:02:16\",\"derniere_connexion\":\"2026-09-12 19:16:23\",\"email\":\"admin@example.com\",\"est_actif\":true,\"id\":1,\"nom\":\"Administrateur\",\"prenom\":\"\",\"role\":\"admin\",\"role_label\":\"Administrateur\"}]}\n",
+  "sha256": "95c501b7e30e5254203a0baa1526ed920a53a17bf496a620398469adf8278dc8"
+}

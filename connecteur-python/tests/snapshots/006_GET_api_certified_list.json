@@ -1,0 +1,13 @@
+{
+  "file": "006_GET_api_certified_list.json",
+  "endpoint": "api_certified_list",
+  "methods": [
+    "GET"
+  ],
+  "path": "/api/certified/list",
+  "status_code": 200,
+  "content_type": "application/json",
+  "encoding": "text",
+  "body": "{\"count\":0,\"invoices\":[],\"last_sfec\":null}\n",
+  "sha256": "f9755a04faa7cd513430fa96ed191ae4d99004864819953c221bcb45cff0a2bb"
+}

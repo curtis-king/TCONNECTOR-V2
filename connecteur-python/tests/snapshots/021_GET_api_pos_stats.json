@@ -1,0 +1,13 @@
+{
+  "file": "021_GET_api_pos_stats.json",
+  "endpoint": "api_pos_stats",
+  "methods": [
+    "GET"
+  ],
+  "path": "/api/pos/stats",
+  "status_code": 200,
+  "content_type": "application/json",
+  "encoding": "text",
+  "body": "{\"ca_jour\":0,\"ca_total\":0,\"par_vendeur\":[],\"tickets_jour\":0,\"total\":0}\n",
+  "sha256": "9e1158e22256f5ef174867f8bad49683d88ac6e98b19b37fe6c0bf4c6bfdfb44"
+}

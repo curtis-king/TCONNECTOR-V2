@@ -1,0 +1,14 @@
+{
+  "file": "019_GET-POST_api_pos_config.json",
+  "endpoint": "api_pos_config",
+  "methods": [
+    "GET",
+    "POST"
+  ],
+  "path": "/api/pos/config",
+  "status_code": 200,
+  "content_type": "application/json",
+  "encoding": "text",
+  "body": "{\"stock_control\":true,\"success\":true}\n",
+  "sha256": "000280059fe2d6de7b0875f41dffc3c07d0b3b29d0e296bd10e391276b81a734"
+}

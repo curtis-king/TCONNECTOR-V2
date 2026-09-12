@@ -1,0 +1,13 @@
+{
+  "file": "023_GET_api_products.json",
+  "endpoint": "api_list_products",
+  "methods": [
+    "GET"
+  ],
+  "path": "/api/products",
+  "status_code": 200,
+  "content_type": "application/json",
+  "encoding": "text",
+  "body": "{\"products\":[],\"total\":0}\n",
+  "sha256": "ca70962fe282507a629bdb15a65e7a70bfd6ab1debec1c73ceb70fb491c6c211"
+}

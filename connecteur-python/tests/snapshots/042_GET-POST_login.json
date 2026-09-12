@@ -1,0 +1,14 @@
+{
+  "file": "042_GET-POST_login.json",
+  "endpoint": "login_page",
+  "methods": [
+    "GET",
+    "POST"
+  ],
+  "path": "/login",
+  "status_code": 302,
+  "content_type": "text/html; charset=utf-8",
+  "encoding": "text",
+  "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"/\">/</a>. If not, click the link.\n",
+  "sha256": "9cd515fe301e7cace88e57e496565c1a145bfe0f883e29a03877d05789d6546c"
+}

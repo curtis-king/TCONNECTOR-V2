@@ -1,0 +1,13 @@
+{
+  "file": "016_GET_api_invoices_stats.json",
+  "endpoint": "api_invoice_stats",
+  "methods": [
+    "GET"
+  ],
+  "path": "/api/invoices/stats",
+  "status_code": 200,
+  "content_type": "application/json",
+  "encoding": "text",
+  "body": "{\"brouillons\":0,\"ca_total\":0,\"certifiees\":0,\"en_cours_certif\":0,\"from_sage\":0,\"from_web\":0,\"total\":0,\"validees\":0}\n",
+  "sha256": "6334e51038a6278fddda133b6e6c3408b5923d7e813377e06472f86a964d3a55"
+}

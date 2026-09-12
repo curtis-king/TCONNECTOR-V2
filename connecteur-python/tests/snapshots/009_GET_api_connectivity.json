@@ -1,0 +1,13 @@
+{
+  "file": "009_GET_api_connectivity.json",
+  "endpoint": "api_connectivity",
+  "methods": [
+    "GET"
+  ],
+  "path": "/api/connectivity",
+  "status_code": 200,
+  "content_type": "application/json",
+  "encoding": "text",
+  "body": "{\"last_check\":\"2026-09-12T20:16:24.477163\",\"last_offline\":null,\"last_online\":\"2026-09-12T19:16:24.477183Z\",\"offline_duration_seconds\":null,\"online\":true,\"status\":\"ONLINE\"}\n",
+  "sha256": "b78295110e9a9f70c6d31808c6e655786742399336e552143af48dd2cd16e870"
+}

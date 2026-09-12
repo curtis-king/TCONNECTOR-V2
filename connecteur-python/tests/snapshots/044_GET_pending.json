@@ -1,0 +1,13 @@
+{
+  "file": "044_GET_pending.json",
+  "endpoint": "pending_page",
+  "methods": [
+    "GET"
+  ],
+  "path": "/pending",
+  "status_code": 302,
+  "content_type": "text/html; charset=utf-8",
+  "encoding": "text",
+  "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"/login\">/login</a>. If not, click the link.\n",
+  "sha256": "5da82accbf2ff96f465a16f1cdcc2d40c70e57c66897bcdc06a6925f033102ee"
+}

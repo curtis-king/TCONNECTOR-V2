@@ -1,0 +1,13 @@
+{
+  "file": "027_GET_api_sfec_test.json",
+  "endpoint": "api_sfec_test",
+  "methods": [
+    "GET"
+  ],
+  "path": "/api/sfec/test",
+  "status_code": 200,
+  "content_type": "application/json",
+  "encoding": "text",
+  "body": "{\"connected\":false,\"url\":\"https://sandbox.api.sfec.gouv.cg\"}\n",
+  "sha256": "34c88056e9f68e3ef0835f7d1ecd1688b0f5d757952fbf9b95b7ca7bc3f39f4a"
+}

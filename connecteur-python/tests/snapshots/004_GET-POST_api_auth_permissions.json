@@ -1,0 +1,14 @@
+{
+  "file": "004_GET-POST_api_auth_permissions.json",
+  "endpoint": "api_auth_permissions",
+  "methods": [
+    "GET",
+    "POST"
+  ],
+  "path": "/api/auth/permissions",
+  "status_code": 200,
+  "content_type": "application/json",
+  "encoding": "text",
+  "body": "{\"defaults\":{\"admin\":[\"dashboard.voir\",\"factures.voir\",\"factures.creer\",\"factures.valider\",\"factures.supprimer\",\"sfec.certifier\",\"sage.sync\",\"sage.pousser\",\"clients.voir\",\"clients.gerer\",\"vendeurs.voir\",\"vendeurs.gerer\",\"pos.vente\",\"config.gerer\",\"utilisateurs.gerer\"],\"caissiere\":[\"dashboard.voir\",\"factures.voir\",\"clients.voir\",\"vendeurs.voir\",\"pos.vente\"],\"financiere\":[\"dashboard.voir\",\"factures.voir\",\"factures.creer\",\"factures.valider\",\"sfec.certifier\",\"sage.sync\",\"sage.pousser\",\"clients.voir\",\"vendeurs.voir\"],\"responsable\":[\"dashboard.voir\",\"factures.voir\",\"factures.creer\",\"factures.valider\",\"factures.supprimer\",\"sfec.certifier\",\"sage.sync\",\"sage.pousser\",\"clients.voir\",\"clients.gerer\",\"vendeurs.voir\",\"vendeurs.gerer\",\"pos.vente\"]},\"matrix\":{\"admin\":[\"dashboard.voir\",\"factures.voir\",\"factures.creer\",\"factures.valider\",\"factures.supprimer\",\"sfec.certifier\",\"sage.sync\",\"sage.pousser\",\"clients.voir\",\"clients.gerer\",\"vendeurs.voir\",\"vendeurs.gerer\",\"pos.vente\",\"config.gerer\",\"utilisateurs.gerer\"],\"caissiere\":[\"dashboard.voir\",\"factures.voir\",\"clients.voir\",\"vendeurs.voir\",\"pos.vente\"],\"financiere\":[\"dashboard.voir\",\"factures.voir\",\"factures.creer\",\"factures.valider\",\"sfec.certifier\",\"sage.sync\",\"sage.pousser\",\"clients.voir\",\"vendeurs.voir\"],\"responsable\":[\"dashboard.voir\",\"factures.voir\",\"factures.creer\",\"factures.valider\",\"factures.supprimer\",\"sfec.certifier\",\"sage.sync\",\"sage.pousser\",\"clients.voir\",\"clients.gerer\",\"vendeurs.voir\",\"vendeurs.gerer\",\"pos.vente\"]},\"permissions\":{\"clients.gerer\":\"Gerer les clients (creer/modifier/supprimer)\",\"clients.voir\":\"Voir les clients\",\"config.gerer\":\"Configurer le connecteur\",\"dashboard.voir\":\"Voir le tableau de bord\",\"factures.creer\":\"Creer des factures\",\"factures.supprimer\":\"Supprimer des factures\",\"factures.valider\":\"Valider des factures\",\"factures.voir\":\"Voir factures & historique\",\"pos.vente\":\"Module caisse POS\",\"sage.pousser\":\"Pousser une facture vers Sage\",\"sage.sync\":\"Lancer la sync Sage\",\"sfec.certifier\":\"Certifier SFEC\",\"utilisateurs.gerer\":\"Gerer les comptes & droits\",\"vendeurs.gerer\":\"Gerer les vendeurs\",\"vendeurs.voir\":\"Voir les vendeurs\"},\"roles\":[\"admin\",\"responsable\",\"caissiere\",\"financiere\"],\"roles_labels\":{\"admin\":\"Administrateur\",\"caissiere\":\"Caissiere\",\"financiere\":\"Financiere\",\"responsable\":\"Responsable\"}}\n",
+  "sha256": "088bcb36b09c13570db2e27fd9ecff81a6b0d5c3e4faf29d6c523744f3894212"
+}

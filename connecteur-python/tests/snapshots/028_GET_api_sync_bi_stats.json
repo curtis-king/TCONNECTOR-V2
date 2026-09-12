@@ -1,0 +1,13 @@
+{
+  "file": "028_GET_api_sync_bi_stats.json",
+  "endpoint": "api_sync_bi_stats",
+  "methods": [
+    "GET"
+  ],
+  "path": "/api/sync/bi/stats",
+  "status_code": 200,
+  "content_type": "application/json",
+  "encoding": "text",
+  "body": "{\"conflicts\":0,\"errors\":0,\"last_sync\":null,\"pulled\":0,\"pushed\":0}\n",
+  "sha256": "00628bdb8c69db7aaac33d15f50b19b916cc31052e7b48f478491284390f1e1a"
+}
