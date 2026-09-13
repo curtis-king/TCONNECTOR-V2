@@ -5,7 +5,7 @@
 
 | Agent | Mission | Statut | Fin |
 |---|---|---|---|
-| A1 | Filet de sécurité (tests + snapshots) | ⏳ | — |
+| A1 | Filet de sécurité (tests + snapshots) | ✅ | 2026-09-12 20:16 |
 | A2 | Extraction Jinja (templates + static) | ⏳ | — |
 | A3 | Découpage parking de dashboard.py | ⏳ | — |
 | A4 | Blueprints auth + dashboard + sync_api | ⏳ | — |
