@@ -1,0 +1,32 @@
+
+<div class="card"><h2>En attente de certification SFEC ({{ count }})</h2>{{ sfec_warn | safe }}
+<p style="font-size:13px;color:#94a3b8;margin-bottom:12px">{{ val_count }} facture(s) a comptabiliser (DO_Statut=2)</p>
+<table><thead><tr><th>Numero</th><th>Date</th><th>Tiers</th>
+<th style="text-align:right">Montant TTC</th><th>Action</th></tr></thead>
+<tbody>{{ rows | safe }}{{ empty | safe }}</tbody></table>
+<div id="cert-status" style="margin-top:12px"></div></div>
+<script>
+function certifySingle(id){
+document.getElementById("cert-status").textContent="Certification en cours...";
+api("POST","/api/sfec/certify",{invoice_id:id}).then(function(d){
+if(d.success){
+showToast("Certifie: "+d.certification_number,"ok");
+setTimeout(function(){ location.reload(); }, 1500);
+} else {
+showToast("Erreur: "+d.error,"err");
+if(d.queued){ document.getElementById("cert-status").innerHTML='<span class="queue-badge">Mis en file d attente (offline)</span>'; }
+}
+});
+}
+function toMonitor(id){
+document.getElementById("cert-status").textContent="Marquage a surveiller...";
+api("POST","/api/sfec/to-monitor",{invoice_id:id}).then(function(d){
+if(d.success){
+showToast("Marque a surveiller","warn");
+setTimeout(function(){ location.reload(); }, 1500);
+} else {
+showToast("Erreur: "+d.error,"err");
+}
+});
+}
+</script>

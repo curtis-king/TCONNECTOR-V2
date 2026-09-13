@@ -1,0 +1,386 @@
+<style>
+.pos-layout{--posc-1:#4f46e5;--posc-2:#7c3aed;--posc-ink:#0f172a;--posc-sub:#64748b;--posc-line:#e6e9f2;
+  display:grid;grid-template-columns:1fr 420px;gap:20px;align-items:start}
+.pos-main{min-width:0}
+.pos-side{position:sticky;top:24px;display:flex;flex-direction:column;gap:18px}
+
+.pos-card{background:#fff;border:1px solid var(--posc-line);border-radius:18px;padding:22px;box-shadow:0 1px 2px rgba(15,23,42,.04),0 20px 40px -28px rgba(15,23,42,.28)}
+
+.pos-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:12px;flex-wrap:wrap}
+.pos-head h2{display:flex;align-items:center;gap:10px;font-size:17px;font-weight:800;color:var(--posc-ink);letter-spacing:-.2px;margin:0}
+.pos-head h2 .ic{width:34px;height:34px;flex-shrink:0;border-radius:10px;background:linear-gradient(135deg,var(--posc-1),var(--posc-2));display:flex;align-items:center;justify-content:center;color:#fff;box-shadow:0 6px 16px rgba(79,70,229,.32)}
+.pos-head h2 .ic svg{width:17px;height:17px}
+.pos-head-actions{display:flex;gap:8px}
+
+.pos-stats{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px}
+.pos-stat-pill{flex:1;min-width:130px;background:#f8fafc;border:1px solid var(--posc-line);border-radius:12px;padding:10px 14px}
+.pos-stat-pill b{display:block;font-size:16px;font-weight:800;color:var(--posc-ink);letter-spacing:-.3px}
+.pos-stat-pill span{font-size:10px;color:var(--posc-sub);font-weight:700;text-transform:uppercase;letter-spacing:.6px}
+
+.pos-scanner{display:flex;gap:14px;align-items:center;background:linear-gradient(135deg,#111827,#1e293b);border:1px solid #263449;border-radius:14px;padding:12px 16px;margin-bottom:16px;position:relative;overflow:hidden}
+.pos-scanner::before{content:'';position:absolute;inset:0;background:radial-gradient(560px 120px at 8% -40%,rgba(124,58,237,.28),transparent 60%);pointer-events:none}
+.pos-scanner .sc-icon{width:40px;height:40px;flex-shrink:0;border-radius:11px;background:rgba(129,140,248,.14);border:1px solid rgba(129,140,248,.25);color:#a5b4fc;display:flex;align-items:center;justify-content:center;position:relative}
+.pos-scanner .sc-icon svg{width:20px;height:20px}
+.pos-scanner .sc-body{flex:1;min-width:0;position:relative}
+.pos-scanner .sc-input-wrap{position:relative;display:flex;align-items:center}
+.pos-scanner input{width:100%;background:rgba(15,23,42,.6);border:1.5px solid #334155;color:#f1f5f9;font-size:14.5px;font-weight:600;letter-spacing:.3px;text-align:left;padding:11px 74px 11px 14px;border-radius:10px;font-family:inherit;transition:border-color .15s,background .15s}
+.pos-scanner input:focus{outline:none;border-color:#818cf8;background:rgba(15,23,42,.85);box-shadow:0 0 0 4px rgba(129,140,248,.18)}
+.pos-scanner input::placeholder{color:#67748f;font-weight:500;letter-spacing:.2px}
+.pos-scanner .sc-kbd{position:absolute;right:8px;top:50%;transform:translateY(-50%);display:flex;align-items:center;gap:3px;background:rgba(129,140,248,.14);border:1px solid rgba(129,140,248,.25);color:#c7d2fe;font-size:10px;font-weight:700;padding:4px 8px;border-radius:6px;letter-spacing:.3px;pointer-events:none}
+.pos-scanner .sc-kbd svg{width:11px;height:11px}
+.pos-scanner .hint{color:#8593ac;font-size:10.5px;margin-top:7px;letter-spacing:.2px;display:flex;align-items:center;gap:6px}
+.pos-scanner .hint .dot{width:6px;height:6px;border-radius:50%;background:#34d399;flex-shrink:0;box-shadow:0 0 0 3px rgba(52,211,153,.18);animation:scPulse 1.8s ease-in-out infinite}
+@keyframes scPulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+.pos-toolbar{display:flex;gap:12px;align-items:center;margin-bottom:6px;flex-wrap:wrap}
+.pos-qte-mini{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--posc-sub);font-weight:700;white-space:nowrap}
+.pos-qte-mini input{width:64px;padding:7px 8px;text-align:center;font-weight:700}
+.pos-search{position:relative;flex:1;min-width:220px}
+.pos-search svg{position:absolute;left:14px;top:50%;transform:translateY(-50%);width:16px;height:16px;color:#94a3b8;pointer-events:none;flex-shrink:0}
+.pos-search input{padding-left:40px;padding-right:14px;font-size:14px;border-radius:10px}
+
+.pos-section-title{font-size:11.5px;font-weight:800;color:var(--posc-1);text-transform:uppercase;letter-spacing:.9px;margin:16px 0 10px;display:flex;align-items:center;gap:8px}
+.pos-section-title::before{content:'';display:inline-block;width:4px;height:14px;background:linear-gradient(180deg,var(--posc-1),var(--posc-2));border-radius:2px}
+
+.pos-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:12px}
+.pos-tile{background:#fff;border:1px solid var(--posc-line);border-radius:14px;padding:14px;cursor:pointer;transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease;box-shadow:0 1px 2px rgba(15,23,42,.03);user-select:none;position:relative;overflow:hidden}
+.pos-tile::after{content:'';position:absolute;left:0;right:0;bottom:0;height:3px;background:linear-gradient(90deg,var(--posc-1),var(--posc-2));transform:scaleX(0);transform-origin:left;transition:transform .18s ease}
+.pos-tile:hover{border-color:#c7d2fe;box-shadow:0 14px 28px -14px rgba(79,70,229,.35);transform:translateY(-3px)}
+.pos-tile:hover::after{transform:scaleX(1)}
+.pos-tile:active{transform:translateY(-1px) scale(.98)}
+.pos-tile-nom{font-size:13px;font-weight:700;color:var(--posc-ink);line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-bottom:6px;min-height:34px}
+.pos-tile-ref{font-size:10px;color:#94a3b8;font-weight:700;margin-bottom:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-transform:uppercase;letter-spacing:.4px}
+.pos-tile-foot{display:flex;justify-content:space-between;align-items:center;gap:6px}
+.pos-tile-prix{font-size:15px;font-weight:800;color:var(--posc-1);letter-spacing:-.2px}
+.pos-tile-stock{font-size:9.5px;font-weight:700;padding:2px 7px;border-radius:20px;background:#f0fdf4;color:#15803d;white-space:nowrap;flex-shrink:0}
+.pos-tile-stock.low{background:#fffbeb;color:#b45309}
+.pos-tile-stock.out{background:#fef2f2;color:#b91c1c}
+.pos-tile .badge-sold{position:absolute;top:10px;right:10px;background:linear-gradient(135deg,#ede9fe,#ddd6fe);color:#6d28d9;font-size:9px;font-weight:800;padding:3px 8px;border-radius:8px;letter-spacing:.3px}
+
+.pos-results{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:12px;margin-top:14px}
+.pos-results-empty{padding:28px 16px;text-align:center;color:#94a3b8;font-size:13px;border:1.5px dashed var(--posc-line);border-radius:14px;background:#fafbfe}
+
+.pos-client-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}
+
+.pos-cart-table{width:100%;border-collapse:separate;border-spacing:0 8px;margin-top:-4px}
+.pos-cart-table thead th{background:transparent;border:none;padding:0 10px 2px;font-size:9.5px}
+.pos-cart-table tbody td{background:#f8fafc;border:none;padding:10px}
+.pos-cart-table tbody tr td:first-child{border-radius:10px 0 0 10px}
+.pos-cart-table tbody tr td:last-child{border-radius:0 10px 10px 0}
+.pos-qty-stepper{display:inline-flex;align-items:center;gap:2px;background:#fff;border:1px solid var(--posc-line);border-radius:8px;padding:2px}
+.pos-qty-stepper button{width:22px;height:22px;border:none;background:transparent;color:var(--posc-1);font-weight:800;font-size:14px;cursor:pointer;border-radius:6px;line-height:1;font-family:inherit}
+.pos-qty-stepper button:hover{background:#eef2ff}
+.pos-qty-stepper input{border:none!important;width:34px!important;padding:0!important;background:transparent!important;box-shadow:none!important;font-weight:700!important}
+
+.pos-cart-empty{text-align:center;padding:36px 16px;color:#94a3b8;font-size:13px}
+.pos-cart-empty svg{width:38px;height:38px;color:#cbd5e1;margin-bottom:10px}
+
+.pos-total-box{display:flex;justify-content:space-between;align-items:center;background:linear-gradient(135deg,#0f172a,#1e293b);border-radius:14px;padding:16px 18px;margin-top:14px;box-shadow:0 12px 24px -14px rgba(15,23,42,.45)}
+.pos-total-box .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:#94a3b8;font-weight:700}
+.pos-total-box .val{font-size:24px;font-weight:800;color:#fff;letter-spacing:-.4px}
+.pos-cart-foot{display:flex;justify-content:space-between;font-size:11.5px;color:var(--posc-sub);margin-top:8px;padding:0 2px}
+
+.pos-pay-methods{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px}
+.pos-pay-btn{display:flex;flex-direction:column;align-items:center;gap:5px;padding:10px 4px;border:1.5px solid var(--posc-line);border-radius:10px;background:#fff;cursor:pointer;font-size:10px;font-weight:700;color:var(--posc-sub);transition:all .15s;font-family:inherit}
+.pos-pay-btn svg{width:16px;height:16px}
+.pos-pay-btn:hover{border-color:#c7d2fe;background:#f5f6ff;color:var(--posc-1)}
+.pos-pay-btn.active{border-color:var(--posc-1);background:linear-gradient(135deg,rgba(79,70,229,.08),rgba(124,58,237,.06));color:var(--posc-1);box-shadow:0 0 0 3px rgba(79,70,229,.1)}
+
+.pos-pay-row{display:flex;gap:10px;align-items:flex-end;margin-top:12px}
+.pos-pay-row>div{flex:1}
+.pos-monnaie{font-size:14px;font-weight:800;margin-top:10px;text-align:right;padding:9px 12px;border-radius:9px}
+.pos-monnaie:empty{padding:0;margin-top:0}
+.pos-monnaie.ok{color:#059669;background:#f0fdf4}
+.pos-monnaie.ko{color:#dc2626;background:#fef2f2}
+.pos-validate{width:100%;padding:15px;font-size:15px;margin-top:14px;border-radius:12px;font-weight:800;letter-spacing:.2px}
+.pos-last-row{display:grid;grid-template-columns:1fr auto auto;grid-template-rows:auto auto;column-gap:12px;align-items:center;padding:10px 6px;font-size:12.5px;border-bottom:1px solid #f1f5f9}
+.pos-last-row:last-child{border-bottom:none}
+.pos-last-row .num{font-weight:700;color:var(--posc-ink);grid-column:1;grid-row:1}
+.pos-last-row .time{color:#94a3b8;font-size:11px;grid-column:1;grid-row:2}
+.pos-last-row .amt{font-weight:800;color:var(--posc-1);grid-column:2;grid-row:1/3;justify-self:end}
+.pos-last-row .pay{font-size:10px;color:var(--posc-sub);text-transform:capitalize;grid-column:3;grid-row:1/3;justify-self:end;background:#f1f5f9;padding:3px 8px;border-radius:20px;font-weight:700}
+
+@media(max-width:1180px){.pos-layout{grid-template-columns:1fr}.pos-side{position:static}}
+@media(max-width:600px){.pos-client-row{grid-template-columns:1fr}}
+</style>
+<div class="pos-layout">
+<div class="pos-main">
+<div class="pos-card">
+<div class="pos-head">
+<h2><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg></span>Caisse</h2>
+<div class="pos-head-actions">
+<button class="btn btn-sm btn-ghost no-print" onclick="syncPosArticles()">Sync articles</button>
+<button class="btn btn-sm btn-ghost no-print" id="btn-stock" onclick="toggleStock()">Stock: --</button>
+</div>
+</div>
+<div class="pos-stats">{{ stats_html | safe }}</div>
+<div class="pos-scanner">
+<div class="sc-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5V3h2v2H3zM7 5V3h4v2H7zM13 5V3h4v2h-4zM17 5V3h2v2h-2zM21 5h-2v2h2v14H3V5h2v14h14V7h2V5z"/><rect x="5" y="9" width="3" height="5"/><rect x="16" y="9" width="3" height="5"/><path d="M5 19v-2h3v2H5zM16 19v-2h3v2h-3z"/></svg></div>
+<div class="sc-body">
+<div class="sc-input-wrap">
+<input id="pos-barcode" placeholder="Scanner ou saisir un code-barres..." autocomplete="off" autofocus
+  onkeydown="if(event.key==='Enter'){event.preventDefault();scanBarcode(this.value)}">
+<span class="sc-kbd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 10 4 15 9 20"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></svg>Entree</span>
+</div>
+<div class="hint"><span class="dot"></span>Pret a scanner &mdash; l&#39;article est ajoute instantanement au ticket</div>
+</div>
+</div>
+<div class="pos-toolbar">
+<div class="pos-qte-mini">Qte par defaut <input type="number" id="pos-qte" value="1" min="1"></div>
+<div class="pos-search">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+<input id="pos-search" placeholder="Rechercher un article (automatique des 2 caracteres)..." autocomplete="off" oninput="posInstantSearch(this.value)">
+</div>
+</div>
+<div id="pos-products-head" class="pos-section-title">Meilleures ventes</div>
+<div id="pos-products-grid" class="pos-grid">{{ top10_tiles | safe }}</div>
+<div id="pos-results"></div>
+</div>
+</div>
+<div class="pos-side">
+<div class="pos-card">
+<div class="pos-head"><h2><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg></span>Ticket en cours</h2></div>
+<div class="pos-client-row">
+<div><label>Client</label><select id="pos-client">{{ pos_clients_html | safe }}</select></div>
+<div><label>Vendeur</label><select id="pos-vendeur">{{ vendeur_opts_html | safe }}</select></div>
+</div>
+<div id="pos-cart" style="margin-top:6px">
+<table class="pos-cart-table"><thead><tr><th>Article</th><th style="text-align:center">Qte</th><th style="text-align:right">P. un.</th><th style="text-align:right">Total</th><th></th></tr></thead>
+<tbody id="pos-cart-body"></tbody></table>
+<div id="pos-cart-empty" class="pos-cart-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg><br>Ticket vide<br>Ajoutez un article ci-contre ou scannez un code-barres</div>
+</div>
+<div class="pos-total-box"><span class="lbl">Total TTC</span><span class="val" id="pos-total">0 FCFA</span></div>
+<div class="pos-cart-foot"><span>Articles : <b id="pos-articles-count">0</b></span><span>HT + TVA</span></div>
+<div style="margin-top:14px">
+<label>Mode de paiement</label>
+<select id="pos-paiement" onchange="syncPayUI();calcMonnaie()" style="display:none">
+<option value="especes" selected>Especes</option>
+<option value="mobile_money">Mobile Money</option>
+<option value="virement">Virement</option>
+<option value="carte">Carte</option>
+<option value="cheque">Cheque</option>
+<option value="mixte">Mixte</option>
+</select>
+<div class="pos-pay-methods" id="pos-pay-methods"></div>
+</div>
+<div class="pos-pay-row">
+<div><label>Recu (FCFA)</label><input type="number" id="pos-recu" value="0" min="0" oninput="calcMonnaie()"></div>
+</div>
+<div id="pos-monnaie" class="pos-monnaie"></div>
+<button id="pos-validate" class="btn btn-success pos-validate" onclick="validerTicket()" disabled>Ticket vide</button>
+<div style="margin-top:8px;text-align:center">
+<button class="btn btn-sm btn-ghost" onclick="addPosLineManual()">+ Ligne manuelle</button>
+<button class="btn btn-sm btn-ghost" onclick="clearCart()">Vider</button>
+</div>
+</div>
+<div class="pos-card"><div class="pos-head"><h2 style="font-size:14px"><span class="ic" style="width:28px;height:28px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></span>Derniers tickets</h2></div>
+<div>{{ ticket_rows_html | safe }}</div></div>
+</div>
+</div>
+<script>
+var posCart=[];
+var posLineIdx=0;
+var posSearchTimer=null;
+var posClients={{ pos_clients_js | safe }};
+window.NATIVE_ALERTS = true;
+
+function _h(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
+
+function getPosClientData(v){
+  v=String(v||"");
+  if(v==="|CLI-CPT|Client comptoir"){var c=posClients.filter(function(x){return x.code==="CLI-CPT"})[0];return {code:"CLI-CPT",nom:"Client comptoir",id:c?c.id:null};}
+  var parts=v.split("|");
+  if(parts.length>=3){return {code:parts[1],nom:parts.slice(2).join("|"),id:null};}
+  return {code:"",nom:"Client comptoir",id:null};
+}
+
+function addToCartFromTile(elm){
+  addToCart({id:elm.getAttribute("data-id"),ref:elm.getAttribute("data-ref"),barcode:elm.getAttribute("data-barcode")||"",designation:elm.getAttribute("data-des"),prix_vente:parseFloat(elm.getAttribute("data-prix"))||0,tva_code:elm.getAttribute("data-tva")||"18"});
+}
+
+function addToCart(p){
+  if(!p||!p.designation)return;
+  var q=parseInt(document.getElementById("pos-qte").value)||1;if(q<1)q=1;
+  var exist=null;
+  if(p.ref){exist=posCart.filter(function(l){return l.ref&&l.ref===p.ref})[0]}
+  if(exist){exist.quantite=round2(exist.quantite+q)}
+  else{posLineIdx++;posCart.push({idx:posLineIdx,ref:p.ref||"",barcode:p.barcode||"",designation:p.designation,prix_unitaire:parseFloat(p.prix_vente)||0,quantite:q,taux_tva:parseFloat(p.tva_code)||18,product_id:p.id||null})}
+  renderPosCart();
+}
+
+function addPosLineManual(){
+  var desc=prompt("Designation de la ligne :");if(!desc||!desc.trim())return;
+  var prix=parseFloat(prompt("Prix unitaire (FCFA) :"))||0;
+  var q=parseInt(document.getElementById("pos-qte").value)||1;
+  posLineIdx++;posCart.push({idx:posLineIdx,ref:"",barcode:"",designation:desc.trim(),prix_unitaire:prix,quantite:q,taux_tva:18,product_id:null});
+  renderPosCart();
+}
+
+function scanBarcode(code){
+  code=(code||"").trim();
+  var bi=document.getElementById("pos-barcode");
+  if(!code){bi.focus();return}
+  fetch("/api/products/barcode?code="+encodeURIComponent(code)).then(function(r){return r.json()}).then(function(d){
+    if(d.found){addToCart(d.product)}
+    else{showToast("Code-barres inconnu : "+code,"err")}
+    bi.value="";bi.focus();
+  }).catch(function(){showToast("Erreur scan","err");bi.value="";bi.focus()});
+}
+
+function posInstantSearch(raw){
+  raw=(raw||"").trim();
+  clearTimeout(posSearchTimer);
+  var grid=document.getElementById("pos-products-grid");
+  var head=document.getElementById("pos-products-head");
+  var results=document.getElementById("pos-results");
+  if(raw.length===0){
+    head.textContent="Meilleures ventes";
+    grid.style.display="grid";
+    results.innerHTML="";
+    return;
+  }
+  if(raw.length===1){return;}
+  grid.style.display="none";
+  results.innerHTML='<div class="pos-results-empty">Recherche...</div>';
+  posSearchTimer=setTimeout(function(){
+    fetch("/api/pos/products/search?q="+encodeURIComponent(raw)).then(function(r){return r.json()}).then(function(list){
+      if(!Array.isArray(list)||!list.length){head.textContent="Aucun resultat";results.innerHTML='<div class="pos-results-empty">Aucun article pour &laquo; '+_h(raw)+' &raquo;</div>';return}
+      head.textContent=list.length+" article(s) trouve(s)";
+      results.innerHTML="";
+      list.forEach(function(p){results.appendChild(makeTileEl(p))});
+    }).catch(function(){results.innerHTML='<div class="pos-results-empty">Erreur de recherche</div>'});
+  },250);
+}
+
+function makeTileEl(p){
+  var d=document.createElement("div");d.className="pos-tile";
+  d.addEventListener("click",function(){addToCart(p)});
+  var nom=document.createElement("div");nom.className="pos-tile-nom";nom.textContent=p.designation;
+  var ref=document.createElement("div");ref.className="pos-tile-ref";ref.textContent=p.ref||"";
+  var foot=document.createElement("div");foot.className="pos-tile-foot";
+  var prix=document.createElement("span");prix.className="pos-tile-prix";prix.textContent=(Number(p.prix_vente)||0).toLocaleString("fr-FR");
+  var stockVal=Number(p.stock_reel)||0;
+  var st=document.createElement("span");st.className="pos-tile-stock"+(stockVal<=0?" out":stockVal<5?" low":"");st.textContent=stockVal.toLocaleString("fr-FR");
+  foot.appendChild(prix);foot.appendChild(st);
+  d.appendChild(nom);d.appendChild(ref);d.appendChild(foot);
+  return d;
+}
+
+function renderPosCart(){
+  var body="";var total=0;var nbArt=0;
+  posCart.forEach(function(l){
+    var ttc=round2(l.quantite*l.prix_unitaire*(1+l.taux_tva/100));
+    total+=ttc;nbArt+=l.quantite;
+    body+="<tr>"
+      +"<td><div style='font-weight:700;font-size:12.5px'>"+_h(l.designation)+"</div><div style='font-size:10px;color:#94a3b8'>"+_h(l.ref||l.barcode||"")+"</div></td>"
+      +"<td style='text-align:center'><div class='pos-qty-stepper'>"
+      +"<button type='button' onclick='updatePosQte("+l.idx+","+(l.quantite-1)+")'>&minus;</button>"
+      +"<input type='number' value='"+l.quantite+"' min='0.5' step='0.5' onchange='updatePosQte("+l.idx+",this.value)'>"
+      +"<button type='button' onclick='updatePosQte("+l.idx+","+(l.quantite+1)+")'>+</button>"
+      +"</div></td>"
+      +"<td style='text-align:right;color:#64748b'>"+Number(l.prix_unitaire).toLocaleString("fr-FR")+"</td>"
+      +"<td style='text-align:right;font-weight:800;color:#0f172a'>"+Number(ttc).toLocaleString("fr-FR")+"</td>"
+      +"<td><button class='btn-sm btn-danger' onclick='removePosLine("+l.idx+")'>&times;</button></td></tr>";
+  });
+  document.getElementById("pos-cart-body").innerHTML=body;
+  document.getElementById("pos-total").textContent=Number(total).toLocaleString("fr-FR")+" FCFA";
+  document.getElementById("pos-articles-count").textContent=nbArt;
+  document.getElementById("pos-cart-empty").style.display=posCart.length?"none":"block";
+  calcMonnaie();
+}
+
+function updatePosQte(idx,val){var l=posCart.filter(function(x){return x.idx===idx})[0];if(l){l.quantite=parseFloat(val)||1;renderPosCart()}}
+function removePosLine(idx){posCart=posCart.filter(function(l){return l.idx!==idx});renderPosCart()}
+function clearCart(){posCart=[];posLineIdx=0;renderPosCart()}
+function round2(n){return Math.round(n*100)/100}
+
+function calcMonnaie(){
+  var total=0;posCart.forEach(function(l){total+=round2(l.quantite*l.prix_unitaire*(1+l.taux_tva/100))});
+  var recu=parseFloat(document.getElementById("pos-recu").value)||0;
+  var mode=document.getElementById("pos-paiement").value;
+  var monnaie=round2(recu-total);
+  var el=document.getElementById("pos-monnaie");
+  var btn=document.getElementById("pos-validate");
+  if(posCart.length===0){el.className="pos-monnaie";el.textContent="";btn.disabled=true;btn.textContent="Ticket vide";return}
+  if(mode==="especes"&&monnaie<0){
+    el.className="pos-monnaie ko";el.textContent="Manque : "+Number(Math.abs(monnaie)).toLocaleString("fr-FR")+" FCFA";
+    btn.disabled=true;btn.textContent="Manque "+Number(Math.abs(monnaie)).toLocaleString("fr-FR")+" FCFA";
+  }else{
+    el.className="pos-monnaie ok";
+    el.textContent=mode==="especes"?"A rendre : "+Number(monnaie).toLocaleString("fr-FR")+" FCFA":"Total : "+Number(total).toLocaleString("fr-FR")+" FCFA";
+    btn.disabled=false;btn.textContent="Valider & imprimer";
+  }
+}
+
+function validerTicket(){
+  if(posCart.length===0){showToast("Ticket vide","err");return}
+  var lignes=[];
+  posCart.forEach(function(l){lignes.push({designation:l.designation,quantite:l.quantite,prix_unitaire:l.prix_unitaire,taux_tva:l.taux_tva,code_article:l.ref,code_compte:"",famille:"",barcode:l.barcode||"",product_id:l.product_id||null})});
+  var vid=document.getElementById("pos-vendeur").value;
+  var pcd=getPosClientData(document.getElementById("pos-client").value);
+  var data={tiers_nom:pcd.nom||"Client comptoir",
+            tiers_code:pcd.code||"",
+            contact_id:pcd.id||null,
+            mode_paiement:document.getElementById("pos-paiement").value,
+            montant_recu:parseFloat(document.getElementById("pos-recu").value)||0,
+            vendeur_id:vid?parseInt(vid):null,lignes:lignes};
+  var btn=document.getElementById("pos-validate");
+  btn.disabled=true;btn.textContent="Validation...";
+  api("POST","/api/pos/ticket",data).then(function(d){
+    if(d.success){
+      var msg="Ticket "+d.numero+" valide";
+      if(d.invoice_numero){msg+=" - Facture "+d.invoice_numero}
+      if(d.sfec_ok){msg+=" - SFEC certifiee ("+String(d.sfec_num_certif||"").slice(0,20)+")"}
+      else if(d.sfec_error){msg+=" - SFEC: "+String(d.sfec_error).slice(0,40)}
+      msg+=" - Monnaie : "+Number(d.monnaie_rendue||0).toLocaleString("fr-FR")+" FCFA";
+      if(d.sage_ok){msg+=" - ecrite dans Sage"}
+      showToast(msg,(d.sfec_ok&&d.sage_ok)?"ok":"warn");
+      clearCart();
+      document.getElementById("pos-recu").value=0;
+      document.getElementById("pos-client").selectedIndex=0;
+      setTimeout(function(){location.href="/pos/ticket/"+d.id+"/print"},1400);
+    }else{
+      btn.disabled=false;btn.textContent="Valider & imprimer";
+      showToast("Erreur : "+d.error,"err");
+    }
+  }).catch(function(e){btn.disabled=false;btn.textContent="Valider & imprimer";showToast("Erreur : "+e,"err")});
+}
+
+function syncPosArticles(){api("POST","/api/articles/sync",{}).then(function(d){alert(d.message||"Sync OK");setTimeout(function(){location.reload()},2500)}).catch(function(e){alert("Erreur : "+e)})}
+window.STOCK_CONTROL = {{ stock_ctl_js }};
+function refreshStockBtn(){var b=document.getElementById("btn-stock");if(!b)return;b.textContent="Stock: "+(window.STOCK_CONTROL?"ON":"OFF");b.classList.toggle("btn-success",!!window.STOCK_CONTROL);b.classList.toggle("btn-warning",!window.STOCK_CONTROL);}
+function toggleStock(){api("POST","/api/pos/config",{stock_control:!window.STOCK_CONTROL}).then(function(d){if(d.success){window.STOCK_CONTROL=!!d.stock_control;refreshStockBtn();showToast("Controle de stock "+(window.STOCK_CONTROL?"ACTIVE":"DESACTIVE"),"ok")}else{showToast(d.error||"Erreur","err")}});}
+refreshStockBtn();
+
+var POS_PAY_METHODS=[
+  {v:"especes",l:"Especes",i:'<path d="M12 1v22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>'},
+  {v:"mobile_money",l:"Mobile",i:'<rect x="7" y="2" width="10" height="20" rx="2"/><line x1="11" y1="18" x2="13" y2="18"/>'},
+  {v:"carte",l:"Carte",i:'<rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/>'},
+  {v:"virement",l:"Virement",i:'<polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/>'},
+  {v:"cheque",l:"Cheque",i:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>'},
+  {v:"mixte",l:"Mixte",i:'<circle cx="9" cy="9" r="7"/><path d="M14.5 4.5A7 7 0 1 1 4.5 14.5"/>'}
+];
+function renderPayMethods(){
+  var wrap=document.getElementById("pos-pay-methods");if(!wrap)return;
+  var current=document.getElementById("pos-paiement").value||"especes";
+  wrap.innerHTML="";
+  POS_PAY_METHODS.forEach(function(m){
+    var b=document.createElement("button");
+    b.type="button";b.className="pos-pay-btn"+(m.v===current?" active":"");
+    b.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+m.i+'</svg><span>'+m.l+'</span>';
+    b.addEventListener("click",function(){setPayMethod(m.v)});
+    wrap.appendChild(b);
+  });
+}
+function setPayMethod(v){
+  document.getElementById("pos-paiement").value=v;
+  syncPayUI();
+  calcMonnaie();
+}
+function syncPayUI(){
+  var current=document.getElementById("pos-paiement").value;
+  var wrap=document.getElementById("pos-pay-methods");if(!wrap)return;
+  Array.prototype.forEach.call(wrap.children,function(btn,i){btn.classList.toggle("active",POS_PAY_METHODS[i].v===current)});
+}
+renderPayMethods();
+</script>

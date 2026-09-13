@@ -1,0 +1,59 @@
+
+<div class="card"><h2>Historique des Ventes</h2>
+<div class="stat-grid" style="margin-bottom:16px">
+<div class="stat"><div class="value">{{ total }}</div><div class="label">Total ventes</div></div>
+<div class="stat"><div class="value">{{ tickets_jour }}</div><div class="label">Aujourd'hui</div></div>
+<div class="stat"><div class="value">{{ "{:,.0f}".format(ca_jour) }}</div><div class="label">CA Jour (FCFA)</div></div>
+<div class="stat"><div class="value">{{ "{:,.0f}".format(ca_total) }}</div><div class="label">CA Total (FCFA)</div></div>
+</div></div>
+<div class="card">
+<h2>Filtres</h2>
+<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:end">
+<div><label>Date debut</label><input type="date" id="f-date-from"></div>
+<div><label>Date fin</label><input type="date" id="f-date-to"></div>
+<div><label>Vendeur</label><select id="f-vendeur">{{ vendeur_opts | safe }}</select></div>
+<div><label>Recherche</label><input type="text" id="f-search" placeholder="N client..."></div>
+<div><button class="btn btn-primary" onclick="filterSales()">Filtrer</button></div>
+</div></div>
+<div class="card"><h2>Ventes ({{ count }})</h2>
+<table><thead><tr><th>Numero</th><th>Date</th><th>Client</th><th style="text-align:right">Montant</th><th>Paiement</th><th>Vendeur</th><th>SFEC</th><th></th></tr></thead>
+<tbody id="sales-body">{{ rows | safe }}</tbody></table></div>
+<script>
+function certifySales(invoiceId){
+  if(!invoiceId)return;
+  api("POST","/api/sfec/certify",{invoice_id:"INV-"+invoiceId}).then(function(r){
+    if(r.success&&r.certification_number){showToast("Certifiee SFEC: "+r.certification_number,"ok");setTimeout(function(){location.reload()},1800)}
+    else if(r.success){showToast("Certification envoyee, en attente de finalisation...","warn")}
+    else{showToast("Certification: "+(r.error||"echec"),"err")}
+  })
+}
+function sfecCell(t){
+  var ss=t.sfec_statut||"";
+  if(ss==="CERTIFIE"||ss==="DEJA_CERTIFIE")return '<span class="badge badge-ok" title="'+(t.sfec_num_certif||"").slice(0,25)+'">Certifiee</span>';
+  var ic=t.invoice_id;
+  if(ss==="EN_COURS")return '<span class="badge badge-warn">En attente</span>'+(ic?' <button class="btn btn-sm" onclick="certifySales('+ic+')">Certifier</button>':"");
+  if(ss==="ERREUR")return '<span class="badge badge-err">Erreur</span>'+(ic?' <button class="btn btn-sm" onclick="certifySales('+ic+')">Certifier</button>':"");
+  if(ic)return '<span class="badge badge-info">Non certifiee</span> <button class="btn btn-sm" onclick="certifySales('+ic+')">Certifier</button>';
+  return "-";
+}
+function filterSales(){
+  var df=document.getElementById("f-date-from").value;
+  var dt=document.getElementById("f-date-to").value;
+  var vid=document.getElementById("f-vendeur").value;
+  var q=document.getElementById("f-search").value;
+  var url="/api/pos/tickets?limit=200";
+  if(df)url+="&date_from="+df;
+  if(dt)url+="&date_to="+dt;
+  if(vid)url+="&vendeur_id="+vid;
+  if(q)url+="&search="+encodeURIComponent(q);
+  api("GET",url).then(function(d){
+    var html="";
+    (d.tickets||[]).forEach(function(t){
+      var v=(t.vendeur_prenom||"")+" "+(t.vendeur_nom||"");
+      html+="<tr><td>"+t.numero+"</td><td>"+(t.date_ticket||"").substring(0,16)+"</td><td>"+t.tiers_nom+"</td><td style='text-align:right'>"+Number(t.montant_ttc).toLocaleString()+"</td><td>"+t.mode_paiement+"</td><td>"+(v.trim()||"-")+"</td><td>"+sfecCell(t)+"</td><td><a href='/pos/ticket/"+t.id+"/print' class='btn btn-sm' target='_blank'>Voir</a></td></tr>"
+    });
+    if(!html)html='<tr><td colspan="8" style="text-align:center;color:#64748b">Aucune vente</td></tr>';
+    document.getElementById("sales-body").innerHTML=html;
+  })
+}
+</script></div>

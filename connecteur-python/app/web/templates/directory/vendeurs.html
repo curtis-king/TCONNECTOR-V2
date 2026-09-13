@@ -1,0 +1,36 @@
+
+<div class="card"><h2>Equipe Vente</h2>
+<div class="stat-grid" style="margin-bottom:16px">
+<div class="stat"><div class="value">{{ total }}</div><div class="label">Vendeurs</div></div>
+<div class="stat"><div class="value">{{ actifs }}</div><div class="label">Actifs</div></div>
+<div class="stat"><div class="value">{{ "{:,.0f}".format(ca_jour) }}</div><div class="label">CA Jour equipe</div></div>
+</div>
+<button class="btn btn-primary" onclick="showNewVendeur()">+ Nouveau Vendeur</button>
+</div>
+<div class="card"><h2>Liste des Vendeurs</h2>
+<table><thead><tr><th>Code</th><th>Nom</th><th>Role</th><th>Contact</th><th>Ventes</th><th style='text-align:right'>CA</th><th>Statut</th><th></th></tr></thead>
+<tbody>{{ rows | safe }}</tbody></table></div>
+
+<div id="modal-vendeur" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:100;display:none;align-items:center;justify-content:center">
+<div class="card" style="width:420px;max-width:95vw">
+<h2 id="modal-title">Nouveau Vendeur</h2>
+<form id="form-vendeur">
+<input type="hidden" id="v-id">
+<div class="grid-2">
+<div><label>Code</label><input type="text" id="v-code" required></div>
+<div><label>Nom</label><input type="text" id="v-nom" required></div>
+<div><label>Prenom</label><input type="text" id="v-prenom"></div>
+<div><label>Role</label><select id="v-role"><option value="vendeur">Vendeur</option><option value="vendeuse">Vendeuse</option><option value="caissier">Caissier</option><option value="responsable">Responsable</option></select></div>
+<div><label>Email</label><input type="email" id="v-email"></div>
+<div><label>Telephone</label><input type="text" id="v-tel"></div>
+</div>
+<div style="margin-top:16px">
+<button type="submit" class="btn btn-primary">Enregistrer</button>
+<button type="button" class="btn" onclick="closeModal()" style="margin-left:8px">Annuler</button>
+</div></form></div></div>
+<script>
+function showNewVendeur(){document.getElementById("modal-title").textContent="Nouveau Vendeur";document.getElementById("v-id").value="";document.getElementById("v-code").value="";document.getElementById("v-nom").value="";document.getElementById("v-prenom").value="";document.getElementById("v-role").value="vendeur";document.getElementById("v-email").value="";document.getElementById("v-tel").value="";document.getElementById("modal-vendeur").style.display="flex"}
+function editVendeur(id){api("GET","/api/vendeurs/"+id).then(function(v){document.getElementById("modal-title").textContent="Modifier Vendeur";document.getElementById("v-id").value=v.id;document.getElementById("v-code").value=v.code;document.getElementById("v-nom").value=v.nom;document.getElementById("v-prenom").value=v.prenom||"";document.getElementById("v-role").value=v.role||"vendeur";document.getElementById("v-email").value=v.email||"";document.getElementById("v-tel").value=v.telephone||"";document.getElementById("modal-vendeur").style.display="flex"})}
+function closeModal(){document.getElementById("modal-vendeur").style.display="none"}
+document.getElementById("form-vendeur").onsubmit=function(e){e.preventDefault();var id=document.getElementById("v-id").value;var d={code:document.getElementById("v-code").value,nom:document.getElementById("v-nom").value,prenom:document.getElementById("v-prenom").value,role:document.getElementById("v-role").value,email:document.getElementById("v-email").value,telephone:document.getElementById("v-tel").value};var url=id?"/api/vendeurs/"+id:"/api/vendeurs";var method=id?"PUT":"POST";api(method,url,d).then(function(r){if(r.success||r.id){showToast("Vendeur sauvegarde","ok");setTimeout(function(){location.reload()},1000)}else{showToast("Erreur: "+(r.error||"inconnue"),"err")}})}
+</script>

@@ -1,0 +1,163 @@
+<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>T-CONNECTOR - Connexion</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  min-height:100vh;display:flex;align-items:center;justify-content:center;
+  background:#f4f5fa;color:#1e293b;position:relative;overflow:hidden;padding:24px;
+}
+body::before{
+  content:'';position:fixed;inset:-10%;z-index:0;pointer-events:none;
+  background:
+    radial-gradient(560px 420px at 12% 8%,rgba(79,70,229,.16),transparent 60%),
+    radial-gradient(620px 460px at 92% 92%,rgba(124,58,237,.14),transparent 60%),
+    radial-gradient(400px 340px at 85% 12%,rgba(16,185,129,.08),transparent 60%);
+}
+body::after{
+  content:'';position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.5;
+  background-image:radial-gradient(rgba(15,23,42,.06) 1px,transparent 1px);
+  background-size:24px 24px;
+  -webkit-mask-image:radial-gradient(ellipse 70% 60% at 50% 40%,#000 40%,transparent 78%);
+  mask-image:radial-gradient(ellipse 70% 60% at 50% 40%,#000 40%,transparent 78%);
+}
+.auth-wrap{position:relative;z-index:1;width:420px;max-width:100%}
+.brand-row{display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:22px}
+.brand-row .ico{
+  width:32px;height:32px;border-radius:9px;flex-shrink:0;
+  background:linear-gradient(135deg,#4f46e5,#7c3aed);
+  display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:13px;
+  box-shadow:0 4px 12px rgba(79,70,229,.3);
+}
+.brand-row span{font-size:14px;font-weight:700;color:#1e293b;letter-spacing:.2px}
+.card{
+  width:100%;
+  background:#fff;border:1px solid #e6e9f2;border-radius:20px;
+  padding:40px 36px;box-shadow:0 1px 2px rgba(15,23,42,.04),0 30px 60px -30px rgba(15,23,42,.28);
+}
+.logo{
+  width:56px;height:56px;border-radius:15px;margin:0 auto 18px;
+  background:linear-gradient(135deg,#4f46e5,#7c3aed);
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 10px 26px -6px rgba(79,70,229,.4);
+}
+.logo svg{width:30px;height:30px}
+h1{
+  text-align:center;font-weight:800;color:#0f172a;font-size:22px;
+  margin-bottom:4px;letter-spacing:-0.5px;
+}
+.sub{text-align:center;font-size:13px;color:#64748b;margin-bottom:28px}
+.field{margin-bottom:18px}
+.field label{
+  display:block;font-size:11px;font-weight:700;color:#475569;
+  margin-bottom:8px;text-transform:uppercase;letter-spacing:0.7px;
+}
+.field-wrap{position:relative}
+.field-wrap svg{position:absolute;left:14px;top:50%;transform:translateY(-50%);width:16px;height:16px;color:#94a3b8;pointer-events:none}
+.field input{
+  width:100%;padding:12px 14px 12px 40px;font-size:14px;
+  background:#fff;color:#1e293b;
+  border:1.5px solid #e2e8f0;border-radius:11px;
+  font-family:inherit;transition:all 0.2s;
+}
+.field input:focus{
+  outline:none;border-color:#4f46e5;
+  box-shadow:0 0 0 4px rgba(79,70,229,0.12);
+}
+.field input::placeholder{color:#94a3b8}
+.btn{
+  width:100%;padding:13px;margin-top:8px;
+  background:linear-gradient(135deg,#4f46e5,#7c3aed);
+  color:#fff;border:none;border-radius:11px;
+  font-size:15px;font-weight:700;cursor:pointer;
+  font-family:inherit;letter-spacing:0.3px;
+  box-shadow:0 8px 20px -6px rgba(79,70,229,.45);
+  transition:all 0.2s;display:flex;align-items:center;justify-content:center;gap:8px;
+}
+.btn:hover{
+  box-shadow:0 12px 28px -6px rgba(79,70,229,.55);
+  transform:translateY(-1px);
+}
+.btn:active{transform:translateY(0)}
+.btn svg{width:16px;height:16px}
+.error{
+  display:flex;align-items:center;gap:8px;
+  background:#fef2f2;border:1px solid #fecaca;color:#991b1b;
+  font-size:12.5px;font-weight:600;
+  padding:11px 13px;border-radius:11px;margin-bottom:18px;
+}
+.features{
+  display:flex;justify-content:space-between;gap:8px;
+  margin-top:26px;padding-top:20px;
+  border-top:1px solid #eef0f6;
+}
+.feat{text-align:center;flex:1;min-width:0}
+.feat .ico{
+  width:32px;height:32px;border-radius:9px;margin:0 auto 6px;
+  display:flex;align-items:center;justify-content:center;
+}
+.feat .ico svg{width:15px;height:15px}
+.feat span{font-size:9.5px;color:#64748b;font-weight:600;display:block;line-height:1.3}
+.foot{text-align:center;margin-top:22px;font-size:11px;color:#94a3b8;position:relative;z-index:1}
+</style></head><body>
+<div class="auth-wrap">
+<div class="brand-row">
+  <div class="ico">TC</div>
+  <span>T-CONNECTOR SFEC</span>
+</div>
+<div class="card">
+  <div class="logo">
+    <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+    </svg>
+  </div>
+  <h1>Bon retour</h1>
+  <p class="sub">Connectez-vous a votre espace T-CONNECTOR</p>
+
+  {{ error_html | safe }}
+
+  <form method="POST" action="/login">
+    {{ csrf_field | safe }}
+    <div class="field">
+      <label>Adresse email</label>
+      <div class="field-wrap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4z" opacity="0"/><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m2 7 10 6 10-6"/></svg>
+        <input type="email" name="email" placeholder="admin@example.com" required autofocus>
+      </div>
+    </div>
+    <div class="field">
+      <label>Mot de passe</label>
+      <div class="field-wrap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        <input type="password" name="password" placeholder="Entrez votre mot de passe" required>
+      </div>
+    </div>
+    <button type="submit" class="btn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+      Se connecter
+    </button>
+  </form>
+
+  <div class="features">
+    <div class="feat">
+      <div class="ico" style="background:#eef2ff"><svg viewBox="0 0 24 24" fill="none" stroke="#4f46e5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div>
+      <span>Facturation</span>
+    </div>
+    <div class="feat">
+      <div class="ico" style="background:#ecfdf5"><svg viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+      <span>SFEC</span>
+    </div>
+    <div class="feat">
+      <div class="ico" style="background:#f5f3ff"><svg viewBox="0 0 24 24" fill="none" stroke="#7c3aed" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg></div>
+      <span>Sync Sage</span>
+    </div>
+    <div class="feat">
+      <div class="ico" style="background:#fffbeb"><svg viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></div>
+      <span>POS</span>
+    </div>
+  </div>
+</div>
+<p class="foot">T-CONNECTOR SFEC &copy; 2025 &mdash; Sodico</p>
+</div>
+</body></html>

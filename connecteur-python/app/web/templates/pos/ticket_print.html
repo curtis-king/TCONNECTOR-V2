@@ -1,0 +1,57 @@
+<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
+<title>Ticket {{ numero | safe }}</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Courier New',monospace;color:#000;background:#fff;max-width:80mm;margin:0 auto;font-size:12px}
+.header{text-align:center;margin-bottom:8px}
+.logo{margin-bottom:6px}
+.company{font-size:15px;font-weight:bold;text-transform:uppercase;letter-spacing:1px}
+.info{font-size:10px;color:#000}
+.rule{border-top:1px dashed #000;margin:6px 0}
+.ticket-info{padding:2px 0}
+.ticket-info div{display:flex;justify-content:space-between;padding:1px 0;font-size:11px}
+table{width:100%;border-collapse:collapse;margin:4px 0}
+th,td{padding:2px 0;font-size:11px;border-bottom:1px dotted #ccc}
+th{text-align:left;font-size:10px;text-transform:uppercase}
+td.r{text-align:right}
+.total{border-top:2px solid #000;font-weight:bold;font-size:15px;padding-top:6px;margin-top:4px}
+.footer{text-align:center;margin-top:10px;font-size:10px}
+.pay-row{display:flex;justify-content:space-between;padding:1px 0;font-size:12px}
+.pay-row.big{font-weight:bold;font-size:14px;margin-top:4px}
+.no-print{margin-top:12px;text-align:center}
+.no-print a,.no-print button{display:inline-block;margin:4px;padding:8px 14px;font-size:12px;text-decoration:none;border:none;border-radius:4px;cursor:pointer;font-family:inherit}
+@media print{body{width:80mm} .no-print{display:none!important}}
+</style></head><body onload="setTimeout(function(){window.print()},500)">
+<div class="header">
+<div class="logo">{{ logo | safe }}</div>
+<div class="company">{{ company_name | safe }}</div>
+{{ company_meta | safe }}
+</div>
+<div class="rule"></div>
+<div class="ticket-info">
+<div><span><b>TICKET DE VENTE</b></span><span>{{ date | safe }}</span></div>
+<div><span>N&deg; <b>{{ numero | safe }}</b></span><span>{{ caissier | safe }}</span></div>
+<div><span>Client</span><span>{{ client | safe }}</span></div>
+{{ invoice_html | safe }}
+</div>
+<div class="rule"></div>
+<table>
+<thead><tr><th>Article</th><th class="r" style="text-align:right">Qte</th><th class="r" style="text-align:right">PU</th><th class="r" style="text-align:right">Total</th></tr></thead>
+<tbody>{{ lignes | safe }}</tbody>
+</table>
+<div class="rule"></div>
+<div class="pay-row big"><span>TOTAL TTC</span><span>{{ total }} FCFA</span></div>
+<div class="rule"></div>
+<div class="pay-row"><span>Mode</span><span>{{ paiement | safe }}</span></div>
+<div class="pay-row"><span>Recu</span><span>{{ recu }} FCFA</span></div>
+<div class="pay-row big"><span>Monnaie rendue</span><span>{{ monnaie }} FCFA</span></div>
+{{ sfec | safe }}
+<div class="footer">
+{{ message | safe }}
+</div>
+<div class="no-print">
+<button onclick="window.print()">Imprimer</button>
+<a href="/api/pos/ticket/{{ ticket_id }}/pdf" class="no-print" target="_blank">PDF</a>
+<a href="/pos">Retour caisse</a>
+</div>
+</body></html>

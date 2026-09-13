@@ -1,0 +1,31 @@
+
+<div class="card"><h2>Facture {{ numero | safe }}</h2>
+<div style="margin-bottom:12px">
+<a href="/billing" class="btn btn-sm">Retour</a>
+<a href="/billing/invoice/{{ inv_id }}/edit" class="btn btn-sm btn-primary" style="margin-left:8px">Modifier</a>
+<button class="btn btn-sm btn-success" onclick="certifyInv({{ inv_id }})" style="margin-left:8px">Certifier SFEC</button>
+<a href="/api/invoices/{{ inv_id }}/pdf" class="btn btn-sm btn-primary" style="margin-left:8px;text-decoration:none" target="_blank">PDF</a>
+<button class="btn btn-sm btn-danger" onclick="if(confirm('Supprimer ?')){api('DELETE','/api/invoices/{{ inv_id }}').then(function(){location.href='/billing'})}" style="margin-left:8px">Supprimer</button>
+</div>
+<table>
+<tr><td>Numero</td><td><strong>{{ numero | safe }}</strong></td></tr>
+<tr><td>Date</td><td>{{ date_facture | safe }}</td></tr>
+<tr><td>Reference</td><td>{{ reference | safe }}</td></tr>
+<tr><td>Tiers</td><td>{{ tiers_nom | safe }} ({{ tiers_code | safe }})</td></tr>
+<tr><td>Statut</td><td><span class="badge badge-ok">{{ statut | safe }}</span></td></tr>
+<tr><td>Source</td><td>{{ source | safe }}</td></tr>
+{{ sfec_html | safe }}
+<tr><td>Notes</td><td>{{ notes | safe }}</td></tr>
+</table>
+<h3 style="margin-top:16px;color:#38bdf8">Lignes</h3>
+<table><thead><tr><th>Designation</th><th style='text-align:right'>Qte</th><th style='text-align:right'>Prix unit.</th><th style='text-align:right'>TVA</th><th style='text-align:right'>HT</th><th style='text-align:right'>TVA</th><th style='text-align:right'>TTC</th></tr></thead>
+<tbody>{{ lignes_rows | safe }}</tbody></table>
+<div style="text-align:right;margin-top:12px;font-size:18px">
+<strong>Total HT: {{ "{:,.0f}".format(montant_ht) }} FCFA</strong><br>
+<strong>TVA: {{ "{:,.0f}".format(montant_tva) }} FCFA</strong><br>
+<strong style="color:#38bdf8">TOTAL TTC: {{ "{:,.0f}".format(montant_ttc) }} FCFA</strong>
+</div></div>
+<script>
+window.NATIVE_ALERTS = true;
+function certifyInv(id){api("POST","/api/sfec/certify",{invoice_id:"INV-"+id}).then(function(d){if(d.success){showToast("Certifie: "+d.certification_number,"ok");setTimeout(function(){location.reload()},1500)}else{showToast("Erreur: "+d.error,"err")}})}
+</script>

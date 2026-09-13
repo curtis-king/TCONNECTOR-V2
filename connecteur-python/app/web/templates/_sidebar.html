@@ -1,0 +1,18 @@
+<div class="sidebar">
+  <div class="sidebar-top">
+    <a href="/" class="sidebar-logo">
+      <div class="icon">TC</div>
+      <span>T-CONNECTOR</span>
+    </a>
+    <button class="sidebar-toggle no-print" onclick="toggleSidebar()" aria-label="Replier le menu">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
+  </div>
+  <ul class="sidebar-nav"><li class="nav-label">Principal</li>{% for url, icon, label in sidebar_items[:4] %}<li><a href="{{ url }}" class="{% if url == '/' %}{% if request.path == '/' %}active{% endif %}{% elif request.path.startswith(url) %}active{% endif %}"><span class="icon">{{ sidebar_icons[icon] | safe }}</span><span class="label">{{ label }}</span></a></li>{% endfor %}<li class="nav-label">Gestion</li>{% for url, icon, label in sidebar_items[4:] %}<li><a href="{{ url }}" class="{% if url == '/' %}{% if request.path == '/' %}active{% endif %}{% elif request.path.startswith(url) %}active{% endif %}"><span class="icon">{{ sidebar_icons[icon] | safe }}</span><span class="label">{{ label }}</span></a></li>{% endfor %}<li><a href="/logout" class="logout-link"><span class="icon">{{ sidebar_icons['logout'] | safe }}</span><span class="label">Deconnexion</span></a></li></ul>
+  <div class="sidebar-foot">
+    <div class="net-indicator">
+      <span class="net-dot unknown" id="net-dot"></span>
+      <span id="net-label" style="font-size:11px;font-weight:600">...</span>
+    </div>
+  </div>
+</div>

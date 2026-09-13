@@ -1,0 +1,116 @@
+<div class="card"><h2>Facturation</h2><div class="stat-grid">
+<div class="stat"><div class="value">{{ total }}</div><div class="label">Total factures</div></div>
+<div class="stat"><div class="value">{{ brouillons }}</div><div class="label">Brouillons</div></div>
+<div class="stat"><div class="value">{{ validees }}</div><div class="label">Validees</div></div>
+<div class="stat"><div class="value">{{ certifiees }}</div><div class="label">Certifiees SFEC</div></div>
+<div class="stat"><div class="value">{{ certif_en_cours }}</div><div class="label">Certif en attente</div></div>
+<div class="stat"><div class="value">{{ certif_erreur }}</div><div class="label">Certif en erreur</div></div>
+<div class="stat"><div class="value">{{ "{:,.0f}".format(ca) }}</div><div class="label">CA Total TTC</div></div>
+<div class="stat"><div class="value">{{ "{:,.0f}".format(nb_imp) }}</div><div class="label">Impayes (FCFA)</div></div>
+<div class="stat"><div class="value">{{ pending_sage }}</div><div class="label">A pousser Sage</div></div>
+<div class="stat"><div class="value">{{ pushed }}</div><div class="label">Sync Sage OK</div></div>
+</div><div class="card"><h2>Mois en cours</h2><div class="stat-grid">
+<div class="stat"><div class="value">{{ mois_nb }}</div><div class="label">Factures du mois</div></div>
+<div class="stat"><div class="value">{{ "{:,.0f}".format(mois_ht) }}</div><div class="label">HT (FCFA)</div></div>
+<div class="stat"><div class="value">{{ "{:,.0f}".format(mois_tva) }}</div><div class="label">TVA (FCFA)</div></div>
+<div class="stat"><div class="value">{{ "{:,.0f}".format(mois_ttc) }}</div><div class="label">TTC (FCFA)</div></div>
+</div></div><div class="card no-print"><h2>Filtres</h2>
+<form id="filters-form" style="display:flex;gap:12px;flex-wrap:wrap;align-items:end">
+<div><label>Date debut</label><input type="date" id="f_date_from"></div>
+<div><label>Date fin</label><input type="date" id="f_date_to"></div>
+<div><label>Statut</label><select id="f_statut">{{ statut_opts | safe }}</select></div>
+<div><label>Source</label><select id="f_source">{{ source_opts | safe }}</select></div>
+<div><label>N facture</label><input type="text" id="f_search" placeholder="FA000002..." style="min-width:150px"></div>
+<div><button type="submit" class="btn btn-primary">Filtrer</button></div>
+<div><button type="button" class="btn btn-sm" onclick="resetFilters()">Reinitialiser</button></div>
+</form></div><div class="card no-print"><h2>Actions</h2>
+<a href="/billing/invoice/new" class="btn btn-primary">Nouvelle Facture</a>
+<button class="btn btn-success" onclick="syncBi()" style="margin-left:8px">Sync Sage</button>
+<span style="margin-left:8px;font-size:12px;color:#64748b">Derniere sync: {{ last_sync }}</span>
+</div><div class="card"><h2>Factures (<span id="inv-count">0</span>)</h2>
+<table><thead><tr>
+<th data-sort="numero" onclick="toggleSort('numero')">Numero<span id="sort_numero"></span></th>
+<th data-sort="date_facture" onclick="toggleSort('date_facture')">Date<span id="sort_date_facture"></span></th>
+<th data-sort="tiers_nom" onclick="toggleSort('tiers_nom')">Tiers<span id="sort_tiers_nom"></span></th>
+<th style="text-align:right">HT</th><th style="text-align:right">TVA</th><th style="text-align:right">TTC</th>
+<th style="text-align:right">Restant</th>
+<th data-sort="statut" onclick="toggleSort('statut')">Statut<span id="sort_statut"></span></th>
+<th data-sort="source" onclick="toggleSort('source')">Source<span id="sort_source"></span></th>
+<th>SFEC</th><th>Sage</th><th>Actions</th>
+</tr></thead>
+<tbody id="inv-body"><tr><td colspan="12" style="text-align:center;color:#64748b">Chargement...</td></tr></tbody>
+</table>
+<div id="inv-pagination" style="margin-top:10px"></div></div><script>
+window.NATIVE_ALERTS = true;
+var bs={page:1,limit:25,sort_by:"date_facture",sort_dir:"DESC"};
+function esc(x){var d=document.createElement("div");d.textContent=(x==null?"":String(x));return d.innerHTML;}
+function fmt(x){return Number(x||0).toLocaleString("fr-FR",{maximumFractionDigits:0});}
+function buildQ(){
+var q=[],a=function(k,v){if(v!==null&&v!==""){q.push(k+"="+encodeURIComponent(v));}};
+a("statut",document.getElementById("f_statut").value);
+a("source",document.getElementById("f_source").value);
+a("search",document.getElementById("f_search").value);
+a("date_from",document.getElementById("f_date_from").value);
+a("date_to",document.getElementById("f_date_to").value);
+a("sort_by",bs.sort_by);a("sort_dir",bs.sort_dir);
+a("page",bs.page);a("limit",bs.limit);
+return q.join("&");}
+function sfecCell(t){
+var ss=t.sfec_statut||"",cb=' <button class="btn btn-sm" onclick="certifyBilling('+t.id+')">Certifier</button>';
+if(ss==="CERTIFIE"||ss==="DEJA_CERTIFIE"){return '<span class="badge badge-ok" title="'+esc((t.sfec_num_certif||"").slice(0,25))+'">'+(ss==="CERTIFIE"?"Certifie":"Deja certifie")+"</span>";}
+if(ss==="EN_COURS"){return '<span class="badge badge-warn">En attente</span>'+cb;}
+if(ss==="ERREUR"){return '<span class="badge badge-err">Erreur</span>'+cb;}
+return '<span class="badge badge-info">A certifier</span>'+cb;}
+function sageCell(t){
+if(t.synced_sage){return '<span class="badge badge-ok" title="'+esc(t.sage_piece||"")+'">Dans Sage</span>';}
+if(t.source==="sage"){return '<span class="badge badge-info">Importe</span>';}
+var pushable=(t.statut!=="brouillon")&&(t.source!=="pos"||(t.sfec_num_certif||""));
+return '<span class="badge badge-warn">En attente</span>'+(pushable?' <button class="btn btn-sm" onclick="pushInvoice('+t.id+')">Pousser</button>':"");}
+function invRow(t){
+var s=t.statut||"";
+var sb=(s==="valide"||s==="a_comptabilise")?"badge-ok":(s==="a_comptabiliser")?"badge-warn":(s==="brouillon")?"badge-info":"";
+var rest=t.montant_restant||0,u="/billing/invoice/"+t.id;
+return '<tr><td><a href="'+u+'" style="color:#38bdf8;text-decoration:none">'+esc(t.numero)+'</a></td>'
++'<td>'+esc(t.date_facture)+'</td><td>'+esc(t.tiers_nom)+'</td>'
++'<td style="text-align:right">'+fmt(t.montant_ht)+'</td><td style="text-align:right">'+fmt(t.montant_tva)+'</td><td style="text-align:right">'+fmt(t.montant_ttc)+'</td>'
++'<td style="text-align:right">'+fmt(rest)+'</td>'
++'<td><span class="badge '+sb+'">'+esc(s)+'</span></td>'
++'<td><span class="badge badge-info">'+esc(t.source)+'</span></td>'
++'<td>'+sfecCell(t)+'</td><td>'+sageCell(t)+'</td>'
++'<td><a class="btn btn-sm" href="'+u+'" target="_blank" style="text-decoration:none">Voir</a></td></tr>';}
+function setArrows(){
+var k=["numero","date_facture","tiers_nom","statut","source"],i,el;
+for(i=0;i<k.length;i++){el=document.getElementById("sort_"+k[i]);if(el){el.textContent=(bs.sort_by===k[i])?(bs.sort_dir==="ASC"?String.fromCharCode(0x25B2):String.fromCharCode(0x25BC)):"";}}}
+function paginate(d){
+var p=document.getElementById("inv-pagination");
+if(d.pages<=1){p.innerHTML="";return;}
+var html='<span style="color:#64748b">Page '+d.page+' / '+d.pages+'</span> ';
+if(d.page>1){html+='<button class="btn btn-sm" onclick="go('+(d.page-1)+')">Prec</button> ';}
+var w=2,start=Math.max(1,d.page-w),end=Math.min(d.pages,d.page+w),i;
+for(i=start;i<=end;i++){html+=(i===d.page)?'<span class="badge badge-ok">'+i+'</span> ':'<button class="btn btn-sm" onclick="go('+i+')">'+i+'</button> ';}
+if(d.page<d.pages){html+='<button class="btn btn-sm" onclick="go('+(d.page+1)+')">Suiv</button>';}
+html+=' <select onchange="setLimit(this.value)">';
+var Ls=[25,50,100];
+for(i=0;i<Ls.length;i++){html+='<option value="'+Ls[i]+'"'+(Ls[i]===d.limit?' selected':'')+'>'+Ls[i]+' / page</option>';}
+html+='</select>';
+p.innerHTML=html;}
+function render(){
+setArrows();
+api("GET","/api/invoices/list?"+buildQ()).then(function(d){
+var tb=document.getElementById("inv-body");tb.innerHTML="";
+if(!d.invoices.length){tb.innerHTML='<tr><td colspan="12" style="text-align:center;color:#64748b">Aucune facture</td></tr>';}
+else{for(var i=0;i<d.invoices.length;i++){tb.innerHTML+=invRow(d.invoices[i]);}}
+document.getElementById("inv-count").textContent=d.total;paginate(d);
+}).catch(function(e){showToast("Erreur: "+e,"err");});}
+function go(n){bs.page=n;render();}
+function setLimit(n){bs.limit=Number(n);bs.page=1;render();}
+function toggleSort(k){if(bs.sort_by===k){bs.sort_dir=bs.sort_dir==="DESC"?"ASC":"DESC";}else{bs.sort_by=k;bs.sort_dir="DESC";}bs.page=1;render();}
+function resetFilters(){["f_statut","f_source","f_search","f_date_from","f_date_to"].forEach(function(id){document.getElementById(id).value="";});bs.page=1;render();}
+function syncBi(){api("POST","/api/sync/bi",{}).then(function(d){showToast("Sync: "+d.pushed+" poussees, "+d.pull_new+" tirees","ok");render()}).catch(function(e){showToast("Erreur: "+e,"err")});}
+function certifyBilling(id){api("POST","/api/sfec/certify",{invoice_id:"INV-"+id}).then(function(r){if(r.success&&r.certification_number){showToast("Certifiee SFEC: "+r.certification_number,"ok");render();}else if(r.success){showToast("Certification envoyee, en attente...","warn");render();}else{showToast("Certification: "+(r.error||"echec"),"err");}})}
+function pushInvoice(id){api("POST","/api/invoices/"+id+"/push-sage").then(function(r){if(r.success){showToast("Facture poussee vers Sage","ok");render();}else{showToast("Push Sage: "+(r.error||"echec"),"err");}})}
+document.getElementById("f_search").addEventListener("input",(function(){var t;return function(){clearTimeout(t);t=setTimeout(function(){bs.page=1;render();},250);};})());
+document.getElementById("filters-form").addEventListener("submit",function(e){e.preventDefault();bs.page=1;render();});
+["f_statut","f_source","f_date_from","f_date_to"].forEach(function(id){document.getElementById(id).addEventListener("change",function(){bs.page=1;render();});});
+render();
+</script>

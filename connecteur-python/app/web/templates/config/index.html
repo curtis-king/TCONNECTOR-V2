@@ -1,0 +1,174 @@
+<div class="card"><h2>Configuration</h2>
+<div class="tabs">
+<button class="tab-btn active" id="tab-btn-db" onclick="switchTab('db')">Base de Donnees</button>
+<button class="tab-btn" id="tab-btn-sfec" onclick="switchTab('sfec')">API SFEC</button>
+<button class="tab-btn" id="tab-btn-company" onclick="switchTab('company')">Entreprise</button>
+<button class="tab-btn" id="tab-btn-sync" onclick="switchTab('sync')">Synchronisation</button>
+<button class="tab-btn" id="tab-btn-validation" onclick="switchTab('validation')">Validation & Limites</button>
+<button class="tab-btn" id="tab-btn-notif" onclick="switchTab('notif')">Notifications</button>
+<button class="tab-btn" id="tab-btn-system" onclick="switchTab('system')">Systeme</button>
+</div>
+<div class="tab-content active" id="tab-db">
+<h2 style="margin-bottom:16px">Base de donnees Sage 100</h2>
+<form id="form-db" onsubmit="event.preventDefault();saveForm('form-db','/api/config/db')">
+<div class="grid-2">
+<div><label>Serveur</label><input type="text" name="server" value="{{ server | safe }}"></div>
+<div><label>Port</label><input type="number" name="port" value="{{ port | safe }}"></div>
+<div><label>Base de donnees</label><input type="text" name="database" value="{{ database | safe }}"><div class="desc">Nom exact de la base Sage 100</div></div>
+<div><label>Utilisateur</label><input type="text" name="user" value="{{ user | safe }}"></div>
+<div><label>Mot de passe</label><input type="password" name="password" value="{{ password | safe }}"></div>
+<div><label>Connexion Windows</label><select name="trusted_connection"><option value="false" {{ tc_f }}>Non</option><option value="true" {{ tc_t }}>Oui</option></select></div>
+<div><label>Chiffrer</label><select name="encrypt"><option value="false" {{ enc_f }}>Non</option><option value="true" {{ enc_t }}>Oui</option></select></div>
+<div><label>Confiance certificat</label><select name="trust_server_certificate"><option value="true" {{ tsc_t }}>Oui</option><option value="false" {{ tsc_f }}>Non</option></select></div>
+</div>
+<h2 style="margin-top:16px">Pool & Timeouts</h2>
+<div class="grid-2">
+<div><label>Connexions max</label><input type="number" name="pool_max" value="{{ pool_max }}"></div>
+<div><label>Connexions min</label><input type="number" name="pool_min" value="{{ pool_min }}"></div>
+<div><label>Idle timeout (ms)</label><input type="number" name="pool_idle_timeout_ms" value="{{ pool_idle_timeout_ms }}"></div>
+<div><label>Connection timeout (ms)</label><input type="number" name="connection_timeout_ms" value="{{ connection_timeout_ms }}"></div>
+<div><label>Request timeout (ms)</label><input type="number" name="request_timeout_ms" value="{{ request_timeout_ms }}"></div>
+</div>
+<div style="margin-top:16px">
+<button type="submit" class="btn btn-primary">Sauvegarder</button>
+<button type="button" class="btn btn-success" onclick="testDb()">Tester la connexion</button>
+<div id="db-test" style="margin-top:8px"></div>
+</div>
+</form></div>
+<div class="tab-content" id="tab-sfec">
+<h2 style="margin-bottom:16px">Configuration API SFEC</h2>
+<form id="form-sfec" onsubmit="event.preventDefault();saveForm('form-sfec','/api/config/sfec')">
+<div class="grid-2">
+<div><label>Cle API SFEC</label><input type="text" name="api_key" value="{{ api_key | safe }}"></div>
+<div><label>Environnement</label><select name="use_sandbox"><option value="true" {{ sb_t }}>Sandbox (test)</option><option value="false" {{ sb_f }}>Production</option></select></div>
+<div><label>SFEC active</label><select name="enabled"><option value="true" {{ en_t }}>Oui</option><option value="false" {{ en_f }}>Non</option></select></div>
+<div><label>Statut pour certification</label><select name="certify_status">
+<option value="SAISI" {{ cs_sa }}>SAISI</option>
+<option value="CONFIRME" {{ cs_co }}>CONFIRME</option>
+<option value="A COMPTABILISER" {{ cs_ac }}>A COMPTABILISER</option>
+<option value="COMPTABILISE" {{ cs_c }}>COMPTABILISE</option>
+<option value="LETTRÉ" {{ cs_l }}>LETTRÉ</option></select></div>
+<div><label>URL Production</label><input type="text" name="base_url" value="{{ base_url | safe }}"></div>
+<div><label>URL Sandbox</label><input type="text" name="sandbox_url" value="{{ sandbox_url | safe }}"></div>
+</div>
+<div style="margin-top:16px">
+<button type="submit" class="btn btn-primary">Sauvegarder</button>
+<button type="button" class="btn btn-success" onclick="testSfec()">Tester la connexion SFEC</button>
+<div id="sfec-test" style="margin-top:8px"></div>
+</div>
+</form></div>
+<div class="tab-content" id="tab-company">
+<h2 style="margin-bottom:16px">Configuration Entreprise</h2>
+<form id="form-company" onsubmit="event.preventDefault();saveForm('form-company','/api/config/company')">
+<div class="grid-2">
+<div><label>Nom de l'entreprise</label><input type="text" name="name" value="{{ name | safe }}"></div>
+<div><label>NIU (Tax Number)</label><input type="text" name="tax_number" value="{{ tax_number | safe }}"></div>
+<div><label>Adresse</label><input type="text" name="address" value="{{ address | safe }}"></div>
+<div><label>Ville</label><input type="text" name="city" value="{{ city | safe }}"></div>
+<div><label>Pays</label><input type="text" name="country" value="{{ country | safe }}"></div>
+<div><label>Telephone</label><input type="text" name="phone" value="{{ phone | safe }}"></div>
+<div><label>Email</label><input type="email" name="email" value="{{ email | safe }}"></div>
+<div><label>Devise</label><select name="currency"><option value="XAF" {{ cur_xaf }}>XAF (FCFA)</option><option value="USD" {{ cur_usd }}>USD</option></select></div>
+</div>
+<h2 style="margin-top:16px">Banque</h2>
+<div class="grid-2">
+<div><label>Banque</label><input type="text" name="bank_name" value="{{ bank_name | safe }}"></div>
+<div><label>Compte</label><input type="text" name="bank_account" value="{{ bank_account | safe }}"></div>
+<div><label>IBAN</label><input type="text" name="bank_iban" value="{{ bank_iban | safe }}"></div>
+<div><label>SWIFT</label><input type="text" name="bank_swift" value="{{ bank_swift | safe }}"></div>
+</div>
+<h2 style="margin-top:16px">Facturation</h2>
+<div class="grid-2">
+<div><label>Prefixe facture</label><input type="text" name="invoice_prefix" value="{{ invoice_prefix | safe }}"></div>
+<div><label>Numero suivant</label><input type="number" name="invoice_next_number" value="{{ invoice_next_number | safe }}"></div>
+<div><label>Notes facture</label><input type="text" name="invoice_notes" value="{{ invoice_notes | safe }}"></div>
+<div><label>Pied de page</label><input type="text" name="invoice_footer" value="{{ invoice_footer | safe }}"></div>
+<div><label>Regime fiscal</label><input type="text" name="tax_regime" value="{{ tax_regime | safe }}"></div>
+<div><label>QR Code active</label><select name="qrcode_enabled"><option value="true" {{ qr_t }}>Oui</option><option value="false" {{ qr_f }}>Non</option></select></div>
+</div>
+<div style="margin-top:16px"><button type="submit" class="btn btn-primary">Sauvegarder</button></div>
+</form></div>
+<div class="tab-content" id="tab-sync">
+<h2 style="margin-bottom:16px">Synchronisation & Polling</h2>
+<form id="form-sync" onsubmit="event.preventDefault();saveForm('form-sync','/api/config/sync')">
+<div class="grid-2">
+<div><label>Polling active</label><select name="polling_enabled"><option value="true" {{ pe_t }}>Oui</option><option value="false" {{ pe_f }}>Non</option></select><div class="desc">Active/desactive la synchro automatique</div></div>
+<div><label>Intervalle polling (ms)</label><input type="number" name="polling_interval_ms" value="{{ poll_ms }}"><div class="desc">Recommande: 30000 (30 secondes)</div></div>
+</div>
+<h2 style="margin-top:16px">File d'attente</h2>
+<div class="grid-2">
+<div><label>Concurrence max</label><input type="number" name="max_concurrent" value="{{ max_concurrent }}"><div class="desc">Certifications SFEC simultanees</div></div>
+<div><label>Retries max</label><input type="number" name="max_retries" value="{{ max_retries }}"><div class="desc">Nombre de tentatives en cas d'echec</div></div>
+<div><label>Delai retry (ms)</label><input type="number" name="retry_base_delay_ms" value="{{ retry_base_delay_ms }}"><div class="desc">Delai de base entre les retries</div></div>
+<div><label>Taille max queue</label><input type="number" name="max_queue_size" value="{{ max_queue_size }}"></div>
+<div><label>Timeout job (ms)</label><input type="number" name="job_timeout_ms" value="{{ job_timeout_ms }}"></div>
+</div>
+<div style="margin-top:16px"><button type="submit" class="btn btn-primary">Sauvegarder</button></div>
+</form></div>
+<div class="tab-content" id="tab-validation">
+<h2 style="margin-bottom:16px">Validation</h2>
+<form id="form-validation" onsubmit="event.preventDefault();saveForm('form-validation','/api/config/validation')">
+<div class="grid-2">
+<div><label>Mode strict</label><select name="strict_mode"><option value="true" {{ st_t }}>Oui</option><option value="false" {{ st_f }}>Non</option></select><div class="desc">Verification stricte des donnees avant certification</div></div>
+<div><label>Tolerance montant</label><input type="number" name="tolerance_amount" value="{{ tolerance }}" step="0.01"><div class="desc">Ecart autorise entre les totaux</div></div>
+</div>
+<h2 style="margin-top:16px">Limites API SFEC</h2>
+<div class="grid-2">
+<div><label>Maximum journalier</label><input type="number" name="daily_max" value="{{ daily_max }}"><div class="desc">Nombre max de certifications par jour</div></div>
+<div><label>Maximum par minute</label><input type="number" name="per_minute_max" value="{{ per_minute_max }}"></div>
+<div><label>Seuil d'alerte (%)</label><input type="number" name="alert_threshold_percent" value="{{ alert_threshold }}"><div class="desc">Declenche une alerte a ce %</div></div>
+</div>
+<div style="margin-top:16px"><button type="submit" class="btn btn-primary">Sauvegarder</button></div>
+</form></div>
+<div class="tab-content" id="tab-notif">
+<h2 style="margin-bottom:16px">Notifications</h2>
+<form id="form-notif" onsubmit="event.preventDefault();saveForm('form-notif','/api/config/notifications')">
+<div class="grid-2">
+<div><label>Notifications activees</label><select name="enabled"><option value="true" {{ nt_t }}>Oui</option><option value="false" {{ nt_f }}>Non</option></select></div>
+</div>
+<h2 style="margin-top:16px">Evenements</h2>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
+<div><input type="checkbox" name="evt_synced" value="invoice:synced" {{ ev_synced }}> Facture synchro</div>
+<div><input type="checkbox" name="evt_val_error" value="invoice:validation_error" {{ ev_val }}> Erreur validation</div>
+<div><input type="checkbox" name="evt_dlq" value="queue:dlq_added" {{ ev_dlq }}> File d'attente</div>
+<div><input type="checkbox" name="evt_db_fail" value="db:connection_failed" {{ ev_dbf }}> Echec connexion DB</div>
+<div><input type="checkbox" name="evt_db_err" value="db:polling_error" {{ ev_dbe }}> Erreur polling</div>
+</div>
+<div style="margin-top:16px"><button type="submit" class="btn btn-primary">Sauvegarder</button></div>
+</form></div>
+<div class="tab-content" id="tab-system">
+<h2 style="margin-bottom:16px">Systeme & Dashboard</h2>
+<form id="form-system" onsubmit="event.preventDefault();saveForm('form-system','/api/config/system')">
+<div class="grid-2">
+<div><label>Niveau de log</label><select name="log_level">
+<option value="debug" {{ ll_d }}>Debug</option>
+<option value="info" {{ ll_i }}>Info</option>
+<option value="warning" {{ ll_w }}>Warning</option>
+<option value="error" {{ ll_e }}>Error</option></select></div>
+<div><label>Port dashboard</label><input type="number" name="port" value="{{ dash_port | safe }}"></div>
+<div><label>Auth active</label><select name="auth_enabled"><option value="true" {{ auth_t }}>Oui</option><option value="false" {{ auth_f }}>Non</option></select></div>
+<div><label>Email login</label><input type="email" name="login_email" value="{{ login_email | safe }}"></div>
+<div><label>Mot de passe login</label><input type="password" name="login_password" value="{{ login_password | safe }}"></div>
+<div><label>Session secret</label><input type="text" name="session_secret" value="{{ session_secret | safe }}"></div>
+<div><label>Duree session (heures)</label><input type="number" name="session_max_age_hours" value="{{ session_max_hours | safe }}"></div>
+<div><label>Host</label><input type="text" name="host" value="{{ host | safe }}"></div>
+</div>
+<div style="margin-top:16px">
+<button type="submit" class="btn btn-primary">Sauvegarder</button>
+<button type="button" class="btn btn-warning" onclick="applyConfig()" style="margin-left:8px">Appliquer (recharger)</button>
+</div>
+</form>
+<h2 style="margin-top:24px">Export / Import Configuration</h2>
+<div style="margin-top:8px">
+<a href="/api/config/export" class="btn btn-success" download="config.json">Exporter config.json</a>
+<button type="button" class="btn btn-primary" onclick="document.getElementById('import-file').click()" style="margin-left:8px">Importer config.json</button>
+<input type="file" id="import-file" accept=".json" style="display:none" onchange="importConfig(this)">
+</div>
+<div id="import-status" style="margin-top:8px"></div>
+</div>
+<script>
+function testDb(){document.getElementById("db-test").textContent="Test en cours...";api("GET","/api/db/test").then(function(d){document.getElementById("db-test").innerHTML=d.ok?'<span class="badge badge-ok">Connecte: '+d.table_map.documents+'</span>':'<span class="badge badge-err">'+d.error+'</span>'})}
+function testSfec(){document.getElementById("sfec-test").textContent="Test en cours...";api("GET","/api/sfec/test").then(function(d){document.getElementById("sfec-test").innerHTML=d.connected?'<span class="badge badge-ok">Connecte: '+d.url+'</span>':'<span class="badge badge-err">Deconnecte</span>'})}
+function applyConfig(){showToast("Application de la configuration...","info");api("POST","/api/config/reload").then(function(d){showToast(d.message||"OK","ok");}).catch(function(e){showToast("Erreur: "+e,"err")})}
+function importConfig(input){var file=input.files[0];if(!file)return;var reader=new FileReader();reader.onload=function(e){try{var cfg=JSON.parse(e.target.result);document.getElementById("import-status").textContent="Importation...";api("POST","/api/config/import",cfg).then(function(d){if(d.ok){showToast("Config importee! Rechargement...","ok");setTimeout(function(){location.reload()},1500)}else{showToast("Erreur: "+d.error,"err")}})}catch(err){showToast("JSON invalide: "+err,"err")}};reader.readAsText(file)}
+</script>

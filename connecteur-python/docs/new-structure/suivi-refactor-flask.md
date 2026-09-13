@@ -6,7 +6,7 @@
 | Agent | Mission | Statut | Fin |
 |---|---|---|---|
 | A1 | Filet de sécurité (tests + snapshots) | ✅ | 2026-09-12 20:16 |
-| A2 | Extraction Jinja (templates + static) | ⏳ | — |
+| A2 | Extraction Jinja (templates + static) | 🔄 | — |
 | A3 | Découpage parking de dashboard.py | ⏳ | — |
 | A4 | Blueprints auth + dashboard + sync_api | ⏳ | — |
 | A5 | Blueprint config | ⏳ | — |
@@ -58,9 +58,43 @@
 ---
 
 ## A2 — Templater
-**Statut** : ⏳ EN ATTENTE
+**Statut** : ✅ TERMINÉ — 2026-09-13 07:49
 
-(à remplir par l'agent)
+**Mission** : ÉTAPE 1 — câbler les templates Jinja existants dans `app/web/dashboard.py` via `render_template`, avec parité byte-exacte.
+
+### Templates audités/corrigés (tous dans `app/web/templates/`)
+- `base.html` : réécrit (squelette byte-exact, variables `css/nav/toast/csrf_json/page_label/page_key/body/content_css`) — remplace `_page()` par `_base_context()` + `render_template("base.html")`.
+- `auth/password.html`, `auth/login.html`, `auth/deny.html` : `| safe` sur valeurs `_esc()`-ées.
+- `dashboard/{index,invoices,pending,certified,print}.html` : newline initiale, `| safe`, formats `{:,.0f}`.
+- `directory/clients.html` : document autonome — `css|safe`, `nav|safe`, `toast|safe` au lieu de link/include/js externe.
+- `directory/{vendeurs,sales}.html` : formats `{:,.0f}` + newline.
+- `directory/utilisateurs.html` : reproduction fidèle du bug pré-existant `{rows}` littéral (replace `@ROWS@` no-op côté Python, confirmé dans HEAD).
+- `billing/list.html` : formats, jonctions de fragments sans newline, `</div>` alignés sur le HTML déséquilibré pré-existant de HEAD (stat_cards jamais fermé).
+- `billing/form.html` : newline initiale, retrait d'un `}` surnuméraire (validateTiersNiu), fin sur `</datalist>\n` (le `</div>` final appartient au FOOTER).
+- `billing/detail.html` : newline initiale, `| safe` sur `_esc()`-ées, formats `{:,.0f}`.
+- `pos/index.html` : conforme (7 vars `| safe`, `stock_ctl_js` brut).
+- `pos/ticket_print.html` : `| safe` ajouté (numero, date, caissier, client, company_name, paiement) ; total/recu/monnaie reçoivent des chaînes pré-formatées.
+- `config/index.html` : `| safe` sur les 30 vars `_esc()`-ées ; `nt_t`/`nt_f` conservés pour l'onglet notifications (le Python réutilisait `en_t`/`en_f` pour SFEC ET notifications — renommés côté contexte) ; `dash_port` pour le port dashboard (doublon `port` DB/dashboard résolu ainsi).
+
+### Routes câblées (22 `render_template`, 0 `render_template_string` — il ne reste que l'import)
+Lot 0 : base + `/compte/mot-de-passe` — Lot 1 : login + deny — Lot 2 : `/`, `/invoices` — Lot 3 : `/pending`, `/certified`, `/print/<ids>` — Lot 4 : `/clients`, `/vendeurs`, `/sales`, `/utilisateurs` — Lot 5 : `/billing`, `/billing/invoice/new`, `/billing/invoice/<id>`, `/billing/invoice/<id>/edit` — Lot 6 : `/pos`, `/pos/ticket/<id>/print` — Lot 7 : `/config` (81 variables de contexte, 3 doublons renommés : `nt_t`/`nt_f`, `dash_port`).
+
+Constantes mortes `LOGIN_HTML` et `_DENY_HTML` supprimées (non référencées, aucun effet de rendu).
+
+### Vérifications finales
+- `pytest` : **5 passed** (vert)
+- `compare_snapshots.py` : **50/50 OK, 0 DIFF/ERROR**
+- Routes : **94** (`len(app.url_map._rules)`)
+- Pages non couvertes par snapshots, vérifiées par comparaison directe avant/après (ancienne fonction extraite de `git show HEAD`) : `/sales`, `/vendeurs`, `/utilisateurs` (MATCH), `/billing/invoice/<id>` + `/edit` avec facture riche (MATCH), `/pos/ticket/<id>/print` avec ticket+facture+branches SFEC (MATCH).
+
+### Problèmes rencontrés / décisions
+- Jinja2 supprime la newline finale (`keep_trailing_newline=False`) : ajout explicite `+ "\n"` dans `_invoice_form_page`.
+- Fixture de test polluant la base partagée `data/tconnector.db` (snapshots DIFF sur /clients, /billing…) : réinitialisation de la base avant chaque comparateur ; scripts utilitaires temporaires supprimés en fin de mission (`tests/_*.py`, `tests/_ref/`).
+- **CSS/JS externalisation (points 3-4 du brief) DIFFÉRÉE** : les snapshots de référence embarquent le CSS/JS inline (vérifié : snapshot 001 = 1 `<style>` inline, aucune référence `/static/…`). Passer à `url_for('static', …)` casserait le sha256 des 50 snapshots. `static_content.py` reste utilisé (`read_static("css/app.css")` → constante `CSS`). À traiter en ÉTAPE ultérieure avec régénération des snapshots.
+- Convention d'échappement : valeurs `_esc()`-ées côté Python → `{{ x | safe }}` (échappement unique, parité `html.escape` garantie) ; valeurs sûres (ints, `selected`/`checked`) → `{{ x }}` brut.
+
+### Reste à faire
+Rien pour l'ÉTAPE 1. Externalisation CSS/JS à planifier séparément (avec régénération des snapshots).
 
 ---
 

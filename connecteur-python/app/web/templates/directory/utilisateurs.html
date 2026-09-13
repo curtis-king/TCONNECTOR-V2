@@ -1,0 +1,164 @@
+
+<div class="card"><h2>Comptes utilisateurs</h2>
+<div class="stat-grid" style="margin-bottom:16px">
+<div class="stat"><div class="value">{{ nb }}</div><div class="label">Comptes</div></div>
+<div class="stat"><div class="value">{{ activ }}</div><div class="label">Actifs</div></div>
+<div class="stat"><div class="value">{{ admins }}</div><div class="label">Administrateurs</div></div>
+</div>
+<button class="btn btn-primary" onclick="showNewUser()">+ Nouveau compte</button>
+</div>
+<div class="card"><h2>Liste des comptes</h2>
+<table><thead><tr><th>Nom</th><th>Email</th><th>Role</th><th>Statut</th><th>Derniere connexion</th><th>Actions</th></tr></thead>
+<tbody>{rows}</tbody></table>
+<div style="font-size:12px;color:#64748b;margin-top:8px">Provider d'authentification : <b>{{ provider | safe }}</b> (sage = comptes verifies depuis la base Sage si elle expose des utilisateurs)</div>
+</div>
+<div class="card"><h2>Droits d'acces par role</h2>
+{{ matrix | safe }}
+<div style="margin-top:12px"><button class="btn btn-primary" onclick="saveMatrix()">Enregistrer les droits</button>
+<span id="matrix-status" style="margin-left:8px;font-size:12px;color:#64748b"></span></div>
+</div>
+<div class="card"><h2>Securite de la session</h2>
+<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:end">
+<div><label>Coiffre (provider)</label><select id="sec-provider"><option value="local">Local</option><option value="sage">Sage</option></select></div>
+<div><label>Tentatives max</label><input type="number" id="sec-attempts" min="1" max="20" style="width:110px"></div>
+<div><label>Verrouillage (min)</label><input type="number" id="sec-lock" min="1" max="1440" style="width:110px"></div>
+<div><label>Session max (heures)</label><input type="number" id="sec-hours" min="1" max="720" style="width:110px"></div>
+<div><label>Inactivite (min, 0=off)</label><input type="number" id="sec-idle" min="0" max="1440" style="width:110px"></div>
+<div><label><input type="checkbox" id="sec-https"> HTTPS / Secure cookie</label></div>
+<div><button class="btn btn-primary" onclick="saveSec()">Enregistrer</button></div>
+</div>
+<div style="font-size:12px;color:#64748b;margin-top:8px">Un compte est verrouille apres trop d'echecs. Redemarrez le dashboard pour appliquer <b>https_only</b>.</div>
+</div>
+<div class="card no-print"><h2>Journal d'audit</h2>
+<table><thead><tr><th>Heure</th><th>Compte</th><th>Action</th><th>Detail</th><th>IP</th></tr></thead>
+<tbody>{{ audit | safe }}</tbody></table></div>
+
+<div id="user-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:100;align-items:center;justify-content:center">
+<div class="card" style="width:440px;max-width:95vw">
+<h2 id="user-modal-title">Nouveau compte</h2>
+<form id="user-form">
+<input type="hidden" id="u-id">
+<div class="grid-2">
+<div><label>Nom</label><input type="text" id="u-nom"></div>
+<div><label>Prenom</label><input type="text" id="u-prenom"></div>
+</div>
+<div><label>Email *</label><input type="email" id="u-email" required></div>
+<div class="grid-2">
+<div><label>Role</label><select id="u-role">{{ role_opts | safe }}</select></div>
+<div><label>Actif</label><select id="u-actif"><option value="1">Oui</option><option value="0">Non</option></select></div>
+</div>
+<div><label id="u-pwd-label">Mot de passe provisoire * (min 8 char.)</label><input type="password" id="u-pwd"></div>
+<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+<button type="button" class="btn btn-sm btn-ghost" onclick="hideUserModal()">Annuler</button>
+<button type="submit" class="btn btn-primary">Enregistrer</button>
+</div>
+</form>
+</div>
+</div>
+
+<script>
+function visible(){var ids=["u-id","u-nom","u-prenom","u-email","u-role","u-actif"].concat(["u-pwd"]);for(var i=0;i<ids.length;i++){var el=document.getElementById(ids[i]);if(el)el.value="";}document.getElementById("u-pwd").style.display="";document.getElementById("u-pwd").required=true;}
+function showNewUser(){
+visible();
+document.getElementById("u-actif").value="1";
+document.getElementById("u-pwd-label").textContent="Mot de passe initial * (min 8 char.)";
+document.getElementById("user-modal-title").textContent="Nouveau compte";
+document.getElementById("user-modal").style.display="flex";
+document.getElementById("u-email").focus();
+}
+function hideUserModal(){document.getElementById("user-modal").style.display="none";}
+function editUser(id){
+api("GET","/api/utilisateurs").then(function(d){
+var u=null;for(var i=0;i<d.comptes.length;i++){if(d.comptes[i].id===id){u=d.comptes[i];break;}}
+if(!u)return;
+visible();
+document.getElementById("u-id").value=u.id;
+document.getElementById("u-nom").value=u.nom||"";
+document.getElementById("u-prenom").value=u.prenom||"";
+document.getElementById("u-email").value=u.email;
+document.getElementById("u-role").value=u.role;
+document.getElementById("u-actif").value=u.est_actif?"1":"0";
+document.getElementById("u-pwd").required=false;
+document.getElementById("u-pwd").style.display="none";
+document.getElementById("u-pwd-label").textContent="Laisser vide = ne pas changer le mot de passe";
+document.getElementById("user-modal-title").textContent="Modifier le compte";
+document.getElementById("user-modal").style.display="flex";
+});
+}
+document.getElementById("user-form").onsubmit=function(e){
+e.preventDefault();
+var id=document.getElementById("u-id").value;
+var d={
+nom:document.getElementById("u-nom").value,
+prenom:document.getElementById("u-prenom").value,
+email:document.getElementById("u-email").value,
+role:document.getElementById("u-role").value,
+est_actif:document.getElementById("u-actif").value==="1",
+password:document.getElementById("u-pwd").value
+};
+var url=id?"/api/utilisateurs/"+id:"/api/utilisateurs";
+var m=id?"PUT":"POST";
+api(m,url,d).then(function(r){
+if(r.success==false){showToast(r.error||"Erreur","err");return;}
+showToast(id?"Compte modifie":"Compte cree","ok");
+setTimeout(function(){location.reload()},900);
+});
+};
+function resetPwd(id){
+var p=prompt("Nouveau mot de passe (min 8 caracteres) :");
+if(!p)return;
+if(p.length<8){showToast("Minimum 8 caracteres","err");return;}
+api("POST","/api/utilisateurs/"+id+"/password",{password:p}).then(function(r){
+if(r.success==false){showToast(r.error||"Erreur","err");return;}
+showToast("Mot de passe reinitialise","ok");
+});
+}
+function toggleActif(id){
+api("PUT","/api/utilisateurs/"+id,{toggle_actif:true}).then(function(r){
+if(r.success==false){showToast(r.error||"Erreur","err");return;}
+showToast("Statut mis a jour","ok");setTimeout(function(){location.reload()},700);
+});
+}
+function delUser(id){
+if(!confirm("Supprimer ce compte ?"))return;
+api("DELETE","/api/utilisateurs/"+id).then(function(r){
+if(r.success==false){showToast(r.error||"Erreur","err");return;}
+showToast("Compte supprime","ok");setTimeout(function(){location.reload()},700);
+});
+}
+function saveMatrix(){
+var matrix={};
+["admin","responsable","caissiere","financiere"].forEach(function(r){matrix[r]=[];});
+document.querySelectorAll("#matrix input[type=checkbox]").forEach(function(cb){
+if(cb.checked)matrix[cb.dataset.role].push(cb.dataset.perm);
+});
+api("POST","/api/auth/permissions",{matrix:matrix}).then(function(r){
+if(r.success==false){showToast(r.error||"Erreur","err");return;}
+document.getElementById("matrix-status").textContent="Droits enregistres";
+setTimeout(function(){document.getElementById("matrix-status").textContent="";},2500);
+});
+}
+function secFill(c){
+document.getElementById("sec-provider").value=c.provider||"local";
+document.getElementById("sec-attempts").value=c.max_attempts||5;
+document.getElementById("sec-lock").value=c.lock_minutes||15;
+document.getElementById("sec-hours").value=c.session_max_age_hours||24;
+document.getElementById("sec-idle").value=c.session_idle_minutes||60;
+document.getElementById("sec-https").checked=!!c.https_only;
+}
+function saveSec(){
+var d={
+provider:document.getElementById("sec-provider").value,
+max_attempts:Number(document.getElementById("sec-attempts").value)||5,
+lock_minutes:Number(document.getElementById("sec-lock").value)||15,
+session_max_age_hours:Number(document.getElementById("sec-hours").value)||24,
+session_idle_minutes:Number(document.getElementById("sec-idle").value)||0,
+https_only:document.getElementById("sec-https").checked
+};
+api("POST","/api/auth/config",d).then(function(r){
+if(r.success==false){showToast(r.error||"Erreur","err");return;}
+showToast("Securite enregistree","ok");
+});
+}
+api("GET","/api/auth/config").then(function(d){if(d.config)secFill(d.config);});
+</script>
