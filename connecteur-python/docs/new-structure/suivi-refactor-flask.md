@@ -11,7 +11,7 @@
 | A4 | Blueprints auth + dashboard + sync_api | ✅ | 2026-09-13 10:21 |
 | A5 | Blueprint config | ✅ | 2026-09-13 10:11 |
 | A6 | Blueprints billing + pos + directory | ✅ | 2026-09-13 10:21 |
-| A7 | Factory réelle + clôture | 🔄 | — |
+| A7 | Factory réelle + clôture | ✅ | 2026-09-13 10:50 |
 
 ---
 
