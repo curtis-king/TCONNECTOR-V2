@@ -6,8 +6,8 @@
 | Agent | Mission | Statut | Fin |
 |---|---|---|---|
 | A1 | Filet de sécurité (tests + snapshots) | ✅ | 2026-09-12 20:16 |
-| A2 | Extraction Jinja (templates + static) | 🔄 | — |
-| A3 | Découpage parking de dashboard.py | ⏳ | — |
+| A2 | Extraction Jinja (templates + static) | ✅ | 2026-09-13 (CSS/JS externalisés différés → A7) |
+| A3 | Découpage parking de dashboard.py | 🔄 | — |
 | A4 | Blueprints auth + dashboard + sync_api | ⏳ | — |
 | A5 | Blueprint config | ⏳ | — |
 | A6 | Blueprints billing + pos + directory | ⏳ | — |
@@ -99,9 +99,54 @@ Rien pour l'ÉTAPE 1. Externalisation CSS/JS à planifier séparément (avec ré
 ---
 
 ## A3 — Splitter
-**Statut** : ⏳ EN ATTENTE
+**Statut** : ✅ TERMINÉ — 2026-09-13 08:23
 
-(à remplir par l'agent)
+**Mission** : ÉTAPE 3 — découpage MÉCANIQUE de `app/web/dashboard.py` en fichiers « parking » par domaine. AUCUNE logique modifiée, AUCUN blueprint créé : fonctions déplacées à l'identique (mêmes noms, mêmes corps), décorateurs retirés.
+
+### Fichiers créés (`app/web/parking/`, ~2 220 lignes de handlers)
+- `__init__.py` — docstring de présentation
+- `common.py` — helpers partagés : `_esc`, `_page`, `_base_context`, `_current_page`, constantes UI (`CSS`, `SIDEBAR_ICONS/ITEMS/PERM`, `_sidebar`, `ALERT_ZONE`, `FOOTER`)
+- `auth.py` — login, logout, `/compte/mot-de-passe`, `/api/compte/password` + helper `_login_csrf_field`
+- `dashboard_pages.py` — `/`, `/invoices`, `/pending`, `/certified`, `/certified/<id>/print`, `/sales`, `/ready`, `/health`
+- `config.py` — `/config`, `/api/config*` (12), `/api/db/*`, `/api/tables`, `/api/sfec/*` (8), `/api/tax-rates*` (2), `/api/ledger-accounts` + helper `_bool`
+- `billing.py` — `/billing`, `/billing/invoice/*` (3), `/api/invoices*` (9) + helper `_invoice_form_page`
+- `pos.py` — `/pos`, `/pos/ticket/<id>/print`, `/api/pos/*` (7), `/api/products*` (3) + helper `get_setting`
+- `directory.py` — `/clients`, `/vendeurs`, `/utilisateurs`, `/api/contacts*` (4), `/api/vendeurs*` (5), `/api/utilisateurs*` (5) + helpers `_user_rows`, `_matrix_editor`, `_audit_rows`
+- `sync_api.py` — `/api/sync*` (3), `/api/articles/sync`, `/api/connectivity`, `/api/metrics`, `/api/certified*` (2), `/api/retry-queue`, `/api/auth/*` (2), `/api/audit`, `/api/csrf`
+
+### Fichier modifié
+- `app/web/dashboard.py` : 2 423 → 461 lignes. Garde l'instance `app`, toute la sécurité (`before_request`, `after_request`, CSRF, `_login_required`, `_ACCESS_RULES`, `_MUTATE_PERMS`, `_required_permission`, `_deny`, `_is_sage_connected_user`) et les imports d'origine (namespace de délégation). En bas : 93 `app.add_url_rule(rule, endpoint, view_func, methods=[...])` via `_add_route(...)`, wrapper `_login_required(...)` appliqué exactement là où le décorateur existait (88 protégées, 5 publiques : login, logout, `/api/csrf`, `/health`, `/ready`).
+
+### Répartition routes → parking (93 = 94 rules − route statique Flask)
+| Parking | Routes |
+|---|---|
+| auth | 4 |
+| dashboard_pages | 8 |
+| config | 24 |
+| billing | 13 |
+| pos | 12 |
+| directory | 18 |
+| sync_api | 14 |
+
+### Mécanique anti-import-circulaire (décision clé)
+- Chaque parking importe explicitement flask/stdlib/moteurs + `from app.web.parking.common import …`.
+- Les noms définis dans `dashboard.py` utilisés par les handlers (`_current_identity`, `_auth_enabled`, `app`, `logger`…) sont liés **en bas de chaque parking** (`x = _dashboard.x`) : sûr dans les deux ordres d'import, corps des fonctions inchangés.
+- Un `__getattr__` (PEP 562) par module sert de filet, sans effet sur les globaux des fonctions.
+- `from app.web.parking.common import _esc` placé **en bas** de dashboard.py (l'import en tête créait un cycle : common lie `_current_identity`/`_get_csrf_token` depuis dashboard).
+
+### Vérifications (toutes vertes)
+- `python -m compileall app/web` : propre
+- `pytest` : **5 passed** (inclut test_import_all_app_modules qui importe chaque parking, et 94 routes exactes)
+- `tests/compare_snapshots.py` : **50/50 OK, 0 DIFF/ERROR**
+- Contrôle de parité maison (supprimé après usage) : les 93 routes de HEAD vs nouvelle url_map → **URL, endpoints, méthodes HTTP et wrappers `_login_required` strictement identiques**
+- Import dans l'ordre inverse (parkings d'abord) : OK
+
+### Décisions / notes pour A4-A6
+- `/api/ledger-accounts` rangé dans `config.py` (famille tax-rates/tables Sage).
+- `/api/certified*`, `/api/retry-queue`, `/api/auth/*`, `/api/audit`, `/api/csrf` rangés dans `sync_api.py` (« autres /api/* non classés ») — à réévaluer éventuellement au moment des blueprints (certified/retry-queue relèvent métier factures).
+- `_user_rows` (directory) et `_is_sage_connected_user` (dashboard) sont du code mort pré-existant — déplacé/gardé tel quel, pas supprimé.
+- Helpers mono-domaine rangés dans leur parking ; rien d'autre déplacé.
+- RIEN commité (comme demandé).
 
 ---
 

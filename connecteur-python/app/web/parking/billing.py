@@ -1,0 +1,294 @@
+"""Parking billing — Facturation : /billing* /api/invoices*.
+
+Handlers déplacés mécaniquement depuis app/web/dashboard.py (étape A3).
+AUCUN décorateur ici : les routes sont enregistrées dans dashboard.py
+via app.add_url_rule(). Corps des fonctions strictement inchangés.
+"""
+
+import json
+from app.domain import invoices as invoice_engine, pdf as pdf_generator, pos as pos_engine
+from app.storage import db as sqlite_db
+from app.sync import bidirectional as sync_bidirectional
+from app.web.auth import user_auth
+from flask import jsonify, render_template, request, send_file
+from app.web.parking.common import _esc, _page
+
+
+def __getattr__(name):
+    """Filet de sécurité : délégation vers app.web.dashboard pour tout nom
+    non résolu (uniquement effectif sur accès attribut du module). Les noms
+    réellement utilisés par les handlers sont liés explicitement en bas de
+    ce module (voir section « Liaison dashboard »)."""
+    from app.web import dashboard as _dashboard
+    return getattr(_dashboard, name)
+
+
+def billing_page():
+    stats = invoice_engine.count_invoices()
+    bi_stats = sync_bidirectional.get_sync_stats()
+
+    with sqlite_db.get_cursor() as cur:
+        cur.execute("SELECT COUNT(*) c FROM invoices WHERE sfec_statut IN ('CERTIFIE', 'DEJA_CERTIFIE')")
+        stats["certifiees"] = cur.fetchone()["c"]
+        cur.execute("SELECT COUNT(*) c FROM invoices WHERE sfec_statut = 'EN_COURS'")
+        stats["certif_en_cours"] = cur.fetchone()["c"]
+        cur.execute("SELECT COUNT(*) c FROM invoices WHERE sfec_statut = 'ERREUR'")
+        stats["certif_erreur"] = cur.fetchone()["c"]
+        cur.execute("SELECT COUNT(*) c FROM invoices WHERE statut != 'brouillon' AND sfec_statut NOT IN ('CERTIFIE', 'DEJA_CERTIFIE')")
+        stats["non_certifiees"] = cur.fetchone()["c"]
+        cur.execute("""
+            SELECT COUNT(*) c FROM invoices
+            WHERE source IN ('web', 'pos') AND synced_sage = 0 AND statut != 'brouillon'
+              AND (source != 'pos' OR (sfec_num_certif IS NOT NULL AND sfec_num_certif != ''))
+        """)
+        stats["pending_sage"] = cur.fetchone()["c"]
+        cur.execute("SELECT COALESCE(SUM(montant_restant), 0) t, COUNT(*) c FROM invoices WHERE statut != 'brouillon' AND montant_restant > 0")
+        m = cur.fetchone()
+        stats["impayes_total"] = m["t"]
+        stats["impayes_nb"] = m["c"]
+        cur.execute("""
+            SELECT COUNT(*) c, COALESCE(SUM(montant_ht), 0) ht, COALESCE(SUM(montant_tva), 0) tva,
+                   COALESCE(SUM(montant_ttc), 0) ttc
+            FROM invoices
+            WHERE statut != 'brouillon' AND strftime('%Y-%m', substr(date_facture, 1, 10)) = strftime('%Y-%m', 'now')
+        """)
+        m = cur.fetchone()
+        stats["mois_nb"] = m["c"]
+        stats["mois_ht"] = m["ht"]
+        stats["mois_tva"] = m["tva"]
+        stats["mois_ttc"] = m["ttc"]
+
+    statut_opts = ('<option value="">Tous</option><option value="brouillon">Brouillon</option>'
+                   '<option value="valide">Validee</option><option value="a_comptabiliser">A comptabiliser</option>'
+                   '<option value="a_comptabilise">A comptabilise</option>')
+    source_opts = ('<option value="">Toutes</option><option value="web">Web</option>'
+                   '<option value="pos">POS</option><option value="sage">Sage</option>')
+
+    return _page(render_template("billing/list.html",
+        total=stats.get("total", 0), brouillons=stats.get("brouillons", 0),
+        validees=stats.get("validees", 0), certifiees=stats.get("certifiees", 0),
+        ca=stats.get("ca_total", 0), pushed=bi_stats.get("pushed", 0),
+        certif_en_cours=stats.get("certif_en_cours", 0), certif_erreur=stats.get("certif_erreur", 0),
+        nb_imp=stats.get("impayes_total", 0), pending_sage=stats.get("pending_sage", 0),
+        mois_nb=stats.get("mois_nb", 0), mois_ht=stats.get("mois_ht", 0),
+        mois_tva=stats.get("mois_tva", 0), mois_ttc=stats.get("mois_ttc", 0),
+        statut_opts=statut_opts, source_opts=source_opts,
+        last_sync=bi_stats.get("last_sync", "jamais")[:19].replace("T", " ") if bi_stats.get("last_sync") else "jamais",
+    ))
+
+
+def api_invoices_list():
+    page = max(1, request.args.get("page", 1, type=int))
+    limit = max(1, min(request.args.get("limit", 25, type=int), 200))
+    res = invoice_engine.list_invoices(
+        statut=request.args.get("statut") or None,
+        source=request.args.get("source") or None,
+        search=request.args.get("search") or None,
+        date_from=request.args.get("date_from") or None,
+        date_to=request.args.get("date_to") or None,
+        limit=limit, offset=(page - 1) * limit,
+        sort_by=request.args.get("sort_by") or "date_facture",
+        sort_dir=request.args.get("sort_dir") or "DESC"
+    )
+    total = res.get("total", 0)
+    pages = max(1, (total + limit - 1) // limit)
+    return jsonify({"invoices": res.get("invoices", []), "total": total,
+                    "page": page, "pages": pages, "limit": limit})
+
+
+def invoice_new_page():
+    return _invoice_form_page(None)
+
+
+def invoice_detail_page(invoice_id):
+    inv = invoice_engine.get_invoice(invoice_id)
+    if not inv:
+        return "<h1>Facture non trouvee</h1><p><a href='/billing'>Retour</a></p>", 404
+    lignes_rows = ""
+    for l in inv.get("lignes", []):
+        lignes_rows += "<tr><td>{}</td><td style='text-align:right'>{}</td><td style='text-align:right'>{:,.2f}</td><td style='text-align:right'>{}</td><td style='text-align:right'>{:,.0f}</td><td style='text-align:right'>{:,.0f}</td><td style='text-align:right'>{:,.0f}</td></tr>".format(
+            _esc(l.get("designation", "")), l.get("quantite", 1), l.get("prix_unitaire", 0),
+            _esc("{}%".format(l.get("taux_tva", 18))), l.get("montant_ht", 0), l.get("montant_tva", 0), l.get("montant_ttc", 0)
+        )
+    ss = inv.get("sfec_statut", "")
+    sfec_html = ""
+    if ss:
+        sfb = "badge-ok" if ss in ("CERTIFIE", "DEJA_CERTIFIE") else "badge-err" if ss == "ERREUR" else "badge-warn"
+        sfec_html = '<tr><td>SFEC</td><td><span class="badge {}">{}</span></td></tr><tr><td>N Certif</td><td>{}</td></tr>'.format(sfb, _esc(ss), _esc(inv.get("sfec_num_certif", "")[:30] or "-"))
+    return _page(render_template("billing/detail.html",
+        numero=_esc(inv.get("numero", "")),
+        inv_id=inv["id"],
+        date_facture=_esc(inv.get("date_facture", "")),
+        reference=_esc(inv.get("reference", "") or "-"),
+        tiers_nom=_esc(inv.get("tiers_nom", "") or "N/A"),
+        tiers_code=_esc(inv.get("tiers_code", "") or ""),
+        statut=_esc(inv.get("statut", "")),
+        source=_esc(inv.get("source", "web")),
+        sfec_html=sfec_html,
+        notes=_esc(inv.get("notes", "") or "-"),
+        lignes_rows=lignes_rows,
+        montant_ht=inv.get("montant_ht", 0),
+        montant_tva=inv.get("montant_tva", 0),
+        montant_ttc=inv.get("montant_ttc", 0),
+    ))
+
+
+def invoice_edit_page(invoice_id):
+    inv = invoice_engine.get_invoice(invoice_id)
+    if not inv:
+        return "<h1>Facture non trouvee</h1><p><a href='/billing'>Retour</a></p>", 404
+    return _invoice_form_page(inv)
+
+
+def _invoice_form_page(inv):
+    is_edit = inv is not None
+    title = "Modifier Facture" if is_edit else "Nouvelle Facture"
+    numero = inv.get("numero", "") if is_edit else ""
+    date_facture = inv.get("date_facture", "") if is_edit else ""
+    date_echeance = inv.get("date_echeance", "") if is_edit else ""
+    reference = inv.get("reference", "") if is_edit else ""
+    tiers_code = inv.get("tiers_code", "") if is_edit else ""
+    tiers_nom = inv.get("tiers_nom", "") if is_edit else ""
+    tiers_niu = inv.get("tiers_niu", "") if is_edit else ""
+    tiers_email = inv.get("tiers_email", "") if is_edit else ""
+    tiers_telephone = inv.get("tiers_telephone", "") if is_edit else ""
+    tiers_adresse = inv.get("tiers_adresse", "") if is_edit else ""
+    tiers_type = inv.get("tiers_type", "business") if is_edit else "business"
+    notes = inv.get("notes", "") if is_edit else ""
+    statut = inv.get("statut", "brouillon") if is_edit else "brouillon"
+
+    lignes_json = json.dumps(inv.get("lignes", [])) if is_edit else "[]"
+    contacts_json = json.dumps(pos_engine.list_contacts(limit=200))
+    products_json = json.dumps(pos_engine.list_products(limit=200))
+    tax_rates_json = json.dumps(pos_engine.list_tax_rates())
+
+    return _page(render_template("billing/form.html",
+        title=title, numero=_esc(numero), date_facture=_esc(date_facture), date_echeance=_esc(date_echeance),
+        reference=_esc(reference), tiers_code=_esc(tiers_code), tiers_nom=_esc(tiers_nom),
+        tiers_niu=_esc(tiers_niu), tiers_email=_esc(tiers_email), tiers_telephone=_esc(tiers_telephone),
+        tiers_adresse=_esc(tiers_adresse), notes=_esc(notes),
+        s_brouillon="selected" if statut == "brouillon" else "",
+        s_valide="selected" if statut == "valide" else "",
+        s_acompt="selected" if statut == "a_comptabiliser" else "",
+        t_bus="selected" if tiers_type == "business" else "",
+        t_ind="selected" if tiers_type == "individual" else "",
+        t_gov="selected" if tiers_type == "government" else "",
+        t_for="selected" if tiers_type == "foreign" else "",
+        readonly="readonly" if is_edit else "",
+        contacts_json=contacts_json, products_json=products_json, tax_rates_json=tax_rates_json,
+        lignes_json=lignes_json, is_edit_js="true" if is_edit else "false",
+        inv_id_js=inv["id"] if is_edit else "null",
+        btn_text="Modifier" if is_edit else "Enregistrer"
+    ) + "\n")
+
+
+def api_list_invoices():
+    result = invoice_engine.list_invoices(
+        type_doc=request.args.get("type"),
+        statut=request.args.get("statut"),
+        source=request.args.get("source"),
+        search=request.args.get("search"),
+        date_from=request.args.get("date_from"),
+        date_to=request.args.get("date_to"),
+        limit=min(int(request.args.get("limit", 200)), 500),
+        offset=int(request.args.get("offset", 0))
+    )
+    return jsonify(result)
+
+
+def api_create_invoice():
+    data = request.get_json(silent=True) or {}
+    try:
+        result = invoice_engine.create_invoice(data)
+        who = (_current_identity() or {}).get("email", "")
+        user_auth.audit("facture.creee", "Facture {} creee".format(result.get("numero", "")), email=who)
+        return jsonify({"success": True, "id": result["id"], "numero": result["numero"]})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
+
+def api_get_invoice(invoice_id):
+    inv = invoice_engine.get_invoice(invoice_id)
+    if not inv:
+        return jsonify({"error": "Non trouvee"}), 404
+    return jsonify(inv)
+
+
+def api_update_invoice(invoice_id):
+    data = request.get_json(silent=True) or {}
+    try:
+        result = invoice_engine.update_invoice(invoice_id, data)
+        if not result:
+            return jsonify({"error": "Non trouvee"}), 404
+        who = (_current_identity() or {}).get("email", "")
+        user_auth.audit("facture.modifiee", "Facture {} modifiee".format(result.get("numero", "")), email=who)
+        return jsonify({"success": True, "id": result["id"], "numero": result["numero"]})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
+
+def api_delete_invoice(invoice_id):
+    try:
+        numero = ""
+        inv = invoice_engine.get_invoice(invoice_id)
+        if inv:
+            numero = inv.get("numero", "")
+        ok = invoice_engine.delete_invoice(invoice_id)
+        if not ok:
+            return jsonify({"error": "Non trouvee"}), 404
+        who = (_current_identity() or {}).get("email", "")
+        user_auth.audit("facture.supprimee", "Facture {} supprimee".format(numero), email=who)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
+
+def api_invoice_push_sage(invoice_id):
+    try:
+        result = sync_bidirectional.push_invoice_to_sage(invoice_id)
+        code = 200 if result.get("success") else 400
+        if result.get("success"):
+            who = (_current_identity() or {}).get("email", "")
+            user_auth.audit("facture.poussee_sage", "Facture #{} poussee vers Sage".format(invoice_id), email=who)
+        return jsonify(result), code
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+def api_invoice_stats():
+    return jsonify(invoice_engine.count_invoices())
+
+
+def api_invoice_pdf(invoice_id):
+    inv = invoice_engine.get_invoice(invoice_id)
+    if not inv:
+        return jsonify({"error": "Facture non trouvee"}), 404
+
+    if not pdf_generator.HAS_REPORTLAB:
+        return jsonify({"error": "reportlab non installe - pip install reportlab"}), 500
+
+    try:
+        pdf_bytes = pdf_generator.generate_invoice_pdf(inv)
+        if not pdf_bytes:
+            return jsonify({"error": "Erreur generation PDF"}), 500
+
+        from flask import send_file
+        buf = __import__("io").BytesIO(pdf_bytes)
+        numero = inv.get("numero", "facture").replace("/", "-")
+        return send_file(buf, as_attachment=True,
+                         download_name="{}.pdf".format(numero),
+                         mimetype="application/pdf")
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Liaison dashboard ──
+# Ces noms sont définis dans app/web/dashboard.py. On les lie ICI, en bas de
+# module : quel que soit l'ordre d'import (dashboard d'abord ou parking
+# d'abord), ils existent déjà dans le namespace de dashboard.py à ce stade —
+# aucun import circulaire possible. Les corps des fonctions ci-dessus restent
+# strictement inchangés (références globales résolues à l'exécution).
+from app.web import dashboard as _dashboard
+_current_identity = _dashboard._current_identity
+
+del _dashboard
