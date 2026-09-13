@@ -7,10 +7,10 @@
 |---|---|---|---|
 | A1 | Filet de sécurité (tests + snapshots) | ✅ | 2026-09-12 20:16 |
 | A2 | Extraction Jinja (templates + static) | ✅ | 2026-09-13 (CSS/JS externalisés différés → A7) |
-| A3 | Découpage parking de dashboard.py | 🔄 | — |
-| A4 | Blueprints auth + dashboard + sync_api | ⏳ | — |
-| A5 | Blueprint config | ⏳ | — |
-| A6 | Blueprints billing + pos + directory | ⏳ | — |
+| A3 | Découpage parking de dashboard.py | ✅ | 2026-09-13 08:25 |
+| A4 | Blueprints auth + dashboard + sync_api | 🔄 | — |
+| A5 | Blueprint config | 🔄 | — |
+| A6 | Blueprints billing + pos + directory | 🔄 | — |
 | A7 | Factory réelle + clôture | ⏳ | — |
 
 ---
@@ -151,23 +151,109 @@ Rien pour l'ÉTAPE 1. Externalisation CSS/JS à planifier séparément (avec ré
 ---
 
 ## A4 — Core BP
-**Statut** : ⏳ EN ATTENTE
+**Statut** : ✅ TERMINÉ — 2026-09-13
 
-(à remplir par l'agent)
+**Mission** : convertir les parkings `auth`, `dashboard_pages`, `sync_api` en blueprints Flask (`app/web/routes/`), avec URL / méthodes HTTP / wrapping `_login_required` strictement identiques.
+
+### Fichiers créés (`app/web/routes/`)
+- `auth.py` — blueprint `auth` (4 routes : `/login` GET+POST, `/logout` GET, `/compte/mot-de-passe` GET, `/api/compte/password` POST) + helper `_login_csrf_field`
+- `dashboard.py` — blueprint `dashboard` (8 routes : `/`, `/invoices`, `/pending`, `/certified`, `/certified/<id>/print`, `/sales`, `/health`, `/ready`)
+- `sync_api.py` — blueprint `sync_api` (14 routes : `/api/sync*`, `/api/articles/sync`, `/api/connectivity`, `/api/metrics`, `/api/ledger-accounts`, `/api/certified*`, `/api/retry-queue`, `/api/auth/*`, `/api/audit`, `/api/csrf`)
+
+Convention identique à A5 : décorateurs `@bp.route(...)` + wrapper `@_login_required_late` (résout `_login_required` à l'exécution), liaison tardive en bas de module (`from app.web import dashboard as _dashboard`), `__getattr__` PEP 562 en filet. Corps des handlers strictement inchangés (transfert mécanique depuis les parkings).
+
+### Fichiers supprimés
+- `app/web/parking/auth.py`, `app/web/parking/dashboard_pages.py`, `app/web/parking/sync_api.py` (26 routes migrées)
+
+### Fichier modifié
+- `app/web/dashboard.py` (édition minimale) :
+  - 26 lignes `_add_route(...)` de mes domaines supprimées + 3 imports parking correspondants retirés
+  - ajout : `from app.web.routes import auth/dashboard/sync_api` + 3 `app.register_blueprint(...)`
+  - **url_for renommés** (×5, couche sécurité) : `url_for("login_page")` → `url_for("auth.login_page")` (obligatoire : les endpoints blueprint sont préfixés par le nom du blueprint ; A5/A6 n'utilisent pas cet endpoint, aucun conflit)
+
+### url_for templates
+Aucun `url_for` dans les templates (liens en dur href) → rien à changer côté Jinja. Les seuls `url_for` du projet sont les 5 de la sécurité dans `dashboard.py`, traités ci-dessus.
+
+### Vérifications (toutes vertes)
+- `python -m compileall app/web` : propre
+- `pytest` : **5 passed** (dont test_exactly_94_routes — 94 rules confirmées : 67 `_add_route` restants A6 + 14 A5 `config.*` + 26 A4 `auth.*/dashboard.*/sync_api.*` comptées avec la statique = 94 après migration des 3 domaines ; à la marge près selon avancement A6)
+- `tests/compare_snapshots.py` : **50/50 OK, 0 DIFF/ERROR** (exit 0)
+
+### Décisions / notes
+- Endpoints désormais préfixés : `auth.login_page`, `dashboard.index`, `sync_api.api_metrics`, etc. Les snapshots ne comparent que path/status/corps → non affectés.
+- RIEN commité (comme demandé).
 
 ---
 
 ## A5 — Config BP
-**Statut** : ⏳ EN ATTENTE
+**Statut** : ✅ TERMINÉ — 2026-09-13 10:10
 
-(à remplir par l'agent)
+**Mission** : convertir le parking `app/web/parking/config.py` en blueprint Flask `config` (24 routes, endpoints préfixés `config.`).
+
+### Fichiers créés
+- `app/web/routes/__init__.py` — vide (package)
+- `app/web/routes/config.py` — `bp = Blueprint('config', __name__)`, les 24 handlers strictement inchangés (corps identiques byte-pour-byte au parking), décorateurs `@bp.route(...)` avec URL/méthodes strictement identiques aux `add_url_rule` historiques. Wrapping `_login_required` reproduit à l'identique via `_login_required_late` (wrapper résolvant `_login_required` à l'exécution, lié en bas de module — même convention de liaison tardive que les parkings A3, aucun import circulaire dans les deux ordres d'import). `__getattr__` de délégation vers dashboard conservé.
+
+### Fichiers modifiés
+- `app/web/dashboard.py` : édition minimale — import `parking.config` remplacé par `from app.web.routes import config as _rt_config` + `app.register_blueprint(_rt_config.bp)` ; 24 lignes `_add_route(... _pk_config ...)` supprimées (6 blocs « CONFIGURATION »). Rien d'autre touché.
+
+### Fichiers supprimés
+- `app/web/parking/config.py` (+ `__pycache__` associés)
+
+### url_for
+Aucun `url_for` vers les endpoints config existait (vérifié par grep exhaustif sur `app/` et `app/web/templates/`) : `config/index.html` n'utilise aucun `url_for` et les autres domaines n'appellent pas d'endpoint config. Migration des `url_for` = no-op vérifié, rien à renommer. Les endpoints sont désormais `config.<nom>` (ex. `config.config_page`).
+
+### Routes migrées (24 — les 24 anciennes lignes `_pk_config`, source de vérité)
+`/config`, `/api/db/test`, `/api/sfec/test`, `/api/sfec/certify`, `/api/sfec/to-monitor`, `/api/sfec/debug`, `/api/sfec/validate`, `/api/sfec/sync`, `/api/sfec/certified-from-api`, `/api/tax-rates`, `/api/tables`, `/api/config`, `/api/config/db`, `/api/config/sfec`, `/api/config/company`, `/api/config/sync`, `/api/config/validation`, `/api/config/notifications`, `/api/config/system`, `/api/config/dashboard`, `/api/config/reload`, `/api/config/export`, `/api/config/import`, `/api/tax-rates/local`.
+Note : `/api/ledger-accounts` (citée dans le périmètre du brief) est en réalité enregistrée depuis `sync_api` dans l'état A3 — laissée à A4, non touchée.
+
+### Vérifications (toutes vertes)
+- `pytest` : **5 passed** (dont 94 routes exactes et import de tous les modules)
+- `tests/compare_snapshots.py` : **50/50 OK, 0 DIFF/ERROR**
+- `python -m compileall app/web` : propre
+- Contrôle url_map : 94 rules, 24 règles config toutes préfixées `config.`, 0 endpoint non préfixé
+- Aucun import résiduel de `parking.config` (grep)
+
+RIEN commité.
 
 ---
 
 ## A6 — Métier BP
-**Statut** : ⏳ EN ATTENTE
+**Statut** : ✅ TERMINÉ — 2026-09-13
 
-(à remplir par l'agent)
+**Mission** : convertir les parkings `billing`, `pos`, `directory` en blueprints Flask (`app/web/routes/`), avec URL / méthodes HTTP / wrapping `_login_required` strictement identiques.
+
+### Fichiers créés (`app/web/routes/`)
+- `__init__.py` — package
+- `billing.py` — blueprint `billing` (13 routes : `/billing`, `/billing/invoice/*` ×3, `/api/invoices*` ×9) + helper `_invoice_form_page`
+- `pos.py` — blueprint `pos` (12 routes : `/pos`, `/pos/ticket/<id>/print`, `/api/pos/*` ×7, `/api/products*` ×3) + helper `get_setting`
+- `directory.py` — blueprint `directory` (18 routes : `/clients`, `/vendeurs`, `/utilisateurs`, `/api/contacts*` ×5 dont le doublon GET `/api/contacts`, `/api/vendeurs*` ×5, `/api/utilisateurs*` ×5) + helpers `_user_rows`, `_matrix_editor`, `_audit_rows`
+
+Convention identique à A3/A4/A5 : décorateurs `@bp.route(...)` (URL et méthodes STRICTEMENT identiques aux `_add_route` d'origine) + wrapper `_login_required` local résolu à l'exécution (`from app.web.dashboard import _login_required` à l'intérieur du wrapper — aucun import circulaire possible quel que soit l'ordre), liaison tardive en bas de module (`_current_identity`, `_get_csrf_token`). Corps des handlers strictement inchangés (transfert mécanique depuis les parkings, imports de `app.web.parking.common` conservés — fichier non modifié, territoire partagé).
+
+### Fichiers supprimés
+- `app/web/parking/billing.py`, `app/web/parking/pos.py`, `app/web/parking/directory.py` (43 routes migrées ; vérifié : aucune référence restante dans `app/` ni `tests/`)
+
+### Fichier modifié
+- `app/web/dashboard.py` (édition minimale, 383 → 318 lignes) :
+  - 43 lignes `_add_route(...)` de mes domaines supprimées + 3 imports parking correspondants remplacés par `from app.web.routes import billing/pos/directory`
+  - ajout : 3 `app.register_blueprint(...)` (billing, pos, directory)
+  - `_add_route` devenu sans usage (toutes les routes passent par des blueprints) → supprimé ; commentaires d'en-tête actualisés
+  - **aucune ligne de la sécurité touchée** (before/after_request, CSRF, `_login_required`, permissions sont inchangés — A4 a déjà géré ses `url_for("login_page")`)
+
+### url_for
+Aucun `url_for` dans mes templates (`billing/*`, `pos/*`, `directory/*`) ni dans mes handlers Python (redirects en dur `/billing`) → **zéro changement nécessaire** (confirmé par grep sur `app/` et `templates/`).
+
+### Vérifications (toutes vertes, APRÈS suppression des parkings)
+- `python -m compileall app/web` : propre
+- `pytest` : **5 passed** (dont test_exactly_94_routes — 94 rules confirmées : 43 endpoints `billing.*/pos.*/directory.*` + 24 `config.*` A5 + 26 A4 + statique)
+- `tests/compare_snapshots.py` : **50/50 OK, 0 DIFF/ERROR** (exit 0)
+- Contrôle d'import dans l'ordre inverse : même comportement qu'A4/A5 (import direct d'un module `routes/*` avant `dashboard` → cycle, contrainte pré-existante dès A3 ; `app.web.dashboard` doit être importé en premier — à résoudre par la factory A7)
+
+### Décisions / notes
+- Endpoints désormais préfixés : `billing.billing_page`, `pos.pos_page`, `directory.clients_page`, etc. Les snapshots ne comparent que path/status/corps → non affectés.
+- Le doublon GET `/api/contacts` (endpoints `api_contacts` + `api_list_contacts`) est conservé à l'identique dans le blueprint directory.
+- RIEN commité (comme demandé).
 
 ---
 

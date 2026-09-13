@@ -1,32 +1,43 @@
-"""Parking directory — Annuaire : /clients /vendeurs /utilisateurs /api/contacts* /api/vendeurs* /api/utilisateurs*.
+"""Blueprint directory — Annuaire : /clients /vendeurs /utilisateurs
+/api/contacts* /api/vendeurs* /api/utilisateurs*.
 
-Handlers déplacés mécaniquement depuis app/web/dashboard.py (étape A3).
-AUCUN décorateur ici : les routes sont enregistrées dans dashboard.py
-via app.add_url_rule(). Corps des fonctions strictement inchangés.
+Converti depuis app/web/parking/directory.py (étape A6). Corps des fonctions
+strictement inchangés ; les routes sont décorées @bp.route avec les mêmes
+URL / méthodes que l'ancien app.add_url_rule() de dashboard.py, et le
+wrapping _login_required est reproduit à l'identique.
 """
 
+import functools
 import json
+from flask import Blueprint, jsonify, render_template, request
 from app.domain import pos as pos_engine
 from app.integration.sage.database import fetch_contacts
 from app.storage import db as sqlite_db
 from app.web.auth import user_auth
-from flask import jsonify, render_template, request
 from app.web.parking.common import ALERT_ZONE, CSS, _esc, _page, _sidebar
 
-
-def __getattr__(name):
-    """Filet de sécurité : délégation vers app.web.dashboard pour tout nom
-    non résolu (uniquement effectif sur accès attribut du module). Les noms
-    réellement utilisés par les handlers sont liés explicitement en bas de
-    ce module (voir section « Liaison dashboard »)."""
-    from app.web import dashboard as _dashboard
-    return getattr(_dashboard, name)
+bp = Blueprint("directory", __name__)
 
 
+def _login_required(f):
+    """Reproduit @_login_required de app/web/dashboard.py, résolu à
+    l'exécution pour éviter tout import circulaire (identique au wrapper
+    appliqué par _add_route avant la conversion en blueprint)."""
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        from app.web.dashboard import _login_required as _lr
+        return _lr(f)(*args, **kwargs)
+    return decorated
+
+
+@bp.route("/api/contacts")
+@_login_required
 def api_contacts():
     return jsonify(fetch_contacts())
 
 
+@bp.route("/api/contacts", methods=["GET"])
+@_login_required
 def api_list_contacts():
     contacts = pos_engine.list_contacts(
         type_filter=request.args.get("type"),
@@ -36,6 +47,8 @@ def api_list_contacts():
     return jsonify({"contacts": contacts, "total": len(contacts)})
 
 
+@bp.route("/api/contacts", methods=["POST"])
+@_login_required
 def api_create_contact():
     data = request.get_json(silent=True) or {}
     try:
@@ -45,6 +58,8 @@ def api_create_contact():
         return jsonify({"success": False, "error": str(e)}), 400
 
 
+@bp.route("/vendeurs")
+@_login_required
 def vendeurs_page():
     vendeurs = pos_engine.list_vendeurs(active_only=False)
     stats = pos_engine.get_vendeur_stats()
@@ -70,16 +85,22 @@ def vendeurs_page():
     ))
 
 
+@bp.route("/api/vendeurs", methods=["GET"])
+@_login_required
 def api_list_vendeurs():
     vendeurs = pos_engine.list_vendeurs(active_only=False)
     return jsonify({"vendeurs": vendeurs, "total": len(vendeurs)})
 
 
+@bp.route("/api/vendeurs", methods=["POST"])
+@_login_required
 def api_create_vendeur():
     data = request.get_json(silent=True) or {}
     return jsonify(pos_engine.create_vendeur(data))
 
 
+@bp.route("/api/vendeurs/<int:vendeur_id>", methods=["GET"])
+@_login_required
 def api_get_vendeur(vendeur_id):
     v = pos_engine.get_vendeur(vendeur_id)
     if not v:
@@ -87,15 +108,21 @@ def api_get_vendeur(vendeur_id):
     return jsonify(v)
 
 
+@bp.route("/api/vendeurs/<int:vendeur_id>", methods=["PUT"])
+@_login_required
 def api_update_vendeur(vendeur_id):
     data = request.get_json(silent=True) or {}
     return jsonify(pos_engine.update_vendeur(vendeur_id, data))
 
 
+@bp.route("/api/vendeurs/<int:vendeur_id>", methods=["DELETE"])
+@_login_required
 def api_delete_vendeur(vendeur_id):
     return jsonify(pos_engine.update_vendeur(vendeur_id, {"est_actif": 0}))
 
 
+@bp.route("/api/contacts/<int:contact_id>", methods=["PUT"])
+@_login_required
 def api_update_contact(contact_id):
     data = request.get_json(silent=True) or {}
     try:
@@ -116,6 +143,8 @@ def api_update_contact(contact_id):
         return jsonify({"success": False, "error": str(e)}), 400
 
 
+@bp.route("/api/contacts/<int:contact_id>", methods=["DELETE"])
+@_login_required
 def api_delete_contact(contact_id):
     try:
         with sqlite_db.get_cursor() as cur:
@@ -125,6 +154,8 @@ def api_delete_contact(contact_id):
         return jsonify({"success": False, "error": str(e)}), 400
 
 
+@bp.route("/clients")
+@_login_required
 def clients_page():
     contacts = pos_engine.list_contacts(limit=500)
     client_count = 0
@@ -216,6 +247,8 @@ def _audit_rows(entries):
     return rows or '<tr><td colspan="5" style="text-align:center;color:#94a3b8">Aucune activite</td></tr>'
 
 
+@bp.route("/utilisateurs")
+@_login_required
 def utilisateurs_page():
     comptes = user_auth.list_users()
     matrix = user_auth.get_matrix()
@@ -235,10 +268,14 @@ def utilisateurs_page():
     ))
 
 
+@bp.route("/api/utilisateurs", methods=["GET"])
+@_login_required
 def api_list_comptes():
     return jsonify({"comptes": user_auth.list_users()})
 
 
+@bp.route("/api/utilisateurs", methods=["POST"])
+@_login_required
 def api_create_compte():
     data = request.get_json(silent=True) or {}
     try:
@@ -250,6 +287,8 @@ def api_create_compte():
         return jsonify({"success": False, "error": str(e)}), 400
 
 
+@bp.route("/api/utilisateurs/<int:user_id>", methods=["PUT"])
+@_login_required
 def api_update_compte(user_id):
     data = request.get_json(silent=True) or {}
     try:
@@ -271,6 +310,8 @@ def api_update_compte(user_id):
         return jsonify({"success": False, "error": str(e)}), 400
 
 
+@bp.route("/api/utilisateurs/<int:user_id>", methods=["DELETE"])
+@_login_required
 def api_delete_compte(user_id):
     try:
         user_auth.delete_user(user_id, acting_user_id=(_current_identity() or {}).get("user_id"))
@@ -279,6 +320,8 @@ def api_delete_compte(user_id):
         return jsonify({"success": False, "error": str(e)}), 400
 
 
+@bp.route("/api/utilisateurs/<int:user_id>/password", methods=["POST"])
+@_login_required
 def api_reset_compte_password(user_id):
     data = request.get_json(silent=True) or {}
     try:
@@ -291,7 +334,7 @@ def api_reset_compte_password(user_id):
 
 # ── Liaison dashboard ──
 # Ces noms sont définis dans app/web/dashboard.py. On les lie ICI, en bas de
-# module : quel que soit l'ordre d'import (dashboard d'abord ou parking
+# module : quel que soit l'ordre d'import (dashboard d'abord ou routes
 # d'abord), ils existent déjà dans le namespace de dashboard.py à ce stade —
 # aucun import circulaire possible. Les corps des fonctions ci-dessus restent
 # strictement inchangés (références globales résolues à l'exécution).

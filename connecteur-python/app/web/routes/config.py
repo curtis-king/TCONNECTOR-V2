@@ -1,14 +1,20 @@
-"""Parking config — Configuration : /config /api/config* /api/db/* /api/tables /api/sfec/* /api/tax-rates*.
+"""Blueprint config — Configuration : /config /api/config* /api/db/* /api/tables
+/api/sfec/* /api/tax-rates*.
 
-Handlers déplacés mécaniquement depuis app/web/dashboard.py (étape A3).
-AUCUN décorateur ici : les routes sont enregistrées dans dashboard.py
-via app.add_url_rule(). Corps des fonctions strictement inchangés.
+Migré depuis app/web/parking/config.py (étape A5). Les handlers sont
+strictement inchangés ; les URL / méthodes HTTP sont identiques aux
+app.add_url_rule() historiques de app/web/dashboard.py. Le wrapping
+@_login_required est reproduit à l'identique (liaison tardive en bas de
+module, même convention que les parkings — aucun import circulaire
+possible quel que soit l'ordre d'import).
 """
 
+import functools
 import json
 import os
 import tempfile
 import threading
+from flask import Blueprint, after_this_request, jsonify, render_template, request, send_file
 from app.config.manager import get_config, save_config
 from app.domain import invoices as invoice_engine, pos as pos_engine
 from app.integration.sage.database import fetch_tax_rates, list_all_tables, mark_to_monitor, ping_database
@@ -16,8 +22,10 @@ from app.integration.sfec.client import SfecClient
 from app.integration.sfec.endpoints import certify_sqlite_invoice, check_health, preview_sfec_payload, validate_sfec_payload
 from app.sync.engine import apply_config, certify_single, get_cache, sync_sfec_invoices
 from app.web.auth import user_auth
-from flask import after_this_request, jsonify, render_template, request, send_file
 from app.web.parking.common import _esc, _page
+
+
+bp = Blueprint('config', __name__)
 
 
 def __getattr__(name):
@@ -29,6 +37,18 @@ def __getattr__(name):
     return getattr(_dashboard, name)
 
 
+def _login_required_late(f):
+    """Reproduit le wrapping historique view_func = _login_required(view_func).
+    _login_required est lié en bas de module (liaison tardive) : le wrapper
+    ne le résout qu'à l'exécution, donc aucun import circulaire à l'import."""
+    @functools.wraps(f)
+    def wrapper(*args, **kwargs):
+        return _login_required(f)(*args, **kwargs)
+    return wrapper
+
+
+@bp.route("/config", methods=["GET"])
+@_login_required_late
 def config_page():
     cfg = get_config()
     db = cfg.get("db", {})
@@ -144,14 +164,20 @@ def _bool(val):
     return bool(val)
 
 
+@bp.route("/api/db/test", methods=["GET"])
+@_login_required_late
 def api_db_test():
     return jsonify(ping_database())
 
 
+@bp.route("/api/sfec/test", methods=["GET"])
+@_login_required_late
 def api_sfec_test():
     return jsonify(check_health())
 
 
+@bp.route("/api/sfec/certify", methods=["POST"])
+@_login_required_late
 def api_sfec_certify():
     data = request.get_json(silent=True) or {}
     invoice_id = data.get("invoice_id")
@@ -180,6 +206,8 @@ def api_sfec_certify():
     return jsonify(certify_single(invoice_id))
 
 
+@bp.route("/api/sfec/to-monitor", methods=["POST"])
+@_login_required_late
 def api_sfec_to_monitor():
     data = request.get_json(silent=True) or {}
     invoice_id = data.get("invoice_id")
@@ -192,6 +220,8 @@ def api_sfec_to_monitor():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@bp.route("/api/sfec/debug", methods=["POST"])
+@_login_required_late
 def api_sfec_debug():
     data = request.get_json(silent=True) or {}
     invoice_id = data.get("invoice_id")
@@ -209,6 +239,8 @@ def api_sfec_debug():
     return jsonify({"ok": True, "payload": payload, "invoice_data": {k: v for k, v in invoice.items() if k != "lignes"}})
 
 
+@bp.route("/api/sfec/validate", methods=["POST"])
+@_login_required_late
 def api_sfec_validate():
     data = request.get_json(silent=True) or {}
     invoice_id = data.get("invoice_id")
@@ -227,6 +259,8 @@ def api_sfec_validate():
     return jsonify({"ok": len(errors) == 0, "errors": errors, "payload": payload})
 
 
+@bp.route("/api/sfec/sync", methods=["POST"])
+@_login_required_late
 def api_sfec_sync():
     def _do_sync():
         sync_sfec_invoices()
@@ -235,6 +269,8 @@ def api_sfec_sync():
     return jsonify({"ok": True, "message": "Sync lancee en arriere-plan"})
 
 
+@bp.route("/api/sfec/certified-from-api", methods=["GET"])
+@_login_required_late
 def api_sfec_certified_from_api():
     try:
         client = SfecClient()
@@ -244,14 +280,20 @@ def api_sfec_certified_from_api():
         return jsonify({"error": str(e)}), 500
 
 
+@bp.route("/api/tax-rates", methods=["GET"])
+@_login_required_late
 def api_tax_rates():
     return jsonify(fetch_tax_rates())
 
 
+@bp.route("/api/tables", methods=["GET"])
+@_login_required_late
 def api_tables():
     return jsonify(list_all_tables())
 
 
+@bp.route("/api/config", methods=["GET"])
+@_login_required_late
 def api_get_config():
     cfg = get_config()
     masked = dict(cfg)
@@ -264,6 +306,8 @@ def api_get_config():
     return jsonify(masked)
 
 
+@bp.route("/api/config/db", methods=["POST"])
+@_login_required_late
 def api_config_db():
     cfg = get_config()
     db = dict(cfg.get("db", {}))
@@ -286,6 +330,8 @@ def api_config_db():
     return jsonify({"ok": True})
 
 
+@bp.route("/api/config/sfec", methods=["POST"])
+@_login_required_late
 def api_config_sfec():
     cfg = get_config()
     sfec = dict(cfg.get("sfec", {}))
@@ -301,6 +347,8 @@ def api_config_sfec():
     return jsonify({"ok": True})
 
 
+@bp.route("/api/config/company", methods=["POST"])
+@_login_required_late
 def api_config_company():
     cfg = get_config()
     company = dict(cfg.get("company", {}))
@@ -325,6 +373,8 @@ def api_config_company():
     return jsonify({"ok": True})
 
 
+@bp.route("/api/config/sync", methods=["POST"])
+@_login_required_late
 def api_config_sync():
     cfg = get_config()
     data = request.get_json(silent=True) or {}
@@ -352,6 +402,8 @@ def api_config_sync():
     return jsonify({"ok": True})
 
 
+@bp.route("/api/config/validation", methods=["POST"])
+@_login_required_late
 def api_config_validation():
     cfg = get_config()
     data = request.get_json(silent=True) or {}
@@ -379,6 +431,8 @@ def api_config_validation():
     return jsonify({"ok": True})
 
 
+@bp.route("/api/config/notifications", methods=["POST"])
+@_login_required_late
 def api_config_notifications():
     cfg = get_config()
     data = request.get_json(silent=True) or {}
@@ -404,6 +458,8 @@ def api_config_notifications():
     return jsonify({"ok": True})
 
 
+@bp.route("/api/config/system", methods=["POST"])
+@_login_required_late
 def api_config_system():
     cfg = get_config()
     data = request.get_json(silent=True) or {}
@@ -433,10 +489,14 @@ def api_config_system():
     return jsonify({"ok": True})
 
 
+@bp.route("/api/config/dashboard", methods=["POST"])
+@_login_required_late
 def api_config_dashboard():
     return api_config_system()
 
 
+@bp.route("/api/config/reload", methods=["POST"])
+@_login_required_late
 def api_config_reload():
     try:
         result = apply_config()
@@ -445,6 +505,8 @@ def api_config_reload():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@bp.route("/api/config/export", methods=["GET"])
+@_login_required_late
 def api_config_export():
     from flask import send_file, after_this_request
     import tempfile
@@ -465,6 +527,8 @@ def api_config_export():
     return send_file(tmp_path, as_attachment=True, download_name="config.json", mimetype="application/json")
 
 
+@bp.route("/api/config/import", methods=["POST"])
+@_login_required_late
 def api_config_import():
     data = request.get_json(silent=True)
     if not data or not isinstance(data, dict):
@@ -490,17 +554,20 @@ def api_config_import():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@bp.route("/api/tax-rates/local", methods=["GET"])
+@_login_required_late
 def api_local_tax_rates():
     return jsonify(pos_engine.list_tax_rates())
 
 
 # ── Liaison dashboard ──
 # Ces noms sont définis dans app/web/dashboard.py. On les lie ICI, en bas de
-# module : quel que soit l'ordre d'import (dashboard d'abord ou parking
+# module : quel que soit l'ordre d'import (dashboard d'abord ou routes
 # d'abord), ils existent déjà dans le namespace de dashboard.py à ce stade —
 # aucun import circulaire possible. Les corps des fonctions ci-dessus restent
 # strictement inchangés (références globales résolues à l'exécution).
 from app.web import dashboard as _dashboard
+_login_required = _dashboard._login_required
 _current_identity = _dashboard._current_identity
 
 del _dashboard

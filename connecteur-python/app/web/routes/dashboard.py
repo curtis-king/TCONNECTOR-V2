@@ -1,18 +1,26 @@
-"""Parking dashboard_pages — Pages tableau de bord : / /invoices /pending /certified /sales /ready /health.
+"""Blueprint dashboard — Pages tableau de bord : / /invoices /pending
+/certified /certified/<id>/print /sales /ready /health.
 
-Handlers déplacés mécaniquement depuis app/web/dashboard.py (étape A3).
-AUCUN décorateur ici : les routes sont enregistrées dans dashboard.py
-via app.add_url_rule(). Corps des fonctions strictement inchangés.
+Migré depuis app/web/parking/dashboard_pages.py (étape A4). Les handlers
+sont strictement inchangés ; les URL / méthodes HTTP sont identiques aux
+app.add_url_rule() historiques de app/web/dashboard.py. Le wrapping
+@_login_required est reproduit à l'identique (liaison tardive en bas de
+module, même convention que les parkings — aucun import circulaire
+possible quel que soit l'ordre d'import).
 """
 
+import functools
+from flask import Blueprint, jsonify, render_template, request
 from app.config.manager import get_config
 from app.domain import pos as pos_engine
 from app.integration.sfec.client import SfecClient
 from app.integration.sfec.endpoints import check_health
 from app.sync.connectivity import get_status
 from app.sync.engine import get_cache, get_metrics, get_retry_queue
-from flask import jsonify, render_template, request
 from app.web.parking.common import _esc, _page
+
+
+bp = Blueprint('dashboard', __name__)
 
 
 def __getattr__(name):
@@ -24,6 +32,18 @@ def __getattr__(name):
     return getattr(_dashboard, name)
 
 
+def _login_required_late(f):
+    """Reproduit le wrapping historique view_func = _login_required(view_func).
+    _login_required est lié en bas de module (liaison tardive) : le wrapper
+    ne le résout qu'à l'exécution, donc aucun import circulaire à l'import."""
+    @functools.wraps(f)
+    def wrapper(*args, **kwargs):
+        return _login_required(f)(*args, **kwargs)
+    return wrapper
+
+
+@bp.route("/", methods=["GET"])
+@_login_required_late
 def index():
     m = get_metrics()
     sfec = check_health()
@@ -56,6 +76,8 @@ def index():
     ))
 
 
+@bp.route("/invoices", methods=["GET"])
+@_login_required_late
 def invoices_page():
     inv_type = request.args.get("type", "sale")
     cache = get_cache()
@@ -84,6 +106,8 @@ def invoices_page():
     ))
 
 
+@bp.route("/pending", methods=["GET"])
+@_login_required_late
 def pending_page():
     cache = get_cache()
     sfec_cfg = get_config().get("sfec", {})
@@ -121,6 +145,8 @@ def pending_page():
     ))
 
 
+@bp.route("/certified", methods=["GET"])
+@_login_required_late
 def certified_page():
     cache = get_cache()
     last_sfec = cache.get("last_sfec_sync_at", "")
@@ -128,6 +154,8 @@ def certified_page():
                                  last_sfec=(last_sfec or "")[:19].replace("T", " ") or "jamais"))
 
 
+@bp.route("/certified/<invoice_id>/print", methods=["GET"])
+@_login_required_late
 def print_certified(invoice_id):
     inv = None
     try:
@@ -185,6 +213,8 @@ def print_certified(invoice_id):
     )
 
 
+@bp.route("/sales", methods=["GET"])
+@_login_required_late
 def sales_page():
     stats = pos_engine.count_tickets()
 
@@ -227,21 +257,24 @@ def sales_page():
     ))
 
 
+@bp.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
 
 
+@bp.route("/ready", methods=["GET"])
 def ready():
     return jsonify({"ready": True})
 
 
 # ── Liaison dashboard ──
 # Ces noms sont définis dans app/web/dashboard.py. On les lie ICI, en bas de
-# module : quel que soit l'ordre d'import (dashboard d'abord ou parking
+# module : quel que soit l'ordre d'import (dashboard d'abord ou routes
 # d'abord), ils existent déjà dans le namespace de dashboard.py à ce stade —
 # aucun import circulaire possible. Les corps des fonctions ci-dessus restent
 # strictement inchangés (références globales résolues à l'exécution).
 from app.web import dashboard as _dashboard
+_login_required = _dashboard._login_required
 logger = _dashboard.logger
 
 del _dashboard

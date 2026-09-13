@@ -1,28 +1,36 @@
-"""Parking pos — Point de vente : /pos* /api/products* /api/pos*.
+"""Blueprint pos — Point de vente : /pos* /api/products* /api/pos*.
 
-Handlers déplacés mécaniquement depuis app/web/dashboard.py (étape A3).
-AUCUN décorateur ici : les routes sont enregistrées dans dashboard.py
-via app.add_url_rule(). Corps des fonctions strictement inchangés.
+Converti depuis app/web/parking/pos.py (étape A6). Corps des fonctions
+strictement inchangés ; les routes sont décorées @bp.route avec les mêmes
+URL / méthodes que l'ancien app.add_url_rule() de dashboard.py, et le
+wrapping _login_required est reproduit à l'identique.
 """
 
+import functools
 import json
 import os
+from flask import Blueprint, jsonify, render_template, request, send_file, session
 from app.config.manager import get_config, save_config
 from app.domain import invoices as invoice_engine, pdf as pdf_generator, pos as pos_engine
 from app.storage import db as sqlite_db
-from flask import jsonify, render_template, request, send_file, session
 from app.web.parking.common import _esc, _page
 
-
-def __getattr__(name):
-    """Filet de sécurité : délégation vers app.web.dashboard pour tout nom
-    non résolu (uniquement effectif sur accès attribut du module). Les noms
-    réellement utilisés par les handlers sont liés explicitement en bas de
-    ce module (voir section « Liaison dashboard »)."""
-    from app.web import dashboard as _dashboard
-    return getattr(_dashboard, name)
+bp = Blueprint("pos", __name__)
 
 
+def _login_required(f):
+    """Reproduit @_login_required de app/web/dashboard.py, résolu à
+    l'exécution pour éviter tout import circulaire (identique au wrapper
+    appliqué par _add_route avant la conversion en blueprint)."""
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        from app.web.dashboard import _login_required as _lr
+        return _lr(f)(*args, **kwargs)
+    return decorated
+
+
+@bp.route("/api/products", methods=["GET"])
+@_login_required
 def api_list_products():
     products = pos_engine.list_products(
         type_filter=request.args.get("type"),
@@ -32,6 +40,8 @@ def api_list_products():
     return jsonify({"products": products, "total": len(products)})
 
 
+@bp.route("/api/products", methods=["POST"])
+@_login_required
 def api_create_product():
     data = request.get_json(silent=True) or {}
     try:
@@ -41,6 +51,8 @@ def api_create_product():
         return jsonify({"success": False, "error": str(e)}), 400
 
 
+@bp.route("/pos")
+@_login_required
 def pos_page():
     stats = pos_engine.count_tickets()
     tickets_list = pos_engine.list_tickets(limit=8)
@@ -129,6 +141,8 @@ def pos_page():
     return _page(body)
 
 
+@bp.route("/pos/ticket/<int:ticket_id>/print")
+@_login_required
 def pos_print_ticket(ticket_id):
     ticket = pos_engine.get_ticket(ticket_id)
     if not ticket:
@@ -223,6 +237,8 @@ def pos_print_ticket(ticket_id):
     )
 
 
+@bp.route("/api/pos/config", methods=["GET", "POST"])
+@_login_required
 def api_pos_config():
     cfg = get_config()
     if request.method == "GET":
@@ -239,6 +255,8 @@ def api_pos_config():
         return jsonify({"success": False, "error": str(e)}), 400
 
 
+@bp.route("/api/pos/ticket", methods=["POST"])
+@_login_required
 def api_create_ticket():
     data = request.get_json(silent=True) or {}
     try:
@@ -248,6 +266,8 @@ def api_create_ticket():
         return jsonify({"success": False, "error": str(e)}), 400
 
 
+@bp.route("/api/pos/tickets")
+@_login_required
 def api_list_tickets():
     result = pos_engine.list_tickets(
         date_from=request.args.get("date_from"),
@@ -259,6 +279,8 @@ def api_list_tickets():
     return jsonify(result)
 
 
+@bp.route("/api/pos/ticket/<int:ticket_id>")
+@_login_required
 def api_get_ticket(ticket_id):
     ticket = pos_engine.get_ticket(ticket_id)
     if not ticket:
@@ -266,10 +288,14 @@ def api_get_ticket(ticket_id):
     return jsonify(ticket)
 
 
+@bp.route("/api/pos/stats")
+@_login_required
 def api_pos_stats():
     return jsonify(pos_engine.count_tickets())
 
 
+@bp.route("/api/pos/products/search")
+@_login_required
 def api_search_products():
     q = request.args.get("q", "")
     return jsonify(pos_engine.search_products(q, limit=20))
@@ -282,6 +308,8 @@ def get_setting(key, default=""):
         return default
 
 
+@bp.route("/api/products/barcode")
+@_login_required
 def api_find_barcode():
     code = request.args.get("code", "").strip()
     if not code:
@@ -292,6 +320,8 @@ def api_find_barcode():
     return jsonify({"found": False})
 
 
+@bp.route("/api/pos/ticket/<int:ticket_id>/pdf")
+@_login_required
 def api_ticket_pdf(ticket_id):
     ticket = pos_engine.get_ticket(ticket_id)
     if not ticket:

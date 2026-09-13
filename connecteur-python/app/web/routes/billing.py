@@ -1,28 +1,36 @@
-"""Parking billing — Facturation : /billing* /api/invoices*.
+"""Blueprint billing — Facturation : /billing* /api/invoices*.
 
-Handlers déplacés mécaniquement depuis app/web/dashboard.py (étape A3).
-AUCUN décorateur ici : les routes sont enregistrées dans dashboard.py
-via app.add_url_rule(). Corps des fonctions strictement inchangés.
+Converti depuis app/web/parking/billing.py (étape A6). Corps des fonctions
+strictement inchangés ; les routes sont décorées @bp.route avec les mêmes
+URL / méthodes que l'ancien app.add_url_rule() de dashboard.py, et le
+wrapping _login_required est reproduit à l'identique.
 """
 
+import functools
 import json
+from flask import Blueprint, jsonify, render_template, request, send_file
 from app.domain import invoices as invoice_engine, pdf as pdf_generator, pos as pos_engine
 from app.storage import db as sqlite_db
 from app.sync import bidirectional as sync_bidirectional
 from app.web.auth import user_auth
-from flask import jsonify, render_template, request, send_file
 from app.web.parking.common import _esc, _page
 
-
-def __getattr__(name):
-    """Filet de sécurité : délégation vers app.web.dashboard pour tout nom
-    non résolu (uniquement effectif sur accès attribut du module). Les noms
-    réellement utilisés par les handlers sont liés explicitement en bas de
-    ce module (voir section « Liaison dashboard »)."""
-    from app.web import dashboard as _dashboard
-    return getattr(_dashboard, name)
+bp = Blueprint("billing", __name__)
 
 
+def _login_required(f):
+    """Reproduit @_login_required de app/web/dashboard.py, résolu à
+    l'exécution pour éviter tout import circulaire (identique au wrapper
+    appliqué par _add_route avant la conversion en blueprint)."""
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        from app.web.dashboard import _login_required as _lr
+        return _lr(f)(*args, **kwargs)
+    return decorated
+
+
+@bp.route("/billing")
+@_login_required
 def billing_page():
     stats = invoice_engine.count_invoices()
     bi_stats = sync_bidirectional.get_sync_stats()
@@ -77,6 +85,8 @@ def billing_page():
     ))
 
 
+@bp.route("/api/invoices/list")
+@_login_required
 def api_invoices_list():
     page = max(1, request.args.get("page", 1, type=int))
     limit = max(1, min(request.args.get("limit", 25, type=int), 200))
@@ -96,10 +106,14 @@ def api_invoices_list():
                     "page": page, "pages": pages, "limit": limit})
 
 
+@bp.route("/billing/invoice/new")
+@_login_required
 def invoice_new_page():
     return _invoice_form_page(None)
 
 
+@bp.route("/billing/invoice/<int:invoice_id>")
+@_login_required
 def invoice_detail_page(invoice_id):
     inv = invoice_engine.get_invoice(invoice_id)
     if not inv:
@@ -133,6 +147,8 @@ def invoice_detail_page(invoice_id):
     ))
 
 
+@bp.route("/billing/invoice/<int:invoice_id>/edit")
+@_login_required
 def invoice_edit_page(invoice_id):
     inv = invoice_engine.get_invoice(invoice_id)
     if not inv:
@@ -182,6 +198,8 @@ def _invoice_form_page(inv):
     ) + "\n")
 
 
+@bp.route("/api/invoices", methods=["GET"])
+@_login_required
 def api_list_invoices():
     result = invoice_engine.list_invoices(
         type_doc=request.args.get("type"),
@@ -196,6 +214,8 @@ def api_list_invoices():
     return jsonify(result)
 
 
+@bp.route("/api/invoices", methods=["POST"])
+@_login_required
 def api_create_invoice():
     data = request.get_json(silent=True) or {}
     try:
@@ -207,6 +227,8 @@ def api_create_invoice():
         return jsonify({"success": False, "error": str(e)}), 400
 
 
+@bp.route("/api/invoices/<int:invoice_id>", methods=["GET"])
+@_login_required
 def api_get_invoice(invoice_id):
     inv = invoice_engine.get_invoice(invoice_id)
     if not inv:
@@ -214,6 +236,8 @@ def api_get_invoice(invoice_id):
     return jsonify(inv)
 
 
+@bp.route("/api/invoices/<int:invoice_id>", methods=["PUT"])
+@_login_required
 def api_update_invoice(invoice_id):
     data = request.get_json(silent=True) or {}
     try:
@@ -227,6 +251,8 @@ def api_update_invoice(invoice_id):
         return jsonify({"success": False, "error": str(e)}), 400
 
 
+@bp.route("/api/invoices/<int:invoice_id>", methods=["DELETE"])
+@_login_required
 def api_delete_invoice(invoice_id):
     try:
         numero = ""
@@ -243,6 +269,8 @@ def api_delete_invoice(invoice_id):
         return jsonify({"success": False, "error": str(e)}), 400
 
 
+@bp.route("/api/invoices/<int:invoice_id>/push-sage", methods=["POST"])
+@_login_required
 def api_invoice_push_sage(invoice_id):
     try:
         result = sync_bidirectional.push_invoice_to_sage(invoice_id)
@@ -255,10 +283,14 @@ def api_invoice_push_sage(invoice_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@bp.route("/api/invoices/stats")
+@_login_required
 def api_invoice_stats():
     return jsonify(invoice_engine.count_invoices())
 
 
+@bp.route("/api/invoices/<int:invoice_id>/pdf")
+@_login_required
 def api_invoice_pdf(invoice_id):
     inv = invoice_engine.get_invoice(invoice_id)
     if not inv:
@@ -284,7 +316,7 @@ def api_invoice_pdf(invoice_id):
 
 # ── Liaison dashboard ──
 # Ces noms sont définis dans app/web/dashboard.py. On les lie ICI, en bas de
-# module : quel que soit l'ordre d'import (dashboard d'abord ou parking
+# module : quel que soit l'ordre d'import (dashboard d'abord ou routes
 # d'abord), ils existent déjà dans le namespace de dashboard.py à ce stade —
 # aucun import circulaire possible. Les corps des fonctions ci-dessus restent
 # strictement inchangés (références globales résolues à l'exécution).
