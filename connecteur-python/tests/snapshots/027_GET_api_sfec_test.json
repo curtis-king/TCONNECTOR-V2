@@ -1,6 +1,6 @@
 {
   "file": "027_GET_api_sfec_test.json",
-  "endpoint": "api_sfec_test",
+  "endpoint": "config.api_sfec_test",
   "methods": [
     "GET"
   ],

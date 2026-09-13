@@ -1,6 +1,6 @@
 {
   "file": "015_GET_api_invoices_list.json",
-  "endpoint": "api_invoices_list",
+  "endpoint": "billing.api_invoices_list",
   "methods": [
     "GET"
   ],

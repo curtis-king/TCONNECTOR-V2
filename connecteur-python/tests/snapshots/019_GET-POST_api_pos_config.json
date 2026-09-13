@@ -1,6 +1,6 @@
 {
   "file": "019_GET-POST_api_pos_config.json",
-  "endpoint": "api_pos_config",
+  "endpoint": "pos.api_pos_config",
   "methods": [
     "GET",
     "POST"

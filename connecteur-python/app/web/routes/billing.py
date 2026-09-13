@@ -13,20 +13,12 @@ from app.domain import invoices as invoice_engine, pdf as pdf_generator, pos as 
 from app.storage import db as sqlite_db
 from app.sync import bidirectional as sync_bidirectional
 from app.web.auth import user_auth
-from app.web.parking.common import _esc, _page
+from app.web.auth.security import _current_identity, _login_required
+from app.web.common import _esc, _page
 
 bp = Blueprint("billing", __name__)
 
 
-def _login_required(f):
-    """Reproduit @_login_required de app/web/dashboard.py, résolu à
-    l'exécution pour éviter tout import circulaire (identique au wrapper
-    appliqué par _add_route avant la conversion en blueprint)."""
-    @functools.wraps(f)
-    def decorated(*args, **kwargs):
-        from app.web.dashboard import _login_required as _lr
-        return _lr(f)(*args, **kwargs)
-    return decorated
 
 
 @bp.route("/billing")
@@ -314,13 +306,4 @@ def api_invoice_pdf(invoice_id):
         return jsonify({"error": str(e)}), 500
 
 
-# ── Liaison dashboard ──
-# Ces noms sont définis dans app/web/dashboard.py. On les lie ICI, en bas de
-# module : quel que soit l'ordre d'import (dashboard d'abord ou routes
-# d'abord), ils existent déjà dans le namespace de dashboard.py à ce stade —
-# aucun import circulaire possible. Les corps des fonctions ci-dessus restent
-# strictement inchangés (références globales résolues à l'exécution).
-from app.web import dashboard as _dashboard
-_current_identity = _dashboard._current_identity
 
-del _dashboard

@@ -73,8 +73,9 @@ class TestImports:
         assert not failures, "Modules en échec :\n" + "\n".join(failures)
 
     def test_app_instance_importable(self):
-        from app.web.dashboard import app
+        from app.web.app import create_app
 
+        app = create_app()
         assert app is not None
         assert app.name
 

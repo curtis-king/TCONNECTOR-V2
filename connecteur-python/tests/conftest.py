@@ -46,13 +46,13 @@ def _init_sqlite():
 def app_instance():
     """Instance Flask globale (import side-effect, état actuel du code)."""
     _init_sqlite()
-    from app.web.dashboard import app
+    from app.web.app import create_app
 
     # NOTE : TESTING=False volontairement — on veut le comportement PRODUCTION
     # (Flask renvoie une vraie réponse 500 au lieu de propager l'exception),
     # ce qui permet de capturer dans les snapshots le comportement actuel,
     # y compris les 500 pré-existants (bug connu fetch_contacts, par ex.).
-    return app
+    return create_app()
 
 
 @pytest.fixture(scope="session")

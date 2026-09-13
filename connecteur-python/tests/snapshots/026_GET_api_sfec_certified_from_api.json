@@ -1,6 +1,6 @@
 {
   "file": "026_GET_api_sfec_certified_from_api.json",
-  "endpoint": "api_sfec_certified_from_api",
+  "endpoint": "config.api_sfec_certified_from_api",
   "methods": [
     "GET"
   ],

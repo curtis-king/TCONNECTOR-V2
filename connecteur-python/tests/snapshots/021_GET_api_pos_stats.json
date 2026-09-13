@@ -1,6 +1,6 @@
 {
   "file": "021_GET_api_pos_stats.json",
-  "endpoint": "api_pos_stats",
+  "endpoint": "pos.api_pos_stats",
   "methods": [
     "GET"
   ],

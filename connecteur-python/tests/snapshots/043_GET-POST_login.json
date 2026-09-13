@@ -1,6 +1,6 @@
 {
-  "file": "042_GET-POST_login.json",
-  "endpoint": "login_page",
+  "file": "043_GET-POST_login.json",
+  "endpoint": "auth.login_page",
   "methods": [
     "GET",
     "POST"

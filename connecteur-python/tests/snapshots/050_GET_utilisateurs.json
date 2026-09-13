@@ -1,10 +1,10 @@
 {
-  "file": "047_GET_sales.json",
-  "endpoint": "sales_page",
+  "file": "050_GET_utilisateurs.json",
+  "endpoint": "directory.utilisateurs_page",
   "methods": [
     "GET"
   ],
-  "path": "/sales",
+  "path": "/utilisateurs",
   "status_code": 302,
   "content_type": "text/html; charset=utf-8",
   "encoding": "text",

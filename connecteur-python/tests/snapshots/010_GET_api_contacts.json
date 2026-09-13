@@ -1,6 +1,6 @@
 {
   "file": "010_GET_api_contacts.json",
-  "endpoint": "api_contacts",
+  "endpoint": "directory.api_contacts",
   "methods": [
     "GET"
   ],

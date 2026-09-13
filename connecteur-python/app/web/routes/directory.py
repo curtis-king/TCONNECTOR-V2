@@ -14,20 +14,12 @@ from app.domain import pos as pos_engine
 from app.integration.sage.database import fetch_contacts
 from app.storage import db as sqlite_db
 from app.web.auth import user_auth
-from app.web.parking.common import ALERT_ZONE, CSS, _esc, _page, _sidebar
+from app.web.common import ALERT_ZONE, _esc, _page, _sidebar, _static_tags
+from app.web.auth.security import _current_identity, _get_csrf_token, _login_required
 
 bp = Blueprint("directory", __name__)
 
 
-def _login_required(f):
-    """Reproduit @_login_required de app/web/dashboard.py, résolu à
-    l'exécution pour éviter tout import circulaire (identique au wrapper
-    appliqué par _add_route avant la conversion en blueprint)."""
-    @functools.wraps(f)
-    def decorated(*args, **kwargs):
-        from app.web.dashboard import _login_required as _lr
-        return _lr(f)(*args, **kwargs)
-    return decorated
 
 
 @bp.route("/api/contacts")
@@ -187,7 +179,7 @@ def clients_page():
         )
 
     return render_template("directory/clients.html",
-        css=CSS, nav=_sidebar(request.path),
+        static_tags=_static_tags(), nav=_sidebar(request.path),
         total=len(contacts), nb_clients=client_count, nb_fournis=fourni_count, nb_total=len(contacts),
         rows=rows,
         contacts_json=json.dumps(contacts),
@@ -332,14 +324,4 @@ def api_reset_compte_password(user_id):
         return jsonify({"success": False, "error": str(e)}), 400
 
 
-# ── Liaison dashboard ──
-# Ces noms sont définis dans app/web/dashboard.py. On les lie ICI, en bas de
-# module : quel que soit l'ordre d'import (dashboard d'abord ou routes
-# d'abord), ils existent déjà dans le namespace de dashboard.py à ce stade —
-# aucun import circulaire possible. Les corps des fonctions ci-dessus restent
-# strictement inchangés (références globales résolues à l'exécution).
-from app.web import dashboard as _dashboard
-_current_identity = _dashboard._current_identity
-_get_csrf_token = _dashboard._get_csrf_token
 
-del _dashboard

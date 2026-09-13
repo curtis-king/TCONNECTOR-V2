@@ -16,10 +16,6 @@
     "reason": "aucune donnée en base SQLite pour le(s) paramètre(s) ticket_id"
   },
   {
-    "path": "/api/vendeurs/<int:vendeur_id>",
-    "reason": "aucune donnée en base SQLite pour le(s) paramètre(s) vendeur_id"
-  },
-  {
     "path": "/billing/invoice/<int:invoice_id>",
     "reason": "aucune donnée en base SQLite pour le(s) paramètre(s) invoice_id"
   },

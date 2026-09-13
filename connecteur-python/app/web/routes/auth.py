@@ -3,41 +3,22 @@
 
 Migré depuis app/web/parking/auth.py (étape A4). Les handlers sont
 strictement inchangés ; les URL / méthodes HTTP sont identiques aux
-app.add_url_rule() historiques de app/web/dashboard.py. Le wrapping
-@_login_required est reproduit à l'identique (liaison tardive en bas de
-module, même convention que les parkings — aucun import circulaire
-possible quel que soit l'ordre d'import).
+app.add_url_rule() historiques de app/web/dashboard.py. Le wrapping @_login_required est reproduit à l'identique, désormais via
+un import direct de app.web.auth.security (aucun import circulaire : la
+sécurité ne dépend d'aucun module de routes).
 """
 
 import functools
 import secrets
 from datetime import timedelta
-from flask import Blueprint, jsonify, redirect, render_template, request, session
+from flask import Blueprint, current_app, jsonify, redirect, render_template, request, session
 from app.storage import db as sqlite_db
 from app.web.auth import user_auth
-from app.web.parking.common import _esc, _page
+from app.web.auth.security import _login_required, _apply_session_security, _auth_enabled, _csrf_valid, _current_identity, _get_csrf_token
+from app.web.common import _esc, _page
 
 
 bp = Blueprint('auth', __name__)
-
-
-def __getattr__(name):
-    """Filet de sécurité : délégation vers app.web.dashboard pour tout nom
-    non résolu (uniquement effectif sur accès attribut du module). Les noms
-    réellement utilisés par les handlers sont liés explicitement en bas de
-    ce module (voir section « Liaison dashboard »)."""
-    from app.web import dashboard as _dashboard
-    return getattr(_dashboard, name)
-
-
-def _login_required_late(f):
-    """Reproduit le wrapping historique view_func = _login_required(view_func).
-    _login_required est lié en bas de module (liaison tardive) : le wrapper
-    ne le résout qu'à l'exécution, donc aucun import circulaire à l'import."""
-    @functools.wraps(f)
-    def wrapper(*args, **kwargs):
-        return _login_required(f)(*args, **kwargs)
-    return wrapper
 
 
 def _login_csrf_field():
@@ -83,7 +64,7 @@ def login_page():
     import time as _time
     session["_last_activity"] = _time.time()
     session.permanent = True
-    app.permanent_session_lifetime = timedelta(hours=user_auth.get_auth_config().get("session_max_age_hours", 24))
+    current_app.permanent_session_lifetime = timedelta(hours=user_auth.get_auth_config().get("session_max_age_hours", 24))
     session["_csrf"] = secrets.token_urlsafe(32)
 
     email_clean = user["email"]
@@ -107,13 +88,13 @@ def logout():
 
 
 @bp.route("/compte/mot-de-passe", methods=["GET"])
-@_login_required_late
+@_login_required
 def compte_password_page():
     return _page(render_template("auth/password.html"))
 
 
 @bp.route("/api/compte/password", methods=["POST"])
-@_login_required_late
+@_login_required
 def api_compte_password():
     ident = _current_identity() or {}
     data = request.get_json(silent=True) or {}
@@ -127,19 +108,4 @@ def api_compte_password():
         return jsonify({"success": False, "error": str(e)}), 400
 
 
-# ── Liaison dashboard ──
-# Ces noms sont définis dans app/web/dashboard.py. On les lie ICI, en bas de
-# module : quel que soit l'ordre d'import (dashboard d'abord ou routes
-# d'abord), ils existent déjà dans le namespace de dashboard.py à ce stade —
-# aucun import circulaire possible. Les corps des fonctions ci-dessus restent
-# strictement inchangés (références globales résolues à l'exécution).
-from app.web import dashboard as _dashboard
-_login_required = _dashboard._login_required
-_apply_session_security = _dashboard._apply_session_security
-_auth_enabled = _dashboard._auth_enabled
-_csrf_valid = _dashboard._csrf_valid
-_current_identity = _dashboard._current_identity
-_get_csrf_token = _dashboard._get_csrf_token
-app = _dashboard.app
 
-del _dashboard

@@ -13,20 +13,12 @@ from flask import Blueprint, jsonify, render_template, request, send_file, sessi
 from app.config.manager import get_config, save_config
 from app.domain import invoices as invoice_engine, pdf as pdf_generator, pos as pos_engine
 from app.storage import db as sqlite_db
-from app.web.parking.common import _esc, _page
+from app.web.common import _esc, _page
+from app.web.auth.security import _login_required
 
 bp = Blueprint("pos", __name__)
 
 
-def _login_required(f):
-    """Reproduit @_login_required de app/web/dashboard.py, résolu à
-    l'exécution pour éviter tout import circulaire (identique au wrapper
-    appliqué par _add_route avant la conversion en blueprint)."""
-    @functools.wraps(f)
-    def decorated(*args, **kwargs):
-        from app.web.dashboard import _login_required as _lr
-        return _lr(f)(*args, **kwargs)
-    return decorated
 
 
 @bp.route("/api/products", methods=["GET"])

@@ -3,10 +3,9 @@
 
 Migré depuis app/web/parking/config.py (étape A5). Les handlers sont
 strictement inchangés ; les URL / méthodes HTTP sont identiques aux
-app.add_url_rule() historiques de app/web/dashboard.py. Le wrapping
-@_login_required est reproduit à l'identique (liaison tardive en bas de
-module, même convention que les parkings — aucun import circulaire
-possible quel que soit l'ordre d'import).
+app.add_url_rule() historiques de app/web/dashboard.py. Le wrapping @_login_required est reproduit à l'identique, désormais via
+un import direct de app.web.auth.security (aucun import circulaire : la
+sécurité ne dépend d'aucun module de routes).
 """
 
 import functools
@@ -22,33 +21,15 @@ from app.integration.sfec.client import SfecClient
 from app.integration.sfec.endpoints import certify_sqlite_invoice, check_health, preview_sfec_payload, validate_sfec_payload
 from app.sync.engine import apply_config, certify_single, get_cache, sync_sfec_invoices
 from app.web.auth import user_auth
-from app.web.parking.common import _esc, _page
+from app.web.auth.security import _login_required, _current_identity
+from app.web.common import _esc, _page
 
 
 bp = Blueprint('config', __name__)
 
 
-def __getattr__(name):
-    """Filet de sécurité : délégation vers app.web.dashboard pour tout nom
-    non résolu (uniquement effectif sur accès attribut du module). Les noms
-    réellement utilisés par les handlers sont liés explicitement en bas de
-    ce module (voir section « Liaison dashboard »)."""
-    from app.web import dashboard as _dashboard
-    return getattr(_dashboard, name)
-
-
-def _login_required_late(f):
-    """Reproduit le wrapping historique view_func = _login_required(view_func).
-    _login_required est lié en bas de module (liaison tardive) : le wrapper
-    ne le résout qu'à l'exécution, donc aucun import circulaire à l'import."""
-    @functools.wraps(f)
-    def wrapper(*args, **kwargs):
-        return _login_required(f)(*args, **kwargs)
-    return wrapper
-
-
 @bp.route("/config", methods=["GET"])
-@_login_required_late
+@_login_required
 def config_page():
     cfg = get_config()
     db = cfg.get("db", {})
@@ -165,19 +146,19 @@ def _bool(val):
 
 
 @bp.route("/api/db/test", methods=["GET"])
-@_login_required_late
+@_login_required
 def api_db_test():
     return jsonify(ping_database())
 
 
 @bp.route("/api/sfec/test", methods=["GET"])
-@_login_required_late
+@_login_required
 def api_sfec_test():
     return jsonify(check_health())
 
 
 @bp.route("/api/sfec/certify", methods=["POST"])
-@_login_required_late
+@_login_required
 def api_sfec_certify():
     data = request.get_json(silent=True) or {}
     invoice_id = data.get("invoice_id")
@@ -207,7 +188,7 @@ def api_sfec_certify():
 
 
 @bp.route("/api/sfec/to-monitor", methods=["POST"])
-@_login_required_late
+@_login_required
 def api_sfec_to_monitor():
     data = request.get_json(silent=True) or {}
     invoice_id = data.get("invoice_id")
@@ -221,7 +202,7 @@ def api_sfec_to_monitor():
 
 
 @bp.route("/api/sfec/debug", methods=["POST"])
-@_login_required_late
+@_login_required
 def api_sfec_debug():
     data = request.get_json(silent=True) or {}
     invoice_id = data.get("invoice_id")
@@ -240,7 +221,7 @@ def api_sfec_debug():
 
 
 @bp.route("/api/sfec/validate", methods=["POST"])
-@_login_required_late
+@_login_required
 def api_sfec_validate():
     data = request.get_json(silent=True) or {}
     invoice_id = data.get("invoice_id")
@@ -260,7 +241,7 @@ def api_sfec_validate():
 
 
 @bp.route("/api/sfec/sync", methods=["POST"])
-@_login_required_late
+@_login_required
 def api_sfec_sync():
     def _do_sync():
         sync_sfec_invoices()
@@ -270,7 +251,7 @@ def api_sfec_sync():
 
 
 @bp.route("/api/sfec/certified-from-api", methods=["GET"])
-@_login_required_late
+@_login_required
 def api_sfec_certified_from_api():
     try:
         client = SfecClient()
@@ -281,19 +262,19 @@ def api_sfec_certified_from_api():
 
 
 @bp.route("/api/tax-rates", methods=["GET"])
-@_login_required_late
+@_login_required
 def api_tax_rates():
     return jsonify(fetch_tax_rates())
 
 
 @bp.route("/api/tables", methods=["GET"])
-@_login_required_late
+@_login_required
 def api_tables():
     return jsonify(list_all_tables())
 
 
 @bp.route("/api/config", methods=["GET"])
-@_login_required_late
+@_login_required
 def api_get_config():
     cfg = get_config()
     masked = dict(cfg)
@@ -307,7 +288,7 @@ def api_get_config():
 
 
 @bp.route("/api/config/db", methods=["POST"])
-@_login_required_late
+@_login_required
 def api_config_db():
     cfg = get_config()
     db = dict(cfg.get("db", {}))
@@ -331,7 +312,7 @@ def api_config_db():
 
 
 @bp.route("/api/config/sfec", methods=["POST"])
-@_login_required_late
+@_login_required
 def api_config_sfec():
     cfg = get_config()
     sfec = dict(cfg.get("sfec", {}))
@@ -348,7 +329,7 @@ def api_config_sfec():
 
 
 @bp.route("/api/config/company", methods=["POST"])
-@_login_required_late
+@_login_required
 def api_config_company():
     cfg = get_config()
     company = dict(cfg.get("company", {}))
@@ -374,7 +355,7 @@ def api_config_company():
 
 
 @bp.route("/api/config/sync", methods=["POST"])
-@_login_required_late
+@_login_required
 def api_config_sync():
     cfg = get_config()
     data = request.get_json(silent=True) or {}
@@ -403,7 +384,7 @@ def api_config_sync():
 
 
 @bp.route("/api/config/validation", methods=["POST"])
-@_login_required_late
+@_login_required
 def api_config_validation():
     cfg = get_config()
     data = request.get_json(silent=True) or {}
@@ -432,7 +413,7 @@ def api_config_validation():
 
 
 @bp.route("/api/config/notifications", methods=["POST"])
-@_login_required_late
+@_login_required
 def api_config_notifications():
     cfg = get_config()
     data = request.get_json(silent=True) or {}
@@ -459,7 +440,7 @@ def api_config_notifications():
 
 
 @bp.route("/api/config/system", methods=["POST"])
-@_login_required_late
+@_login_required
 def api_config_system():
     cfg = get_config()
     data = request.get_json(silent=True) or {}
@@ -490,13 +471,13 @@ def api_config_system():
 
 
 @bp.route("/api/config/dashboard", methods=["POST"])
-@_login_required_late
+@_login_required
 def api_config_dashboard():
     return api_config_system()
 
 
 @bp.route("/api/config/reload", methods=["POST"])
-@_login_required_late
+@_login_required
 def api_config_reload():
     try:
         result = apply_config()
@@ -506,7 +487,7 @@ def api_config_reload():
 
 
 @bp.route("/api/config/export", methods=["GET"])
-@_login_required_late
+@_login_required
 def api_config_export():
     from flask import send_file, after_this_request
     import tempfile
@@ -528,7 +509,7 @@ def api_config_export():
 
 
 @bp.route("/api/config/import", methods=["POST"])
-@_login_required_late
+@_login_required
 def api_config_import():
     data = request.get_json(silent=True)
     if not data or not isinstance(data, dict):
@@ -555,19 +536,9 @@ def api_config_import():
 
 
 @bp.route("/api/tax-rates/local", methods=["GET"])
-@_login_required_late
+@_login_required
 def api_local_tax_rates():
     return jsonify(pos_engine.list_tax_rates())
 
 
-# ── Liaison dashboard ──
-# Ces noms sont définis dans app/web/dashboard.py. On les lie ICI, en bas de
-# module : quel que soit l'ordre d'import (dashboard d'abord ou routes
-# d'abord), ils existent déjà dans le namespace de dashboard.py à ce stade —
-# aucun import circulaire possible. Les corps des fonctions ci-dessus restent
-# strictement inchangés (références globales résolues à l'exécution).
-from app.web import dashboard as _dashboard
-_login_required = _dashboard._login_required
-_current_identity = _dashboard._current_identity
 
-del _dashboard

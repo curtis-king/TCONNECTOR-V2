@@ -1,6 +1,6 @@
 {
   "file": "025_GET_api_retry_queue.json",
-  "endpoint": "api_retry_queue",
+  "endpoint": "sync_api.api_retry_queue",
   "methods": [
     "GET"
   ],

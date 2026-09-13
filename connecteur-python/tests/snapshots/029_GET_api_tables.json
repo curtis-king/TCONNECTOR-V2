@@ -1,6 +1,6 @@
 {
   "file": "029_GET_api_tables.json",
-  "endpoint": "api_tables",
+  "endpoint": "config.api_tables",
   "methods": [
     "GET"
   ],

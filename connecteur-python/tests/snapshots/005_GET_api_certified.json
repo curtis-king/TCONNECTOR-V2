@@ -1,6 +1,6 @@
 {
   "file": "005_GET_api_certified.json",
-  "endpoint": "api_certified",
+  "endpoint": "sync_api.api_certified",
   "methods": [
     "GET"
   ],

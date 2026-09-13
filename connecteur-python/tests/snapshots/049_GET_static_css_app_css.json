@@ -1,5 +1,5 @@
 {
-  "file": "048_GET_static_css_app_css.json",
+  "file": "049_GET_static_css_app_css.json",
   "endpoint": "static",
   "methods": [
     "GET"

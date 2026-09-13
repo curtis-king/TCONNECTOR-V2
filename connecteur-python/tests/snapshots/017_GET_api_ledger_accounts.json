@@ -1,6 +1,6 @@
 {
   "file": "017_GET_api_ledger_accounts.json",
-  "endpoint": "api_ledger_accounts",
+  "endpoint": "sync_api.api_ledger_accounts",
   "methods": [
     "GET"
   ],

@@ -1,6 +1,6 @@
 {
   "file": "002_GET_api_audit.json",
-  "endpoint": "api_audit",
+  "endpoint": "sync_api.api_audit",
   "methods": [
     "GET"
   ],
@@ -8,6 +8,6 @@
   "status_code": 200,
   "content_type": "application/json",
   "encoding": "text",
-  "body": "{\"entries\":[{\"action\":\"connexion.ok\",\"detail\":\"Connexion reussie\",\"id\":36,\"ip\":\"127.0.0.1\",\"ts\":\"2026-09-12 19:16:23\",\"utilisateur\":\"admin@example.com\"}]}\n",
-  "sha256": "75cb33d3a3e338523f18b6a67d9dc0e7a6bfd4301dd04feef0d9453f41d3f870"
+  "body": "{\"entries\":[{\"action\":\"connexion.ok\",\"detail\":\"Connexion reussie\",\"id\":129,\"ip\":\"127.0.0.1\",\"ts\":\"2026-09-13 09:55:06\",\"utilisateur\":\"admin@example.com\"}]}\n",
+  "sha256": "7ad92a18a3a1bc592c675d514f2f6bf260147a36d19b2df1ec038864a69cdc92"
 }

@@ -8,10 +8,10 @@
 | A1 | Filet de sécurité (tests + snapshots) | ✅ | 2026-09-12 20:16 |
 | A2 | Extraction Jinja (templates + static) | ✅ | 2026-09-13 (CSS/JS externalisés différés → A7) |
 | A3 | Découpage parking de dashboard.py | ✅ | 2026-09-13 08:25 |
-| A4 | Blueprints auth + dashboard + sync_api | 🔄 | — |
-| A5 | Blueprint config | 🔄 | — |
-| A6 | Blueprints billing + pos + directory | 🔄 | — |
-| A7 | Factory réelle + clôture | ⏳ | — |
+| A4 | Blueprints auth + dashboard + sync_api | ✅ | 2026-09-13 10:21 |
+| A5 | Blueprint config | ✅ | 2026-09-13 10:11 |
+| A6 | Blueprints billing + pos + directory | ✅ | 2026-09-13 10:21 |
+| A7 | Factory réelle + clôture | 🔄 | — |
 
 ---
 
@@ -258,6 +258,27 @@ Aucun `url_for` dans mes templates (`billing/*`, `pos/*`, `directory/*`) ni dans
 ---
 
 ## A7 — Clôture
-**Statut** : ⏳ EN ATTENTE
+**Statut** : ✅ TERMINÉ (2026-09-13 10:49 WAT)
 
-(à remplir par l'agent)
+### 1. Factory réelle (ÉTAPE 4)
+- **Créé `app/web/auth/security.py`** : toute la sécurité déplacée depuis `app/web/dashboard.py` (318 l.) — `_get_secret_key`, `_auth_enabled`, `_apply_session_security(app=None)` (current_app en contexte de requête), CSRF (`_get_csrf_token`/`_csrf_valid`), identité (`_current_identity`, `_is_sage_connected_user`), `_login_required`, `_ACCESS_RULES`/`_MUTATE_PERMS`/`_required_permission`/`_deny`, hooks `_auth_before_request`/`_security_headers`, et `init_security(app)`. Aucune dépendance vers les modules de routes → aucun cycle.
+- **Réécrit `app/web/app.py`** : vraie factory `create_app()` — `Flask(__name__, template_folder=..., static_folder=...)`, secret, `init_security(app)`, enregistrement des 7 blueprints, `return app`. Plus d'instance globale à l'import.
+- **Supprimé `app/web/dashboard.py`** (plus aucun importateur après migration) ainsi que la passerelle racine `dashboard.py`.
+- **Déplacé `app/web/parking/common.py` → `app/web/common.py`** ; package `parking/` supprimé. `__getattr__` et liaisons tardives (« Liaison dashboard ») supprimés des 7 blueprints ; ceux-ci n'importent plus que `app.web.auth.security` et `app.web.common`. `_esc` désormais défini dans security.py (common l'importe), ce qui élimine la dépendance croisée.
+- Particularité : `app/web/routes/auth.py` mutait l'instance globale (`app.permanent_session_lifetime = …`) → remplacé par `current_app` (équivalent strict à l'exécution).
+
+### 2. Externalisation CSS/JS (avec régénération des snapshots)
+Procédure imposée respectée : (a) baseline 50/50 OK avant changement ; (b) `base.html` et `directory/clients.html` : `<style>{{ css }}</style>` remplacé par `{{ static_tags | safe }}` (`<link rel="stylesheet" href="/static/css/app.css"><script src="/static/js/app.js"></script>` en tête, script synchrone pour garantir `api()`/etc. avant les scripts inline des pages) ; blocs `<script>` inline de `ALERT_ZONE`/`FOOTER` retirés de `app/web/common.py` (contenu = `static/js/app.js`) ; `app/web/static_content.py` supprimé ; (c) comparateur → **42/50 OK, 8 DIFF** limitées aux pages HTML 200 contenant le CSS/JS inline (`/`, `/billing`, `/billing/invoice/new`, `/certified`, `/clients`, `/compte/mot-de-passe`, `/config`, `/invoices`) ; inspection du diff de `/` : uniquement le retrait du bloc `<style>…</style>` et des `<script>` inline de fin de body, remplacés par les balises link/script externes (le sha « live » affiché varie d'un run à l'autre car il est calculé avant normalisation du jeton CSRF — le corps normalisé est stable, vérifié sur 3 runs) ; (d) snapshots régénérés (`snapshot_routes.py`, 50 générés) ; (e) **comparateur : 50/50 OK sur la nouvelle baseline**.
+
+### 3. Passerelles racine (ÉTAPE 5)
+Grep des imports dans `app/`, `main.py`, `tests/`, `scripts/` avant suppression ; aucun import dynamique (`import_module`/`__import__`) par nom de module.
+- **Supprimées (0 importateur)** : `article_sync.py`, `config_manager.py`, `connectivity.py`, `database.py`, `invoice_engine.py`, `pdf_generator.py`, `pos_engine.py`, `sage_writer.py`, `seed_data.py`, `service.py`, `sfec_client.py`, `sfec_endpoints.py`, `sqlite_db.py`, `sync_bidirectional.py`, `sync_engine.py`, `user_auth.py` (toutes passerelles « bridge » vers `app/…`), ainsi que `dashboard.py` (racine) et `app/web/dashboard.py`.
+- **Conservées** : `generate_articles.py` (racine — raccourci d'appel actif déléguant à `scripts/generate_articles.py`).
+- **Imports réparés en conséquence** : `scripts/windows/_install_svc.py` (`from service import …` → `from app.service.windows_service import …`), `scripts/generate_articles.py` (`from config_manager import …` → `from app.config.manager import …`), `app/service/windows_service.py` (`from app.web.dashboard import app` → `create_app()`), `tests/` (conftest, test_smoke, compare_snapshots, snapshot_routes → `create_app()`).
+
+### Vérifications finales
+1. `.venv/bin/python -m pytest` → **5 passed** ✅
+2. `.venv/bin/python tests/compare_snapshots.py` → **50/50 OK, 0 DIFF** (baseline régénérée post-externalisation) ✅
+3. `python -m compileall app main.py` (et scripts/tests) → propre ✅
+4. `from app.web.app import create_app; app = create_app()` fonctionne sans importer `app.web.dashboard` (assert `sys.modules`), **94 routes** ✅
+5. Lancement réel `.venv/bin/python main.py` : `curl http://localhost:3000/login` → **HTTP 200**, `/static/css/app.css` et `/static/js/app.js` → **HTTP 200**, arrêt propre (log « T-CONNECTOR arrete proprement », port 3000 libéré) ✅

@@ -1,6 +1,6 @@
 {
   "file": "030_GET_api_tax_rates.json",
-  "endpoint": "api_tax_rates",
+  "endpoint": "config.api_tax_rates",
   "methods": [
     "GET"
   ],

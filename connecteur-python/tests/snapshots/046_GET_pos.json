@@ -1,6 +1,6 @@
 {
-  "file": "045_GET_pos.json",
-  "endpoint": "pos_page",
+  "file": "046_GET_pos.json",
+  "endpoint": "pos.pos_page",
   "methods": [
     "GET"
   ],

@@ -1,6 +1,6 @@
 {
   "file": "004_GET-POST_api_auth_permissions.json",
-  "endpoint": "api_auth_permissions",
+  "endpoint": "sync_api.api_auth_permissions",
   "methods": [
     "GET",
     "POST"

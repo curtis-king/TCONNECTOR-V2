@@ -1,6 +1,6 @@
 {
   "file": "008_GET_api_config_export.json",
-  "endpoint": "api_config_export",
+  "endpoint": "config.api_config_export",
   "methods": [
     "GET"
   ],

@@ -1,6 +1,6 @@
 {
   "file": "016_GET_api_invoices_stats.json",
-  "endpoint": "api_invoice_stats",
+  "endpoint": "billing.api_invoice_stats",
   "methods": [
     "GET"
   ],

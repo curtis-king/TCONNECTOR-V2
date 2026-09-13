@@ -4,10 +4,9 @@
 
 Migré depuis app/web/parking/sync_api.py (étape A4). Les handlers sont
 strictement inchangés ; les URL / méthodes HTTP sont identiques aux
-app.add_url_rule() historiques de app/web/dashboard.py. Le wrapping
-@_login_required est reproduit à l'identique (liaison tardive en bas de
-module, même convention que les parkings — aucun import circulaire
-possible quel que soit l'ordre d'import).
+app.add_url_rule() historiques de app/web/dashboard.py. Le wrapping @_login_required est reproduit à l'identique, désormais via
+un import direct de app.web.auth.security (aucun import circulaire : la
+sécurité ne dépend d'aucun module de routes).
 """
 
 import functools
@@ -18,51 +17,33 @@ from app.sync import bidirectional as sync_bidirectional
 from app.sync.connectivity import get_status
 from app.sync.engine import get_cache, get_metrics, get_retry_queue, sync_all
 from app.web.auth import user_auth
+from app.web.auth.security import _login_required, _apply_session_security, _current_identity, _get_csrf_token, logger
 
 
 bp = Blueprint('sync_api', __name__)
 
 
-def __getattr__(name):
-    """Filet de sécurité : délégation vers app.web.dashboard pour tout nom
-    non résolu (uniquement effectif sur accès attribut du module). Les noms
-    réellement utilisés par les handlers sont liés explicitement en bas de
-    ce module (voir section « Liaison dashboard »)."""
-    from app.web import dashboard as _dashboard
-    return getattr(_dashboard, name)
-
-
-def _login_required_late(f):
-    """Reproduit le wrapping historique view_func = _login_required(view_func).
-    _login_required est lié en bas de module (liaison tardive) : le wrapper
-    ne le résout qu'à l'exécution, donc aucun import circulaire à l'import."""
-    @functools.wraps(f)
-    def wrapper(*args, **kwargs):
-        return _login_required(f)(*args, **kwargs)
-    return wrapper
-
-
 @bp.route("/api/metrics", methods=["GET"])
-@_login_required_late
+@_login_required
 def api_metrics():
     return jsonify(get_metrics())
 
 
 @bp.route("/api/connectivity", methods=["GET"])
-@_login_required_late
+@_login_required
 def api_connectivity():
     return jsonify(get_status())
 
 
 @bp.route("/api/sync", methods=["POST"])
-@_login_required_late
+@_login_required
 def api_sync():
     threading.Thread(target=sync_all, daemon=True).start()
     return jsonify({"ok": True, "message": "Sync lancee"})
 
 
 @bp.route("/api/articles/sync", methods=["POST"])
-@_login_required_late
+@_login_required
 def api_articles_sync():
     def _run():
         try:
@@ -76,19 +57,19 @@ def api_articles_sync():
 
 
 @bp.route("/api/ledger-accounts", methods=["GET"])
-@_login_required_late
+@_login_required
 def api_ledger_accounts():
     return jsonify(fetch_ledger_accounts())
 
 
 @bp.route("/api/certified", methods=["GET"])
-@_login_required_late
+@_login_required
 def api_certified():
     return jsonify(fetch_certified_invoices())
 
 
 @bp.route("/api/certified/list", methods=["GET"])
-@_login_required_late
+@_login_required
 def api_certified_list():
     cache = get_cache()
     out = []
@@ -111,13 +92,13 @@ def api_certified_list():
 
 
 @bp.route("/api/retry-queue", methods=["GET"])
-@_login_required_late
+@_login_required
 def api_retry_queue():
     return jsonify(get_retry_queue())
 
 
 @bp.route("/api/sync/bi", methods=["POST"])
-@_login_required_late
+@_login_required
 def api_sync_bi():
     try:
         result = sync_bidirectional.full_sync()
@@ -127,13 +108,13 @@ def api_sync_bi():
 
 
 @bp.route("/api/sync/bi/stats", methods=["GET"])
-@_login_required_late
+@_login_required
 def api_sync_bi_stats():
     return jsonify(sync_bidirectional.get_sync_stats())
 
 
 @bp.route("/api/auth/permissions", methods=["GET", "POST"])
-@_login_required_late
+@_login_required
 def api_auth_permissions():
     if request.method == "GET":
         return jsonify({"roles": user_auth.ROLES, "roles_labels": user_auth.ROLE_LABELS,
@@ -151,7 +132,7 @@ def api_auth_permissions():
 
 
 @bp.route("/api/auth/config", methods=["GET", "POST"])
-@_login_required_late
+@_login_required
 def api_auth_config():
     if request.method == "GET":
         return jsonify({"config": user_auth.get_auth_config()})
@@ -172,22 +153,9 @@ def api_csrf():
 
 
 @bp.route("/api/audit", methods=["GET"])
-@_login_required_late
+@_login_required
 def api_audit():
     return jsonify({"entries": user_auth.list_audit(limit=min(int(request.args.get("limit", 200)), 500))})
 
 
-# ── Liaison dashboard ──
-# Ces noms sont définis dans app/web/dashboard.py. On les lie ICI, en bas de
-# module : quel que soit l'ordre d'import (dashboard d'abord ou routes
-# d'abord), ils existent déjà dans le namespace de dashboard.py à ce stade —
-# aucun import circulaire possible. Les corps des fonctions ci-dessus restent
-# strictement inchangés (références globales résolues à l'exécution).
-from app.web import dashboard as _dashboard
-_login_required = _dashboard._login_required
-_apply_session_security = _dashboard._apply_session_security
-_current_identity = _dashboard._current_identity
-_get_csrf_token = _dashboard._get_csrf_token
-logger = _dashboard.logger
 
-del _dashboard

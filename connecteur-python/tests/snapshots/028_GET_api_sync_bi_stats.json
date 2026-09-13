@@ -1,6 +1,6 @@
 {
   "file": "028_GET_api_sync_bi_stats.json",
-  "endpoint": "api_sync_bi_stats",
+  "endpoint": "sync_api.api_sync_bi_stats",
   "methods": [
     "GET"
   ],

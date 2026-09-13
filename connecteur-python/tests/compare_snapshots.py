@@ -111,7 +111,9 @@ def compare_snapshots(verbose=False):
     _init_sqlite()
     _reset_audit_log()
     from app.config.manager import get_config
-    from app.web.dashboard import app
+    from app.web.app import create_app
+
+    app = create_app()
 
     # Comportement production (voir conftest.app_instance).
     dash = get_config().get("dashboard", {})

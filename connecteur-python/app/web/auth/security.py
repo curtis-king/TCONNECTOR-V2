@@ -1,61 +1,36 @@
-import html
-import logging
+"""Sécurité web — hooks Flask, CSRF, authentification, permissions.
+
+Déplacé depuis app/web/dashboard.py (étape A7). Fonctions pures et
+utilitaires importables SANS import circulaire : ce module ne dépend que
+de Flask, de la config et de app.web.auth.user_auth. La factory
+(app/web/app.py) appelle `init_security(app)` pour brancher les hooks
+before/after_request ; les blueprints importent directement `_login_required`,
+`_current_identity`, `_get_csrf_token`, etc.
+"""
 import functools
 import hashlib
 import hmac
-import json
+import html
+import logging
 import os
 import secrets
-import threading
 from datetime import timedelta
+
 from flask import (
-    Flask, render_template, render_template_string, request, jsonify,
-    session, redirect, url_for
+    current_app, jsonify, redirect, render_template, request, session, url_for,
 )
-from app.config.manager import get_config, save_config
+
+from app.config.manager import get_config
 from app.web.auth import user_auth
-from app.sync.engine import (
-    get_cache, get_metrics, sync_all, certify_single, sync_sfec_invoices,
-    apply_config, get_retry_queue
-)
-from app.integration.sage.database import (
-    ping_database, fetch_contacts, fetch_tax_rates,
-    fetch_ledger_accounts, fetch_certified_invoices, list_all_tables,
-    mark_to_monitor
-)
-from app.integration.sfec.endpoints import check_health, preview_sfec_payload, validate_sfec_payload, certify_sqlite_invoice
-from app.integration.sfec.client import SfecClient
-from app.sync.connectivity import get_status, check_now
-from app.storage import db as sqlite_db
-from app.domain import invoices as invoice_engine
-from app.domain import pos as pos_engine
-from app.integration.sage import writer as sage_writer
-from app.sync import bidirectional as sync_bidirectional
-from app.domain import pdf as pdf_generator
-from app.web.static_content import read_static
-
-
-# ══════════════════════════════════════════════════════════════
-# ÉTAPE A3 (Splitter) — dashboard.py allégé.
-# Les handlers de routes sont déplacés mécaniquement, SANS modification de
-# logique, dans app/web/parking/<domaine>.py. On garde ici : l'instance
-# `app`, toute la sécurité (before/after_request, CSRF, _login_required,
-# permissions). Les routes sont enregistrées en bas via
-# app.register_blueprint(...) (blueprints dans app/web/routes/<domaine>.py)
-# avec exactement les mêmes URL / méthodes HTTP, et le wrapper
-# @_login_required reproduit à l'identique dans chaque blueprint.
-#
-# NOTE : `from app.web.parking.common import _esc` se trouve en BAS de ce
-# fichier (section enregistrement) — l'import en tête créerait un cycle
-# (common.py lie _current_identity/_get_csrf_token depuis ce module).
-# _esc n'est utilisé qu'à l'exécution (dans _deny / _auth_before_request).
-# ══════════════════════════════════════════════════════════════
-
 
 
 logger = logging.getLogger("t-connector.dashboard")
 
-app = Flask(__name__)
+
+def _esc(val):
+    if val is None:
+        return ""
+    return html.escape(str(val))
 
 
 def _get_secret_key():
@@ -67,33 +42,27 @@ def _get_secret_key():
     return key
 
 
-app.secret_key = _get_secret_key()
-
-
 def _auth_enabled():
     return get_config().get("dashboard", {}).get("auth_enabled", True)
 
 
-_applied = False
+def _apply_session_security(app=None):
+    """Applique la config de durcissement des cookies de session.
 
-
-def _apply_session_security():
-    global _applied
-    if _applied:
-        return
-    _applied = True
+    Idempotent ; utiliser `current_app` si aucune app n'est passée (contexte
+    de requête). Appelée par init_security() à la construction et par le
+    hook before_request (équivalent strict du comportement historique).
+    """
+    target = app if app is not None else current_app
     from app.web.auth.user_auth import get_auth_config
     acfg = get_auth_config()
-    app.config.update(
+    target.config.update(
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
         SESSION_COOKIE_SECURE=acfg.get("https_only", False),
         PERMANENT_SESSION_LIFETIME=timedelta(hours=acfg.get("session_max_age_hours", 24)),
         SESSION_REFRESH_EACH_REQUEST=True,
     )
-
-
-_apply_session_security()
 
 
 def _get_csrf_token():
@@ -212,7 +181,6 @@ def _deny(perm, label):
                            label=_esc(label or ""), email=_esc(session.get("user_email", ""))), 403
 
 
-@app.before_request
 def _auth_before_request():
     if not _auth_enabled():
         return None
@@ -279,7 +247,6 @@ def _auth_before_request():
     return None
 
 
-@app.after_request
 def _security_headers(resp):
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
@@ -292,27 +259,11 @@ def _security_headers(resp):
     return resp
 
 
-# ══════════════════════════════════════════════════════════════
-# ENREGISTREMENT DES BLUEPRINTS — handlers dans app/web/routes/ (A4/A5/A6)
-# ══════════════════════════════════════════════════════════════
+def init_security(app):
+    """Branche la sécurité sur l'application Flask (appelé par create_app).
 
-from app.web.parking.common import _esc  # helper partagé (utilisé à l'exécution)
-
-from app.web.routes import billing as _rt_billing
-from app.web.routes import pos as _rt_pos
-from app.web.routes import directory as _rt_directory
-from app.web.routes import auth as _rt_auth
-from app.web.routes import dashboard as _rt_dashboard_pages
-from app.web.routes import sync_api as _rt_sync_api
-from app.web.routes import config as _rt_config
-
-app.register_blueprint(_rt_config.bp)  # A5 : domaine configuration (/config, /api/config*, /api/db, /api/sfec, /api/tables, /api/tax-rates)
-
-app.register_blueprint(_rt_auth.bp)  # A4 : auth (/login, /logout, /compte/mot-de-passe, /api/compte/password)
-app.register_blueprint(_rt_dashboard_pages.bp)  # A4 : dashboard (/ /invoices /pending /certified /certified/<id>/print /sales /health /ready)
-app.register_blueprint(_rt_sync_api.bp)  # A4 : sync_api (/api/sync*, /api/connectivity, /api/metrics, /api/certified*, /api/ledger-accounts, /api/retry-queue, /api/auth*, /api/audit, /api/csrf)
-
-
-app.register_blueprint(_rt_billing.bp)    # A6 : facturation (/billing*, /api/invoices*)
-app.register_blueprint(_rt_pos.bp)        # A6 : point de vente (/pos*, /api/products*, /api/pos*)
-app.register_blueprint(_rt_directory.bp)  # A6 : annuaire (/clients, /vendeurs, /utilisateurs, /api/contacts*, /api/vendeurs*, /api/utilisateurs*)
+    Applique la config de session, puis enregistre les hooks before/after_request.
+    """
+    _apply_session_security(app)
+    app.before_request(_auth_before_request)
+    app.after_request(_security_headers)

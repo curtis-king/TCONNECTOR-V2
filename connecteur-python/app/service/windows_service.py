@@ -11,7 +11,9 @@ from app.config.manager import load_config
 from app.integration.sage.database import ping_database, discover_tables, close_pool
 from app.sync.engine import start_polling, stop_polling, sync_all
 from app.sync.bidirectional import start_bi_sync, stop_bi_sync
-from app.web.dashboard import app
+from app.web.app import create_app
+
+app = create_app()
 from app.sync.connectivity import start_background_check, stop_background_check
 
 SCRIPT_DIR = base_dir()

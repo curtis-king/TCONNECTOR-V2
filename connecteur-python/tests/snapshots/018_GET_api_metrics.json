@@ -1,6 +1,6 @@
 {
   "file": "018_GET_api_metrics.json",
-  "endpoint": "api_metrics",
+  "endpoint": "sync_api.api_metrics",
   "methods": [
     "GET"
   ],
@@ -8,6 +8,6 @@
   "status_code": 200,
   "content_type": "application/json",
   "encoding": "text",
-  "body": "{\"certified_count\":0,\"contacts\":0,\"db_connected\":false,\"error_count\":0,\"internet_status\":{\"last_check\":\"2026-09-12T20:16:24.477163\",\"last_offline\":null,\"last_online\":\"2026-09-12T19:16:24.477183Z\",\"offline_duration_seconds\":null,\"online\":true,\"status\":\"ONLINE\"},\"last_error\":null,\"last_sync_at\":null,\"ledger_accounts\":0,\"purchase_invoices\":0,\"retry_queue_count\":0,\"sales_invoices\":0,\"sync_count\":0,\"tax_rates\":0}\n",
-  "sha256": "1abe172a23de78875c65ed0a77862829942c3d4a587da304e460c9b192261b62"
+  "body": "{\"certified_count\":0,\"contacts\":0,\"db_connected\":false,\"error_count\":0,\"internet_status\":{\"last_check\":\"2026-09-13T10:55:07.520158\",\"last_offline\":null,\"last_online\":\"2026-09-13T09:55:07.520167Z\",\"offline_duration_seconds\":null,\"online\":true,\"status\":\"ONLINE\"},\"last_error\":null,\"last_sync_at\":null,\"ledger_accounts\":0,\"purchase_invoices\":0,\"retry_queue_count\":0,\"sales_invoices\":0,\"sync_count\":0,\"tax_rates\":0}\n",
+  "sha256": "8f37e10d2f6bfa860b13c237022ad364ab79d42d897a740a0f51a683b1b35cf2"
 }

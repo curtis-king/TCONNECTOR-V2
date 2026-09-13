@@ -1,6 +1,6 @@
 {
-  "file": "040_GET_health.json",
-  "endpoint": "health",
+  "file": "041_GET_health.json",
+  "endpoint": "dashboard.health",
   "methods": [
     "GET"
   ],

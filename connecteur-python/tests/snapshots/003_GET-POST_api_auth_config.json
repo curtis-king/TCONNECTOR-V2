@@ -1,6 +1,6 @@
 {
   "file": "003_GET-POST_api_auth_config.json",
-  "endpoint": "api_auth_config",
+  "endpoint": "sync_api.api_auth_config",
   "methods": [
     "GET",
     "POST"

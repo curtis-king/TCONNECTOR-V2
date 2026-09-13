@@ -1,6 +1,6 @@
 {
   "file": "013_GET_api_db_test.json",
-  "endpoint": "api_db_test",
+  "endpoint": "config.api_db_test",
   "methods": [
     "GET"
   ],

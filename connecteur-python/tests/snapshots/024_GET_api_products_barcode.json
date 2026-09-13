@@ -1,6 +1,6 @@
 {
   "file": "024_GET_api_products_barcode.json",
-  "endpoint": "api_find_barcode",
+  "endpoint": "pos.api_find_barcode",
   "methods": [
     "GET"
   ],
