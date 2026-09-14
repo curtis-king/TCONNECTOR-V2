@@ -9,6 +9,7 @@ sécurité ne dépend d'aucun module de routes).
 """
 
 import functools
+from app.core.utils import fmt_money
 from flask import Blueprint, jsonify, render_template, request
 from app.config.manager import get_config
 from app.domain import pos as pos_engine
@@ -155,17 +156,17 @@ def print_certified(invoice_id):
         qr_display = '<img src="{}" style="max-width:200px;max-height:200px">'.format(qr_code) if is_image else '<pre style="font-size:10px;word-break:break-all">{}</pre>'.format(qr_code)
     else:
         qr_display = '<p style="color:#999">QR Code non disponible</p>'
-
+ 
     items = inv.get("items_json") or []
     item_rows = ""
     for item in items:
-        item_rows += "<tr><td>{}</td><td style='text-align:right'>{}</td><td style='text-align:right'>{:,.0f}</td><td style='text-align:right'>{}</td><td style='text-align:right'>{:,.0f}</td></tr>".format(
+        item_rows += "<tr><td>{}</td><td style='text-align:right'>{}</td><td style='text-align:right'>{}</td><td style='text-align:right'>{}</td><td style='text-align:right'>{}</td></tr>".format(
             _esc(item.get("designation", "")),
-            item.get("quantity", 0),
-            item.get("unit_price", 0),
+            fmt_money(item.get("quantity", 0)),
+            fmt_money(item.get("unit_price", 0)),
             _esc(item.get("tax_rate", "0")),
-            item.get("net_amount", 0),
-        )
+            fmt_money(item.get("net_amount", 0), 2),
+            )
 
     return render_template("dashboard/print.html",
         invoice_number=_esc(inv.get("invoice_number", "")),
@@ -180,11 +181,11 @@ def print_certified(invoice_id):
         buyer_addr=_esc(inv.get("buyer_address", "")),
         buyer_phone=_esc(inv.get("buyer_phone", "")),
         payment_method=_esc(inv.get("payment_method", "")),
-        amount_due=_esc(inv.get("amount_due", "0")),
-        total_ht=_esc(inv.get("total_ht", "0")),
-        total_tax18=_esc(inv.get("total_tax18", "0")),
-        total_tax5=_esc(inv.get("total_tax5", "0")),
-        total_ttc=_esc(inv.get("total_ttc", "0")),
+        amount_due=_esc(fmt_money(inv.get("amount_due", "0"))),
+        total_ht=_esc(fmt_money(inv.get("total_ht", "0"))),
+        total_tax18=_esc(fmt_money(inv.get("total_tax18", "0"))),
+        total_tax5=_esc(fmt_money(inv.get("total_tax5", "0"))),
+        total_ttc=_esc(fmt_money(inv.get("total_ttc", "0"))),
         item_rows=item_rows,
         cert_status=_esc(inv.get("certification_status", "")),
         short_sig=_esc(inv.get("certification_short_signature", "")),

@@ -4,15 +4,17 @@
 <div class="stat"><div class="value" id="c-tot">-</div><div class="label">Factures SFEC</div></div>
 <div class="stat"><div class="value" id="c-aff">-</div><div class="label">Affichées</div></div>
 </div>
+<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px">
 <button class="btn btn-sm btn-success no-print" id="sfec-refresh" onclick="refreshCert()">Sync SFEC</button>
-<span id="sfec-status" style="margin-left:8px;font-size:12px;color:#64748b">Derniere sync: {{ last_sfec }}</span>
-<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:14px">
-<input id="c-search" placeholder="N° facture, client..." style="min-width:240px;padding:8px 10px;border:1px solid #334155;border-radius:8px;background:#0f172a;color:#e2e8f0">
-<select id="c-statut" style="height:38px;padding:0 8px;border:1px solid #334155;border-radius:8px;background:#0f172a;color:#e2e8f0"><option value="">Tous statuts</option></select>
-<input type="date" id="c-dfrom" title="Date certif depuis" style="height:38px;padding:0 8px;border:1px solid #334155;border-radius:8px;background:#0f172a;color:#e2e8f0;color-scheme:dark">
-<span style="color:#94a3b8">→</span>
-<input type="date" id="c-dto" title="Date certif jusqu'a" style="height:38px;padding:0 8px;border:1px solid #334155;border-radius:8px;background:#0f172a;color:#e2e8f0;color-scheme:dark">
-<button class="btn btn-sm no-print" onclick="resetCerts()">Reinitialiser</button>
+<span id="sfec-status" style="color:#64748b;font-size:12px">Derniere sync: {{ last_sfec }}</span>
+</div>
+<h2>Filtres</h2>
+<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:end">
+<div style="flex:1;min-width:220px"><label>Recherche</label><input type="text" id="c-search" placeholder="N° facture, client..."></div>
+<div><label>Statut</label><select id="c-statut"><option value="">Tous statuts</option></select></div>
+<div><label>Date certif depuis</label><input type="date" id="c-dfrom"></div>
+<div><label>Date certif jusqu'a</label><input type="date" id="c-dto"></div>
+<div><button class="btn btn-sm no-print" onclick="resetCerts()">Reinitialiser</button></div>
 </div>
 </div>
 <div class="card"><h2>Liste des certifications</h2>

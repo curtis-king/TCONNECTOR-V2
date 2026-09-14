@@ -11,25 +11,15 @@ body{font-family:'Segoe UI',Tahoma,sans-serif;background:#f1f5f9;color:#1e293b;m
 .sidebar-toggle svg{width:18px;height:18px}
 .sidebar-nav{list-style:none;padding:8px 0;margin:0;flex:1;overflow-y:auto}
 .sidebar.collapsed .sidebar-logo span,
+.sidebar.collapsed .sidebar-logo .icon,
 .sidebar.collapsed .sidebar-nav .nav-label,
 .sidebar.collapsed .sidebar-nav li a .label,
 .sidebar.collapsed .sidebar-foot .net-indicator span:not(.net-dot){display:none}
 .sidebar.collapsed .sidebar-nav li a{justify-content:center;padding:11px 0;overflow:hidden}
 .sidebar.collapsed .sidebar-nav li a .icon{margin:0}
-.sidebar.collapsed .sidebar-top{justify-content:center;padding:18px 0 14px}
-.sidebar.collapsed .sidebar-toggle{display:none}
+.sidebar.collapsed .sidebar-top{justify-content:space-between;padding:18px 16px 14px}
 .sidebar.collapsed + .main-content{margin-left:76px;max-width:calc(100vw - 76px)}
 .sidebar-nav li a .label{white-space:nowrap}
-.sidebar.collapsed:hover{width:250px;box-shadow:8px 0 28px rgba(15,23,42,.16),2px 0 8px rgba(15,23,42,.08)}
-.sidebar.collapsed:hover .sidebar-top{justify-content:space-between;padding:18px 16px 14px}
-.sidebar.collapsed:hover .sidebar-toggle{display:flex}
-.sidebar.collapsed:hover .sidebar-logo span{display:inline-block}
-.sidebar.collapsed:hover .sidebar-nav .nav-label{display:block}
-.sidebar.collapsed:hover .sidebar-nav li a .label{display:inline}
-.sidebar.collapsed:hover .sidebar-foot .net-indicator span:not(.net-dot){display:inline}
-.sidebar.collapsed:hover .sidebar-nav li a{justify-content:flex-start;padding:10px 14px;overflow:visible}
-.sidebar.collapsed:hover .sidebar-nav li a .icon{margin:0}
-.sidebar-foot{position:sticky;bottom:0;background:#ffffff;padding:14px 20px;border-top:1px solid #eef2f7}
 .net-indicator{display:flex;align-items:center;gap:8px;font-size:12px;color:#64748b}
 .net-dot{width:10px;height:10px;border-radius:50%;display:inline-block;flex-shrink:0}
 .net-dot.on{background:#10b981;box-shadow:0 0 0 3px rgba(16,185,129,0.2)}

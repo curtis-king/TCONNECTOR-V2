@@ -51,3 +51,16 @@ def normalize_date(val):
                 if len(rest) >= 2:
                     return "{}-{}-{}".format(year, rest[1].zfill(2), rest[0].zfill(2))
     return None
+
+def fmt_money(val, decimals=0):
+    """Formate un montant depuis n'importe quel type (float, str, None).
+
+    - décale la virgule française et arrondit à `decimals` décimales ;
+    - ajoute les séparateurs de milliers ;
+    - 0.0 → "0", 1500 → "1,500".
+    """
+    try:
+        x = float(str(val).replace(",", "."))
+    except (ValueError, TypeError):
+        x = 0.0
+    return "{:,.{}f}".format(x, decimals)
