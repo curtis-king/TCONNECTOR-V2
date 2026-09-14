@@ -1,0 +1,13 @@
+{
+  "file": "026_GET_api_sfec_certified_from_api.json",
+  "endpoint": "config.api_sfec_certified_from_api",
+  "methods": [
+    "GET"
+  ],
+  "path": "/api/sfec/certified-from-api",
+  "status_code": 500,
+  "content_type": "application/json",
+  "encoding": "text",
+  "body": "{\"error\":\"SFEC API 401: {\\\"message\\\":\\\"API key is required\\\"}\\n\"}\n",
+  "sha256": "c9877ef8442ff9b6b2da59c9f34c374632879045f6e1192cca7c6b81903956d2"
+}

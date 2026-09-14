@@ -1,0 +1,13 @@
+{
+  "file": "013_GET_api_db_test.json",
+  "endpoint": "config.api_db_test",
+  "methods": [
+    "GET"
+  ],
+  "path": "/api/db/test",
+  "status_code": 200,
+  "content_type": "application/json",
+  "encoding": "text",
+  "body": "{\"error\":\"Configuration base de donnees incomplete\",\"ok\":false}\n",
+  "sha256": "3a6dc17b841bce7c1ed2170709d17cce20a406d30e62081b1f23744e3a3ff03c"
+}

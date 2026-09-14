@@ -1,0 +1,308 @@
+[
+  {
+    "file": "001_GET_root.json",
+    "path": "/",
+    "endpoint": "dashboard.index",
+    "status_code": 200
+  },
+  {
+    "file": "002_GET_api_audit.json",
+    "path": "/api/audit",
+    "endpoint": "sync_api.api_audit",
+    "status_code": 200
+  },
+  {
+    "file": "003_GET-POST_api_auth_config.json",
+    "path": "/api/auth/config",
+    "endpoint": "sync_api.api_auth_config",
+    "status_code": 200
+  },
+  {
+    "file": "004_GET-POST_api_auth_permissions.json",
+    "path": "/api/auth/permissions",
+    "endpoint": "sync_api.api_auth_permissions",
+    "status_code": 200
+  },
+  {
+    "file": "005_GET_api_certified.json",
+    "path": "/api/certified",
+    "endpoint": "sync_api.api_certified",
+    "status_code": 200
+  },
+  {
+    "file": "006_GET_api_certified_list.json",
+    "path": "/api/certified/list",
+    "endpoint": "sync_api.api_certified_list",
+    "status_code": 200
+  },
+  {
+    "file": "007_GET_api_config.json",
+    "path": "/api/config",
+    "endpoint": "config.api_get_config",
+    "status_code": 200
+  },
+  {
+    "file": "008_GET_api_config_export.json",
+    "path": "/api/config/export",
+    "endpoint": "config.api_config_export",
+    "status_code": 200
+  },
+  {
+    "file": "009_GET_api_connectivity.json",
+    "path": "/api/connectivity",
+    "endpoint": "sync_api.api_connectivity",
+    "status_code": 200
+  },
+  {
+    "file": "010_GET_api_contacts.json",
+    "path": "/api/contacts",
+    "endpoint": "directory.api_contacts",
+    "status_code": 500
+  },
+  {
+    "file": "011_GET_api_contacts.json",
+    "path": "/api/contacts",
+    "endpoint": "directory.api_list_contacts",
+    "status_code": 500
+  },
+  {
+    "file": "012_GET_api_csrf.json",
+    "path": "/api/csrf",
+    "endpoint": "sync_api.api_csrf",
+    "status_code": 200
+  },
+  {
+    "file": "013_GET_api_db_test.json",
+    "path": "/api/db/test",
+    "endpoint": "config.api_db_test",
+    "status_code": 200
+  },
+  {
+    "file": "014_GET_api_invoices.json",
+    "path": "/api/invoices",
+    "endpoint": "billing.api_list_invoices",
+    "status_code": 200
+  },
+  {
+    "file": "015_GET_api_invoices_list.json",
+    "path": "/api/invoices/list",
+    "endpoint": "billing.api_invoices_list",
+    "status_code": 200
+  },
+  {
+    "file": "016_GET_api_invoices_stats.json",
+    "path": "/api/invoices/stats",
+    "endpoint": "billing.api_invoice_stats",
+    "status_code": 200
+  },
+  {
+    "file": "017_GET_api_ledger_accounts.json",
+    "path": "/api/ledger-accounts",
+    "endpoint": "sync_api.api_ledger_accounts",
+    "status_code": 200
+  },
+  {
+    "file": "018_GET_api_metrics.json",
+    "path": "/api/metrics",
+    "endpoint": "sync_api.api_metrics",
+    "status_code": 200
+  },
+  {
+    "file": "019_GET-POST_api_pos_config.json",
+    "path": "/api/pos/config",
+    "endpoint": "pos.api_pos_config",
+    "status_code": 200
+  },
+  {
+    "file": "020_GET_api_pos_products_search.json",
+    "path": "/api/pos/products/search",
+    "endpoint": "pos.api_search_products",
+    "status_code": 200
+  },
+  {
+    "file": "021_GET_api_pos_stats.json",
+    "path": "/api/pos/stats",
+    "endpoint": "pos.api_pos_stats",
+    "status_code": 200
+  },
+  {
+    "file": "022_GET_api_pos_tickets.json",
+    "path": "/api/pos/tickets",
+    "endpoint": "pos.api_list_tickets",
+    "status_code": 200
+  },
+  {
+    "file": "023_GET_api_products.json",
+    "path": "/api/products",
+    "endpoint": "pos.api_list_products",
+    "status_code": 200
+  },
+  {
+    "file": "024_GET_api_products_barcode.json",
+    "path": "/api/products/barcode",
+    "endpoint": "pos.api_find_barcode",
+    "status_code": 400
+  },
+  {
+    "file": "025_GET_api_retry_queue.json",
+    "path": "/api/retry-queue",
+    "endpoint": "sync_api.api_retry_queue",
+    "status_code": 200
+  },
+  {
+    "file": "026_GET_api_sfec_certified_from_api.json",
+    "path": "/api/sfec/certified-from-api",
+    "endpoint": "config.api_sfec_certified_from_api",
+    "status_code": 500
+  },
+  {
+    "file": "027_GET_api_sfec_test.json",
+    "path": "/api/sfec/test",
+    "endpoint": "config.api_sfec_test",
+    "status_code": 200
+  },
+  {
+    "file": "028_GET_api_sync_bi_stats.json",
+    "path": "/api/sync/bi/stats",
+    "endpoint": "sync_api.api_sync_bi_stats",
+    "status_code": 200
+  },
+  {
+    "file": "029_GET_api_tables.json",
+    "path": "/api/tables",
+    "endpoint": "config.api_tables",
+    "status_code": 200
+  },
+  {
+    "file": "030_GET_api_tax_rates.json",
+    "path": "/api/tax-rates",
+    "endpoint": "config.api_tax_rates",
+    "status_code": 200
+  },
+  {
+    "file": "031_GET_api_tax_rates_local.json",
+    "path": "/api/tax-rates/local",
+    "endpoint": "config.api_local_tax_rates",
+    "status_code": 200
+  },
+  {
+    "file": "032_GET_api_utilisateurs.json",
+    "path": "/api/utilisateurs",
+    "endpoint": "directory.api_list_comptes",
+    "status_code": 200
+  },
+  {
+    "file": "033_GET_api_vendeurs.json",
+    "path": "/api/vendeurs",
+    "endpoint": "directory.api_list_vendeurs",
+    "status_code": 200
+  },
+  {
+    "file": "034_GET_api_vendeurs_1.json",
+    "path": "/api/vendeurs/1",
+    "endpoint": "directory.api_get_vendeur",
+    "status_code": 200
+  },
+  {
+    "file": "035_GET_billing.json",
+    "path": "/billing",
+    "endpoint": "billing.billing_page",
+    "status_code": 200
+  },
+  {
+    "file": "036_GET_billing_invoice_new.json",
+    "path": "/billing/invoice/new",
+    "endpoint": "billing.invoice_new_page",
+    "status_code": 200
+  },
+  {
+    "file": "037_GET_certified.json",
+    "path": "/certified",
+    "endpoint": "dashboard.certified_page",
+    "status_code": 200
+  },
+  {
+    "file": "038_GET_clients.json",
+    "path": "/clients",
+    "endpoint": "directory.clients_page",
+    "status_code": 200
+  },
+  {
+    "file": "039_GET_compte_mot_de_passe.json",
+    "path": "/compte/mot-de-passe",
+    "endpoint": "auth.compte_password_page",
+    "status_code": 200
+  },
+  {
+    "file": "040_GET_config.json",
+    "path": "/config",
+    "endpoint": "config.config_page",
+    "status_code": 200
+  },
+  {
+    "file": "041_GET_health.json",
+    "path": "/health",
+    "endpoint": "dashboard.health",
+    "status_code": 200
+  },
+  {
+    "file": "042_GET_invoices.json",
+    "path": "/invoices",
+    "endpoint": "dashboard.invoices_page",
+    "status_code": 200
+  },
+  {
+    "file": "043_GET-POST_login.json",
+    "path": "/login",
+    "endpoint": "auth.login_page",
+    "status_code": 302
+  },
+  {
+    "file": "044_GET_logout.json",
+    "path": "/logout",
+    "endpoint": "auth.logout",
+    "status_code": 302
+  },
+  {
+    "file": "045_GET_pending.json",
+    "path": "/pending",
+    "endpoint": "dashboard.pending_page",
+    "status_code": 302
+  },
+  {
+    "file": "046_GET_pos.json",
+    "path": "/pos",
+    "endpoint": "pos.pos_page",
+    "status_code": 302
+  },
+  {
+    "file": "047_GET_ready.json",
+    "path": "/ready",
+    "endpoint": "dashboard.ready",
+    "status_code": 302
+  },
+  {
+    "file": "048_GET_sales.json",
+    "path": "/sales",
+    "endpoint": "dashboard.sales_page",
+    "status_code": 302
+  },
+  {
+    "file": "049_GET_static_css_app_css.json",
+    "path": "/static/css/app.css",
+    "endpoint": "static",
+    "status_code": 200
+  },
+  {
+    "file": "050_GET_utilisateurs.json",
+    "path": "/utilisateurs",
+    "endpoint": "directory.utilisateurs_page",
+    "status_code": 302
+  },
+  {
+    "file": "051_GET_vendeurs.json",
+    "path": "/vendeurs",
+    "endpoint": "directory.vendeurs_page",
+    "status_code": 302
+  }
+]

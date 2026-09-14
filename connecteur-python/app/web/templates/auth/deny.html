@@ -1,0 +1,10 @@
+<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8"><title>Acces refuse</title>
+<style>
+body{font-family:'Segoe UI',Tahoma,sans-serif;background:#f1f5f9;min-height:100vh;display:flex;align-items:center;justify-content:center;color:#1e293b}
+.card{background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:40px;text-align:center;max-width:420px;box-shadow:0 10px 30px rgba(15,23,42,0.06)}
+.ico{width:56px;height:56px;margin:0 auto 16px;border-radius:14px;background:#fef2f2;color:#b91c1c;display:flex;align-items:center;justify-content:center;font-size:26px}
+h1{font-size:20px;margin-bottom:8px}.sub{font-size:13px;color:#64748b;margin-bottom:20px}
+.btn{display:inline-block;background:#4f46e5;color:#fff;text-decoration:none;padding:11px 22px;border-radius:10px;font-size:14px;font-weight:600}
+</style></head><body><div class="card"><div class="ico">&#128274;</div>
+<h1>Acces refuse</h1><p class="sub">Vous n'avez pas la permission <b>{{ label | safe }}</b> sur cette section.<br>Compte : {{ email | safe }}</p>
+<a class="btn" href="/">Retour au tableau de bord</a></div></body></html>

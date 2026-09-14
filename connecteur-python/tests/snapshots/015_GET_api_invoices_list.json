@@ -1,0 +1,13 @@
+{
+  "file": "015_GET_api_invoices_list.json",
+  "endpoint": "billing.api_invoices_list",
+  "methods": [
+    "GET"
+  ],
+  "path": "/api/invoices/list",
+  "status_code": 200,
+  "content_type": "application/json",
+  "encoding": "text",
+  "body": "{\"invoices\":[],\"limit\":25,\"page\":1,\"pages\":1,\"total\":0}\n",
+  "sha256": "4a50da00daff0ec3de9d8f44fd23bf7134e43493e5b080c5122d566933e46afc"
+}

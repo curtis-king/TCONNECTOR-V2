@@ -1,0 +1,10 @@
+
+<div class="card"><h2>Factures ({{ inv_type }})</h2>
+<div style="margin-bottom:12px" class="no-print">
+<a href="/invoices?type=sale" class="btn btn-sm {{ sale_cls }}">Vente</a>
+<a href="/invoices?type=purchase" class="btn btn-sm {{ purchase_cls }}">Achat</a>
+<button class="btn btn-sm btn-primary" onclick="syncNow()" style="margin-left:8px">Sync</button>
+</div>
+<table><thead><tr><th>Numero</th><th>Date</th><th>Tiers</th>
+<th style="text-align:right">Montant TTC</th><th>Statut</th><th>Valide</th><th>SFEC</th><th>N Certif</th></tr></thead>
+<tbody>{{ rows | safe }}{{ empty | safe }}</tbody></table></div>

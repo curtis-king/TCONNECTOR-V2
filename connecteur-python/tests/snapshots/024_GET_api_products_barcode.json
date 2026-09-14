@@ -1,0 +1,13 @@
+{
+  "file": "024_GET_api_products_barcode.json",
+  "endpoint": "pos.api_find_barcode",
+  "methods": [
+    "GET"
+  ],
+  "path": "/api/products/barcode",
+  "status_code": 400,
+  "content_type": "application/json",
+  "encoding": "text",
+  "body": "{\"error\":\"code requis\"}\n",
+  "sha256": "09fdefcc91c8fc6d2edea25431915cb135058e857ebd4a91aedc68e0efd4efff"
+}

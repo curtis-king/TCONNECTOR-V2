@@ -1,0 +1,13 @@
+{
+  "file": "031_GET_api_tax_rates_local.json",
+  "endpoint": "config.api_local_tax_rates",
+  "methods": [
+    "GET"
+  ],
+  "path": "/api/tax-rates/local",
+  "status_code": 200,
+  "content_type": "application/json",
+  "encoding": "text",
+  "body": "[{\"code\":\"0\",\"created_at\":\"2026-09-13 06:49:55\",\"est_actif\":1,\"id\":3,\"libelle\":\"Exonere 0%\",\"taux\":0.0},{\"code\":\"5\",\"created_at\":\"2026-09-13 06:49:55\",\"est_actif\":1,\"id\":2,\"libelle\":\"TVA Reduite 5%\",\"taux\":5.0},{\"code\":\"18\",\"created_at\":\"2026-09-13 06:49:55\",\"est_actif\":1,\"id\":1,\"libelle\":\"TVA Standard 18%\",\"taux\":18.0}]\n",
+  "sha256": "3caafcab0282cd3f1281d4e2cefed62b87b3b855646f25e5b2264ee8347e0188"
+}

@@ -1,0 +1,34 @@
+[
+  {
+    "path": "/api/invoices/<int:invoice_id>",
+    "reason": "aucune donnée en base SQLite pour le(s) paramètre(s) invoice_id"
+  },
+  {
+    "path": "/api/invoices/<int:invoice_id>/pdf",
+    "reason": "aucune donnée en base SQLite pour le(s) paramètre(s) invoice_id"
+  },
+  {
+    "path": "/api/pos/ticket/<int:ticket_id>",
+    "reason": "aucune donnée en base SQLite pour le(s) paramètre(s) ticket_id"
+  },
+  {
+    "path": "/api/pos/ticket/<int:ticket_id>/pdf",
+    "reason": "aucune donnée en base SQLite pour le(s) paramètre(s) ticket_id"
+  },
+  {
+    "path": "/billing/invoice/<int:invoice_id>",
+    "reason": "aucune donnée en base SQLite pour le(s) paramètre(s) invoice_id"
+  },
+  {
+    "path": "/billing/invoice/<int:invoice_id>/edit",
+    "reason": "aucune donnée en base SQLite pour le(s) paramètre(s) invoice_id"
+  },
+  {
+    "path": "/certified/<invoice_id>/print",
+    "reason": "aucune donnée en base SQLite pour le(s) paramètre(s) invoice_id"
+  },
+  {
+    "path": "/pos/ticket/<int:ticket_id>/print",
+    "reason": "aucune donnée en base SQLite pour le(s) paramètre(s) ticket_id"
+  }
+]

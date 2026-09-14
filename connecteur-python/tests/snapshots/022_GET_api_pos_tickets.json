@@ -1,0 +1,13 @@
+{
+  "file": "022_GET_api_pos_tickets.json",
+  "endpoint": "pos.api_list_tickets",
+  "methods": [
+    "GET"
+  ],
+  "path": "/api/pos/tickets",
+  "status_code": 200,
+  "content_type": "application/json",
+  "encoding": "text",
+  "body": "{\"tickets\":[],\"total\":0}\n",
+  "sha256": "3cc3346c8d8fca80607a94447bf513c156194cf37942ba993a66aab240fe8d3b"
+}

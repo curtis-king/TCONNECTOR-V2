@@ -23,7 +23,7 @@ import traceback
 
 import pyodbc
 
-from config_manager import get_db_config
+from app.config.manager import get_db_config
 
 logging.basicConfig(
     level=logging.INFO,

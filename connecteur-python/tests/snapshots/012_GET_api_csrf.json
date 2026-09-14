@@ -1,0 +1,13 @@
+{
+  "file": "012_GET_api_csrf.json",
+  "endpoint": "sync_api.api_csrf",
+  "methods": [
+    "GET"
+  ],
+  "path": "/api/csrf",
+  "status_code": 200,
+  "content_type": "application/json",
+  "encoding": "text",
+  "body": "{\"token\":\"5Yk2lAzH_ZF_0amPKhvNYqhXzT1HbD4aKrGEOEyhpEg\"}\n",
+  "sha256": "d12c57474607fef846c27b167cc3cb17d9d61a3a1703d626141cc2d0cd1c2887"
+}

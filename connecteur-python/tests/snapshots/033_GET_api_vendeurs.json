@@ -1,0 +1,13 @@
+{
+  "file": "033_GET_api_vendeurs.json",
+  "endpoint": "directory.api_list_vendeurs",
+  "methods": [
+    "GET"
+  ],
+  "path": "/api/vendeurs",
+  "status_code": 200,
+  "content_type": "application/json",
+  "encoding": "text",
+  "body": "{\"total\":3,\"vendeurs\":[{\"code\":\"VEN-0001\",\"created_at\":\"2026-09-13 09:48:40\",\"email\":\"admin@example.com\",\"est_actif\":1,\"id\":1,\"nom\":\"Admin\",\"pin\":\"\",\"prenom\":\"admin\",\"role\":\"responsable\",\"telephone\":\"\",\"updated_at\":\"2026-09-13 09:48:40\"},{\"code\":\"VEN-0003\",\"created_at\":\"2026-09-13 09:48:40\",\"email\":\"sarah@ikobo.cg\",\"est_actif\":1,\"id\":3,\"nom\":\"Ikobo\",\"pin\":\"\",\"prenom\":\"Sarah\",\"role\":\"vendeur\",\"telephone\":\"\",\"updated_at\":\"2026-09-13 09:48:40\"},{\"code\":\"VEN-0002\",\"created_at\":\"2026-09-13 09:48:40\",\"email\":\"paul@moukonda.cg\",\"est_actif\":1,\"id\":2,\"nom\":\"Moukonda\",\"pin\":\"\",\"prenom\":\"Paul\",\"role\":\"vendeur\",\"telephone\":\"\",\"updated_at\":\"2026-09-13 09:48:40\"}]}\n",
+  "sha256": "2641fb51c68406efa2ac614089ac83e49f3756d6d81742cbae4c109942732df6"
+}

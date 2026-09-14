@@ -1,0 +1,13 @@
+{
+  "file": "008_GET_api_config_export.json",
+  "endpoint": "config.api_config_export",
+  "methods": [
+    "GET"
+  ],
+  "path": "/api/config/export",
+  "status_code": 200,
+  "content_type": "application/json",
+  "encoding": "text",
+  "body": "{\n  \"db\": {\n    \"server\": \"\",\n    \"port\": 1433,\n    \"database\": \"\",\n    \"user\": \"\",\n    \"password\": \"\",\n    \"trusted_connection\": false,\n    \"encrypt\": false,\n    \"trust_server_certificate\": true,\n    \"pool_max\": 10,\n    \"pool_min\": 2,\n    \"pool_idle_timeout_ms\": 30000,\n    \"connection_timeout_ms\": 15000,\n    \"request_timeout_ms\": 30000,\n    \"polling_interval_ms\": 30000,\n    \"polling_enabled\": true\n  },\n  \"sfec\": {\n    \"enabled\": true,\n    \"api_key\": \"\",\n    \"base_url\": \"https://api.sfec.gouv.cg\",\n    \"sandbox_url\": \"https://sandbox.api.sfec.gouv.cg\",\n    \"use_sandbox\": true,\n    \"certify_status\": \"A COMPTABILISER\"\n  },\n  \"company\": {\n    \"name\": \"\",\n    \"slogan\": \"\",\n    \"address\": \"\",\n    \"city\": \"\",\n    \"country\": \"\",\n    \"phone\": \"\",\n    \"email\": \"\",\n    \"website\": \"\",\n    \"tax_number\": \"\",\n    \"rc_number\": \"\",\n    \"logo_base64\": \"\",\n    \"logo_file_name\": \"\",\n    \"currency\": \"XAF\",\n    \"currency_symbol\": \"FCFA\",\n    \"default_payment_terms\": \"Net 30\",\n    \"bank_name\": \"\",\n    \"bank_account\": \"\",\n    \"bank_iban\": \"\",\n    \"bank_swift\": \"\",\n    \"invoice_prefix\": \"INV-\",\n    \"invoice_next_number\": 1,\n    \"invoice_notes\": \"\",\n    \"invoice_footer\": \"\",\n    \"tax_regime\": \"\",\n    \"qrcode_enabled\": true\n  },\n  \"queue\": {\n    \"max_concurrent\": 5,\n    \"max_retries\": 4,\n    \"retry_base_delay_ms\": 2000,\n    \"max_queue_size\": 10000,\n    \"job_timeout_ms\": 60000\n  },\n  \"validation\": {\n    \"strict_mode\": true,\n    \"tolerance_amount\": 0.01\n  },\n  \"notifications\": {\n    \"enabled\": true,\n    \"events\": [\n      \"invoice:synced\",\n      \"invoice:validation_error\",\n      \"queue:dlq_added\",\n      \"db:connection_failed\",\n      \"db:polling_error\"\n    ]\n  },\n  \"rate_limit\": {\n    \"daily_max\": 2500,\n    \"per_minute_max\": 100,\n    \"alert_threshold_percent\": 80\n  },\n  \"dashboard\": {\n    \"port\": 3000,\n    \"host\": \"0.0.0.0\",\n    \"auth_enabled\": true,\n    \"session_secret\": \"CHANGE-ME-IN-PRODUCTION\",\n    \"login_email\": \"admin@example.com\",\n    \"login_password\": \"CHANGE-ME\",\n    \"session_max_age_hours\": 24\n  },\n  \"pos\": {\n    \"stock_control\": true\n  },\n  \"log_level\": \"info\"\n}",
+  "sha256": "a848ea52ead29611259699062624516ba16942c13598affb6cd0c58f51414439"
+}

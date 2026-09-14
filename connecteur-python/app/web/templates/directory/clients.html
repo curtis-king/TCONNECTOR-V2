@@ -1,0 +1,130 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Gestion Clients - T-CONNECTOR</title>{{ static_tags | safe }}</head><body>
+{{ nav | safe }}<div class="main-content">
+<h2 style="margin-bottom:16px">Gestion Clients &amp; Fournisseurs</h2>
+
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <h2 style="margin:0">Contacts ({{ total }})</h2>
+    <button class="btn btn-primary" onclick="showModal()">+ Nouveau Client</button>
+  </div>
+  <div style="display:flex;gap:12px;margin-bottom:12px">
+    <div class="stat" style="flex:1"><div class="value">{{ nb_clients }}</div><div class="label">Clients</div></div>
+    <div class="stat" style="flex:1"><div class="value">{{ nb_fournis }}</div><div class="label">Fournisseurs</div></div>
+    <div class="stat" style="flex:1"><div class="value">{{ nb_total }}</div><div class="label">Total</div></div>
+  </div>
+  <div style="margin-bottom:12px">
+    <input type="text" id="searchContact" placeholder="Rechercher un contact..." oninput="filterContacts()" style="max-width:400px">
+  </div>
+  <table>
+    <thead><tr><th>Code</th><th>Type</th><th>Nom</th><th>NIU</th><th>Email</th><th>Telephone</th><th>Ville</th><th>Statut</th><th>Actions</th></tr></thead>
+    <tbody id="contactsBody">{{ rows | safe }}</tbody>
+  </table>
+</div>
+
+<div id="contactModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:1000;align-items:center;justify-content:center">
+  <div class="card" style="width:500px;max-width:95vw">
+    <h2 id="modalTitle">Nouveau Client</h2>
+    <input type="hidden" id="editId">
+    <div class="grid-2">
+      <div><label>Code</label><input type="text" id="fCode" placeholder="CLI-XXX"></div>
+      <div><label>Type</label><select id="fType"><option value="client">Client</option><option value="fournisseur">Fournisseur</option></select></div>
+    </div>
+    <label>Nom / Raison Sociale *</label><input type="text" id="fNom" placeholder="Nom complet">
+    <div class="grid-2">
+      <div><label>NIU (Identifiant fiscal)</label><input type="text" id="fNiu" placeholder="CG123456789"></div>
+      <div><label>Ville</label><input type="text" id="fVille" placeholder="Pointe-Noire"></div>
+    </div>
+    <div class="grid-2">
+      <div><label>Email</label><input type="email" id="fEmail" placeholder="contact@societe.cg"></div>
+      <div><label>Telephone</label><input type="text" id="fTel" placeholder="+24206XXXXXXX"></div>
+    </div>
+    <label>Adresse</label><input type="text" id="fAdresse" placeholder="Quartier, rue...">
+    <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+      <button class="btn" style="background:#334155;color:#94a3b8" onclick="hideModal()">Annuler</button>
+      <button class="btn btn-primary" onclick="saveContact()">Enregistrer</button>
+    </div>
+  </div>
+</div>
+
+{{ toast | safe }}
+<script>
+window.CSRF_TOKEN = {{ csrf_json | safe }};
+var contacts = {{ contacts_json | safe }};
+
+function filterContacts() {
+  var q = document.getElementById("searchContact").value.toLowerCase();
+  var rows = document.getElementById("contactsBody").querySelectorAll("tr");
+  for(var i=0;i<rows.length;i++){
+    var txt = rows[i].textContent.toLowerCase();
+    rows[i].style.display = txt.indexOf(q)>=0 ? "" : "none";
+  }
+}
+
+function showModal(contact) {
+  var m = document.getElementById("contactModal");
+  m.style.display = "flex";
+  if(contact) {
+    document.getElementById("modalTitle").textContent = "Editer Contact";
+    document.getElementById("editId").value = contact.id;
+    document.getElementById("fCode").value = contact.code || "";
+    document.getElementById("fType").value = contact.type || "client";
+    document.getElementById("fNom").value = contact.nom || "";
+    document.getElementById("fNiu").value = contact.niu || "";
+    document.getElementById("fVille").value = contact.ville || "";
+    document.getElementById("fEmail").value = contact.email || "";
+    document.getElementById("fTel").value = contact.telephone || "";
+    document.getElementById("fAdresse").value = contact.adresse || "";
+  } else {
+    document.getElementById("modalTitle").textContent = "Nouveau Client";
+    document.getElementById("editId").value = "";
+    document.getElementById("fCode").value = "";
+    document.getElementById("fNom").value = "";
+    document.getElementById("fNiu").value = "";
+    document.getElementById("fVille").value = "";
+    document.getElementById("fEmail").value = "";
+    document.getElementById("fTel").value = "";
+    document.getElementById("fAdresse").value = "";
+  }
+}
+function hideModal() { document.getElementById("contactModal").style.display = "none"; }
+
+function editContact(id) {
+  for(var i=0;i<contacts.length;i++){
+    if(contacts[i].id === id) { showModal(contacts[i]); return; }
+  }
+}
+
+function deleteContact(id) {
+  if(!confirm("Supprimer ce contact ?")) return;
+  api("DELETE", "/api/contacts/" + id)
+    .then(function(d){
+      if(d.success) { showToast("Contact supprime","ok"); setTimeout(function(){location.reload()},800); }
+      else showToast(d.error || "Erreur","err");
+    });
+}
+
+function saveContact() {
+  var editId = document.getElementById("editId").value;
+  var data = {
+    code: document.getElementById("fCode").value,
+    type: document.getElementById("fType").value,
+    nom: document.getElementById("fNom").value,
+    niu: document.getElementById("fNiu").value,
+    ville: document.getElementById("fVille").value,
+    email: document.getElementById("fEmail").value,
+    telephone: document.getElementById("fTel").value,
+    adresse: document.getElementById("fAdresse").value
+  };
+  if(!data.nom) { showToast("Nom requis","err"); return; }
+  var url = "/api/contacts";
+  var method = "POST";
+  if(editId) { url = "/api/contacts/" + editId; method = "PUT"; }
+  api(method, url, data)
+    .then(function(d){
+      if(d.success) { showToast(editId ? "Contact modifie" : "Contact cree","ok"); setTimeout(function(){location.reload()},800); }
+      else showToast(d.error || "Erreur","err");
+    });
+}
+</script>
+</div></body></html>

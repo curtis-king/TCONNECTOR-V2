@@ -1,0 +1,13 @@
+{
+  "file": "034_GET_api_vendeurs_1.json",
+  "endpoint": "directory.api_get_vendeur",
+  "methods": [
+    "GET"
+  ],
+  "path": "/api/vendeurs/1",
+  "status_code": 200,
+  "content_type": "application/json",
+  "encoding": "text",
+  "body": "{\"code\":\"VEN-0001\",\"created_at\":\"2026-09-13 09:48:40\",\"email\":\"admin@example.com\",\"est_actif\":1,\"id\":1,\"nom\":\"Admin\",\"pin\":\"\",\"prenom\":\"admin\",\"role\":\"responsable\",\"telephone\":\"\",\"updated_at\":\"2026-09-13 09:48:40\"}\n",
+  "sha256": "55dff7f1d49cd3e896daf1e5c64023cc789cf1f7ab89542abc0439d8ee796ece"
+}

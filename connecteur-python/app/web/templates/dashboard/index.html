@@ -1,0 +1,26 @@
+
+<div class="card"><h2>Tableau de bord</h2><div class="stat-grid">
+<div class="stat"><div class="icon-chip" style="background:#eff6ff;color:#4f46e5"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div><div class="value">{{ sales }}</div><div class="label">Factures Vente</div></div>
+<div class="stat"><div class="icon-chip" style="background:#fef3c7;color:#d97706"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/></svg></div><div class="value">{{ purchases }}</div><div class="label">Factures Achat</div></div>
+<div class="stat"><div class="icon-chip" style="background:#ede9fe;color:#7c3aed"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div><div class="value">{{ val_count }}</div><div class="label">A comptabiliser</div></div>
+<div class="stat"><div class="icon-chip" style="background:#dcfce7;color:#16a34a"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div><div class="value">{{ contacts }}</div><div class="label">Contacts</div></div>
+<div class="stat"><div class="icon-chip" style="background:#dbeafe;color:#2563eb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg></div><div class="value">{{ tax }}</div><div class="label">Taux TVA</div></div>
+<div class="stat"><div class="icon-chip" style="background:#fce7f3;color:#db2777"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></div><div class="value">{{ syncs }}</div><div class="label">Syncs</div></div>
+<div class="stat"><div class="icon-chip" style="background:#ecfdf5;color:#059669"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></div><div class="value">{{ certs }}</div><div class="label">Certifiees SFEC</div></div>
+</div></div>
+<div class="grid-2"><div class="card"><h2>Etat du systeme</h2><table>
+<tr><td>Base de donnees</td><td><span class="badge {{ db_ok }}">{{ db_txt }}</span></td></tr>
+<tr><td>Connexion Internet</td><td><span class="badge {{ net_cls }}">{{ net_txt }}</span></td></tr>
+<tr><td>Derniere sync</td><td>{{ last_sync | safe }}</td></tr>
+<tr><td>Erreur</td><td>{{ error | safe }}</td></tr>
+<tr><td>SFEC API</td><td><span class="badge {{ sfec_ok }}">{{ sfec_txt }}</span></td></tr>
+<tr><td>URL SFEC</td><td>{{ sfec_url | safe }}</td></tr>
+{{ retry_html | safe }}
+<tr><td>Polling auto</td><td><span class="badge badge-ok">Actif</span></td></tr>
+</table></div>
+<div class="card no-print"><h2>Actions</h2>
+<button class="btn btn-primary" onclick="syncNow()">Sync Manuelle</button>
+<button class="btn btn-warning" onclick="location.href='/pending'" style="margin-left:8px">A certifier</button>
+<button class="btn btn-success" onclick="location.href='/certified'" style="margin-left:8px">Certifiees</button>
+<div style="margin-top:8px;font-size:12px;color:#64748b" id="sync-status"></div>
+</div></div>
