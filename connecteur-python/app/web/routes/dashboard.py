@@ -169,6 +169,14 @@ def print_certified(invoice_id):
             )
 
     return render_template("dashboard/print.html",
+        doc_label=_esc(doc_label),
+        invoice_type=_esc(inv_type),
+        recipient_type=_esc(inv.get("recipient_type", "")),
+        reference_invoice_id=_esc(inv.get("reference_invoice_id", "") or ""),
+        discount_amount=_esc(fmt_money(inv.get("discount_amount", "0"))),
+        total_exempt=_esc(fmt_money(inv.get("total_exempt_amount", "0"))),
+        additional_cent_tax=_esc(fmt_money(inv.get("additional_cent_tax", "0"))),
+        electronic_stamp_duty=_esc(fmt_money(inv.get("electronic_stamp_duty", "0"))),
         invoice_number=_esc(inv.get("invoice_number", "")),
         invoice_date=_esc((inv.get("invoice_date") or "")[:10]),
         currency=_esc(inv.get("currency", "XAF")),

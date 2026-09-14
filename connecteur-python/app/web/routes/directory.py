@@ -45,7 +45,9 @@ def api_create_contact():
     data = request.get_json(silent=True) or {}
     try:
         result = pos_engine.create_contact(data)
-        return jsonify(result)
+        if not result.get("success"):
+            code = 409 if result.get("field") == "niu" else 400
+        return jsonify(result), code
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
 
@@ -117,11 +119,19 @@ def api_delete_vendeur(vendeur_id):
 @_login_required
 def api_update_contact(contact_id):
     data = request.get_json(silent=True) or {}
+    if "niu" in data and data["niu"]:
+        with sqlite_db.get_cursor() as cur:
+            cur.execute("SELECT id FROM contacts WHERE niu = ? AND niu <> '' AND id <> ?",
+                        (data["niu"], contact_id))
+            if cur.fetchone():
+                return jsonify({"success": False,
+                                "error": "Doublon NIU '{}'".format(data["niu"]),
+                                "field": "niu"}), 409
     try:
         with sqlite_db.get_cursor() as cur:
             fields = []
             vals = []
-            for k in ("nom", "type", "email", "telephone", "niu", "adresse", "ville", "pays", "est_actif"):
+            for k in ("nom", "type", "email", "telephone", "niu", "adresse", "ville", "pays", "est_actif", "rccm", "is_taxable"):
                 if k in data:
                     fields.append("{} = ?".format(k))
                     vals.append(data[k])

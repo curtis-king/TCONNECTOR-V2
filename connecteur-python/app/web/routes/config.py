@@ -51,6 +51,10 @@ def config_page():
     # ── TAB 5: VALIDATION & LIMITES ──
     notif_events = notifications.get("events", [])
     body = render_template("config/index.html",
+        legal_form=_esc(company.get("legal_form", "")),
+        rc_number=_esc(company.get("rc_number", "")),
+        capital=_esc(str(company.get("capital", "") or "")),
+        logo_file_name=_esc(company.get("logo_file_name", "")),
         server=_esc(db.get("server", "")),
         port=_esc(db.get("port", 1433)),
         database=_esc(db.get("database", "")),

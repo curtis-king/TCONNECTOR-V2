@@ -523,12 +523,22 @@ def sqlite_invoice_to_sfec(invoice):
         "montant_ht": invoice.get("montant_ht", 0),
         "montant_tva": invoice.get("montant_tva", 0),
         "montant_ttc": invoice.get("montant_ttc", 0),
+        "montant_restant": invoice.get("montant_restant", 0),  # fix: manquait, amount_due retombait toujours sur total_amount
         "recipient_niu": invoice.get("tiers_niu", ""),
         "recipient_phone": invoice.get("tiers_telephone", ""),
         "recipient_email": invoice.get("tiers_email", ""),
         "recipient_type_raw": invoice.get("tiers_type", "business"),
         "recipient_address": invoice.get("tiers_adresse", ""),
         "nom_tiers": invoice.get("tiers_nom", ""),
+        "type_doc": invoice.get("type_doc", "vente"),
+        "payment_method": invoice.get("payment_method", "bank_transfer"),
+        "devise": invoice.get("devise", "XAF"),
+        "recipient_rccm": invoice.get("recipient_rccm", ""),
+        "is_recipient_taxable": invoice.get("is_recipient_taxable", 1),
+        "discount_amount": invoice.get("discount_amount", 0),
+        "additional_cent_tax": invoice.get("additional_cent_tax", 0),
+        "reference_invoice_id": invoice.get("reference_invoice_id", ""),
+        "payment_date": invoice.get("payment_date", ""),
     }
 
     lignes_adaptees = []
@@ -536,18 +546,23 @@ def sqlite_invoice_to_sfec(invoice):
         lignes_adaptees.append({
             "description": l.get("designation", ""),
             "article_design": l.get("designation", ""),
+            "designation": l.get("designation", ""),
             "article_famille": l.get("famille", l.get("code_article", "")),
+            "classification_code": l.get("classification_code", ""),
             "article_nature": 0,
+            "type_article": l.get("type_article", "product"),
             "quantite": l.get("quantite", 1),
             "prix_unitaire": l.get("prix_unitaire", 0),
             "montant_tva": l.get("montant_tva", 0),
             "montant_ttc": l.get("montant_ttc", 0),
             "taux_tva": str(l.get("taux_tva", 18)),
+            "discount_amount": l.get("remise_montant", 0),
+            "discount_type": l.get("discount_type", "fixed"),
+            "subtotal": l.get("subtotal", 0),
         })
     adapted["lignes"] = lignes_adaptees
 
     return db_invoice_to_sfec(adapted)
-
 
 def certify_sqlite_invoice(invoice):
     sfec_req = sqlite_invoice_to_sfec(invoice)
