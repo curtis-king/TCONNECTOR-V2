@@ -20,6 +20,7 @@
 <div><label>Date fin</label><input type="date" id="f_date_to"></div>
 <div><label>Statut</label><select id="f_statut">{{ statut_opts | safe }}</select></div>
 <div><label>Source</label><select id="f_source">{{ source_opts | safe }}</select></div>
+<div><label>Type</label><select id="f_type_doc"><option value="">Tous</option><option value="vente">Vente</option><option value="avoir">Avoir</option></select></div>
 <div><label>N facture</label><input type="text" id="f_search" placeholder="FA000002..." style="min-width:150px"></div>
 <div><button type="submit" class="btn btn-primary">Filtrer</button></div>
 <div><button type="button" class="btn btn-sm" onclick="resetFilters()">Reinitialiser</button></div>
@@ -36,9 +37,10 @@
 <th style="text-align:right">Restant</th>
 <th data-sort="statut" onclick="toggleSort('statut')">Statut<span id="sort_statut"></span></th>
 <th data-sort="source" onclick="toggleSort('source')">Source<span id="sort_source"></span></th>
+<th>Type</th>
 <th>SFEC</th><th>Sage</th><th>Actions</th>
 </tr></thead>
-<tbody id="inv-body"><tr><td colspan="12" style="text-align:center;color:#64748b">Chargement...</td></tr></tbody>
+<tbody id="inv-body"><tr><td colspan="13" style="text-align:center;color:#64748b">Chargement...</td></tr></tbody>
 </table>
 <div id="inv-pagination" style="margin-top:10px"></div></div><script>
 window.NATIVE_ALERTS = true;
@@ -47,6 +49,7 @@ function esc(x){var d=document.createElement("div");d.textContent=(x==null?"":St
 function fmt(x){return Number(x||0).toLocaleString("fr-FR",{maximumFractionDigits:0});}
 function buildQ(){
 var q=[],a=function(k,v){if(v!==null&&v!==""){q.push(k+"="+encodeURIComponent(v));}};
+a("type_doc",document.getElementById("f_type_doc").value);
 a("statut",document.getElementById("f_statut").value);
 a("source",document.getElementById("f_source").value);
 a("search",document.getElementById("f_search").value);
@@ -76,6 +79,7 @@ return '<tr><td><a href="'+u+'" style="color:#38bdf8;text-decoration:none">'+esc
 +'<td style="text-align:right">'+fmt(rest)+'</td>'
 +'<td><span class="badge '+sb+'">'+esc(s)+'</span></td>'
 +'<td><span class="badge badge-info">'+esc(t.source)+'</span></td>'
++'<td><span class="badge '+(t.type_doc==="avoir"?"badge-warn":"badge-info")+'" title="'+(t.type_doc==="avoir"?esc(t.reference_invoice_id||""):"")+'">'+(t.type_doc==="avoir"?"Avoir":"Vente")+'</span></td>'
 +'<td>'+sfecCell(t)+'</td><td>'+sageCell(t)+'</td>'
 +'<td><a class="btn btn-sm" href="'+u+'" target="_blank" style="text-decoration:none">Voir</a></td></tr>';}
 function setArrows(){
@@ -98,19 +102,19 @@ function render(){
 setArrows();
 api("GET","/api/invoices/list?"+buildQ()).then(function(d){
 var tb=document.getElementById("inv-body");tb.innerHTML="";
-if(!d.invoices.length){tb.innerHTML='<tr><td colspan="12" style="text-align:center;color:#64748b">Aucune facture</td></tr>';}
+if(!d.invoices.length){tb.innerHTML='<tr><td colspan="13" style="text-align:center;color:#64748b">Aucune facture</td></tr>';}
 else{for(var i=0;i<d.invoices.length;i++){tb.innerHTML+=invRow(d.invoices[i]);}}
 document.getElementById("inv-count").textContent=d.total;paginate(d);
 }).catch(function(e){showToast("Erreur: "+e,"err");});}
 function go(n){bs.page=n;render();}
 function setLimit(n){bs.limit=Number(n);bs.page=1;render();}
 function toggleSort(k){if(bs.sort_by===k){bs.sort_dir=bs.sort_dir==="DESC"?"ASC":"DESC";}else{bs.sort_by=k;bs.sort_dir="DESC";}bs.page=1;render();}
-function resetFilters(){["f_statut","f_source","f_search","f_date_from","f_date_to"].forEach(function(id){document.getElementById(id).value="";});bs.page=1;render();}
+function resetFilters(){["f_statut","f_source","f_search","f_date_from","f_date_to", "f_type_doc"].forEach(function(id){document.getElementById(id).value="";});bs.page=1;render();}
 function syncBi(){api("POST","/api/sync/bi",{}).then(function(d){showToast("Sync: "+d.pushed+" poussees, "+d.pull_new+" tirees","ok");render()}).catch(function(e){showToast("Erreur: "+e,"err")});}
 function certifyBilling(id){api("POST","/api/sfec/certify",{invoice_id:"INV-"+id}).then(function(r){if(r.success&&r.certification_number){showToast("Certifiee SFEC: "+r.certification_number,"ok");render();}else if(r.success){showToast("Certification envoyee, en attente...","warn");render();}else{showToast("Certification: "+(r.error||"echec"),"err");}})}
 function pushInvoice(id){api("POST","/api/invoices/"+id+"/push-sage").then(function(r){if(r.success){showToast("Facture poussee vers Sage","ok");render();}else{showToast("Push Sage: "+(r.error||"echec"),"err");}})}
 document.getElementById("f_search").addEventListener("input",(function(){var t;return function(){clearTimeout(t);t=setTimeout(function(){bs.page=1;render();},250);};})());
 document.getElementById("filters-form").addEventListener("submit",function(e){e.preventDefault();bs.page=1;render();});
-["f_statut","f_source","f_date_from","f_date_to"].forEach(function(id){document.getElementById(id).addEventListener("change",function(){bs.page=1;render();});});
+["f_statut","f_source","f_date_from","f_date_to", "f_type_doc"].forEach(function(id){document.getElementById(id).addEventListener("change",function(){bs.page=1;render();});});
 render();
 </script>
