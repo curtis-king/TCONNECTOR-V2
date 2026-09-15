@@ -276,19 +276,19 @@
   var taxRates={{ tax_rates_json | safe }};
   var existingLines={{ lignes_json | safe }};
   var certifiedSales={{ certified_sales_json | safe }};
+  var currentRef={{ reference_invoice_id | tojson }};
   var isEdit={{ is_edit_js }};
   var invoiceId={{ inv_id_js }};
   var lineCounter=0;
 
-  function initRefInvoiceSelect(){var sel=document.getElementById("reference_invoice_id");certifiedSales.forEach(function(f){var o=document.createElement("option");o.value=f.numero;o.textContent=f.numero+" - "+f.tiers_nom+" ("+f.montant_ttc+")";sel.appendChild(o)})}
+  function initRefInvoiceSelect(){var sel=document.getElementById("reference_invoice_id");certifiedSales.forEach(function(f){var o=document.createElement("option");o.value=f.numero;o.textContent=f.numero+" - "+f.tiers_nom+" ("+f.montant_ttc+")";sel.appendChild(o)});if(currentRef){if(!sel.querySelector('option[value="'+currentRef+'"]')){var o0=document.createElement("option");o0.value=currentRef;o0.textContent=currentRef+" - (origine)";sel.appendChild(o0)}sel.value=currentRef}}
   function onTiersTypeChange(){var t=document.querySelector("select[name='tiers_type']").value;
-  function onTypeDocChange(){document.getElementById("ref-invoice-field").style.display=(document.getElementById("type_doc").value==="avoir")?"block":"none"}
   var info=document.getElementById("tiers-type-info");
   var labels={business:"Entreprise",individual:"Particulier",government:"Gouvernement",foreign:"Etranger"};
   info.textContent="Type SFEC: "+((labels[t]||t));
   if(t==="business"||t==="government"){document.getElementById("niu-field").classList.add("niu-required");document.getElementById("niu-label").innerHTML='NIU <span class="niu-star">*</span>';var h=document.getElementById("niu-hint");h.textContent="NIU obligatoire pour la certification SFEC (16-17 caracteres)";h.style.display="block"}
   else{document.getElementById("niu-field").classList.remove("niu-required");document.getElementById("niu-label").textContent="NIU";document.getElementById("niu-hint").style.display="none"}}
-
+  function onTypeDocChange(){document.getElementById("ref-invoice-field").style.display=(document.getElementById("type_doc").value==="avoir")?"block":"none"}
   function fillContact(){var sel=document.getElementById("contact-select");var c=contacts.find(function(x){return x.code===sel.value});if(c){document.getElementById("tiers_code").value=c.code;document.getElementById("tiers_nom").value=c.nom;document.getElementById("tiers_niu").value=c.niu||"";document.getElementById("tiers_email").value=c.email||"";document.getElementById("tiers_telephone").value=c.telephone||"";document.getElementById("tiers_adresse").value=c.adresse||"";document.getElementById("recipient_rccm").value=c.rccm||"";
 document.getElementById("is_recipient_taxable").value=(c.is_taxable===0||c.is_taxable===false)?"0":"1";var rt=c.type_raw?String(c.type_raw).toLowerCase():"";if(!rt&&c.type){rt=String(c.type).toLowerCase();if(rt==="client")rt="business";if(rt==="fournisseur")rt="business"}if(rt==="government"||rt==="gouvernement")rt="government";if(rt==="particulier"||rt==="individual"||rt==="individu")rt="individual";if(rt==="etranger"||rt==="foreign")rt="foreign";if(rt)document.querySelector("select[name='tiers_type']").value=rt;onTiersTypeChange()}}
 

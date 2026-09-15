@@ -132,6 +132,14 @@ def invoice_detail_page(invoice_id):
         sfb = "badge-ok" if ss in ("CERTIFIE", "DEJA_CERTIFIE") else "badge-err" if ss == "ERREUR" else "badge-warn"
         sfec_html = '<tr><td>SFEC</td><td><span class="badge {}">{}</span></td></tr><tr><td>N Certif</td><td>{}</td></tr>'.format(sfb, _esc(ss), _esc(inv.get("sfec_num_certif", "")[:30] or "-"))
     return _page(render_template("billing/detail.html",
+        montant_ht_brut=inv.get("montant_ht_brut") or 0,
+        montant_restant=inv.get("montant_restant") or 0,
+        total_line_discount_amount=inv.get("total_line_discount_amount") or 0,
+        discount_amount=inv.get("discount_amount") or 0,
+        total_exempt_amount=inv.get("total_exempt_amount") or 0,
+        total_tax_t_amount=inv.get("total_tax_t_amount") or 0,
+        total_tax_r_amount=inv.get("total_tax_r_amount") or 0,
+        additional_cent_tax=inv.get("additional_cent_tax") or 0,
         meta_rows=meta_rows,
         numero=_esc(inv.get("numero", "")),
         inv_id=inv["id"],
@@ -182,20 +190,22 @@ def _invoice_form_page(inv):
     recipient_rccm = inv.get("recipient_rccm", "") if is_edit else ""
 
     # Cibles possibles d'un avoir : ventes certifiées non déjà avoirées
+    current_ref = reference_invoice_id if is_edit and reference_invoice_id else ""
     with sqlite_db.get_cursor() as cur:
         cur.execute("""
-            SELECT i.id, i.numero, i.date_facture, i.montant_ttc
+            SELECT i.id, i.numero, i.date_facture, i.montant_ttc, i.tiers_nom
             FROM invoices i
             WHERE i.type_doc = 'vente'
               AND i.sfec_statut IN ('CERTIFIE', 'DEJA_CERTIFIE')
-              AND NOT EXISTS (
+              AND (NOT EXISTS (
                   SELECT 1 FROM invoices a
                   WHERE a.type_doc = 'avoir' AND a.reference_invoice_id = i.numero
-              )
+              ) OR i.numero = ?)
             ORDER BY i.date_facture DESC LIMIT 200
-        """)
+        """, (current_ref,))
+        certified_sales_json = json.dumps(sqlite_db.rows_to_list(cur.fetchall()), ensure_ascii=False)
 
-    certified_sales_json = json.dumps(sqlite_db.rows_to_list(cur.fetchall()), ensure_ascii=False)
+        certified_sales_json = json.dumps(sqlite_db.rows_to_list(cur.fetchall()), ensure_ascii=False)
     lignes_json = json.dumps(inv.get("lignes", [])) if is_edit else "[]"
     contacts_json = json.dumps(pos_engine.list_contacts(limit=200))
     products_json = json.dumps(pos_engine.list_products(limit=200))
