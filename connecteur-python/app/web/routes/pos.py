@@ -104,11 +104,14 @@ def pos_page():
         vendeur_opts_html += '<option value="{}"{}>{}</option>'.format(v["id"], sel, label)
 
     with sqlite_db.get_cursor() as cur:
-        cur.execute("SELECT id, code, nom, niu FROM contacts WHERE type = 'client' AND est_actif = 1 ORDER BY nom")
+        cur.execute("SELECT id, code, nom, niu, rccm, is_taxable, type FROM contacts WHERE type = 'client' AND est_actif = 1 ORDER BY nom")
         pos_clients = sqlite_db.rows_to_list(cur.fetchall())
-    pos_clients_js = json.dumps([
-        {"id": c["id"], "code": c["code"], "nom": c["nom"]} for c in pos_clients
+        pos_clients_js = json.dumps([
+        {"id": c["id"], "code": c["code"], "nom": c["nom"],
+         "niu": c.get("niu", ""), "rccm": c.get("rccm", ""),
+         "is_taxable": c.get("is_taxable", 1)} for c in pos_clients
     ], ensure_ascii=False)
+
     pos_clients_html = '<option value="|CLI-CPT|Client comptoir" selected>Client comptoir</option>'
     for c in pos_clients:
         pos_clients_html += '<option value="|{}|{}">{}</option>'.format(

@@ -5,6 +5,50 @@ from app.storage.db import (
     recalc_invoice_totals, log_sync, row_to_dict, rows_to_list
 )
 
+class InvoiceIntegrityError(ValueError):
+    """Levée quand les règles d'intégrité SFEC pour un avoir ne sont pas respectées."""
+    pass
+
+
+def avoir_existe_pour(facture_numero):
+    """True si un avoir existe deja pour la facture de vente donnee (regle 3, §2.5)."""
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT 1 FROM invoices
+            WHERE type_doc = 'avoir' AND reference_invoice_id = ?
+            LIMIT 1
+        """, (facture_numero,))
+        return cur.fetchone() is not None
+
+
+def _validate_avoir(reference_invoice_id):
+    """Applique les 3 règles d'intégrité d'un avoir (§2.5 du plan)."""
+    if not reference_invoice_id:
+        raise InvoiceIntegrityError(
+            "reference_invoice_id est obligatoire pour un avoir (type_doc='avoir')."
+        )
+
+    facture_origine = get_invoice_by_numero(reference_invoice_id)
+    if not facture_origine:
+        raise InvoiceIntegrityError(
+            "La facture de vente '{}' referencee par l'avoir est introuvable.".format(
+                reference_invoice_id
+            )
+        )
+
+    if facture_origine.get("sfec_statut") not in ("CERTIFIE", "DEJA_CERTIFIE"):
+        raise InvoiceIntegrityError(
+            "La facture '{}' doit etre certifiee avant de recevoir un avoir "
+            "(statut actuel: {}).".format(
+                reference_invoice_id, facture_origine.get("sfec_statut") or "non certifie"
+            )
+        )
+
+    if avoir_existe_pour(reference_invoice_id):
+        raise InvoiceIntegrityError(
+            "Un avoir existe deja pour la facture '{}'.".format(reference_invoice_id)
+        )
+
 logger = logging.getLogger("t-connector.invoice")
 
 
@@ -25,6 +69,16 @@ def create_invoice(data):
     source = data.get("source", "web")
     notes = data.get("notes", "")
     statut = data.get("statut", "brouillon")
+    payment_method = data.get("payment_method")
+    devise = data.get("devise")
+    recipient_rccm = data.get("recipient_rccm")
+    is_recipient_taxable = data.get("is_recipient_taxable")
+    reference_invoice_id = data.get("reference_invoice_id")
+    montant_ht_brut = data.get("montant_ht_brut")
+
+    if type_doc == 'avoir' : 
+        _validate_avoir(reference_invoice_id)
+
 
     with get_cursor() as cur:
         cur.execute("""
@@ -32,13 +86,18 @@ def create_invoice(data):
                 numero, date_facture, date_echeance, reference,
                 contact_id, tiers_code, tiers_nom, tiers_niu,
                 tiers_email, tiers_telephone, tiers_adresse, tiers_type,
-                statut, type_doc, source, notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                statut, type_doc, source, notes, payment_method, devise, recipient_rccm, is_recipient_taxable, reference_invoice_id, montant_ht_brut
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             numero, date_facture, date_echeance, reference,
             contact_id, tiers_code, tiers_nom, tiers_niu,
             tiers_email, tiers_telephone, tiers_adresse, tiers_type,
-            statut, type_doc, source, notes
+            statut, type_doc, source, notes, payment_method,
+devise,
+recipient_rccm,
+is_recipient_taxable,
+reference_invoice_id,
+montant_ht_brut
         ))
         invoice_id = cur.lastrowid
 
@@ -60,12 +119,14 @@ def update_invoice(invoice_id, data):
     fields = []
     values = []
     updatable = [
-        "date_facture", "date_echeance", "reference", "contact_id",
-        "tiers_code", "tiers_nom", "tiers_niu", "tiers_email",
-        "tiers_telephone", "tiers_adresse", "tiers_type",
-        "statut", "valide", "notes", "sfec_statut", "sfec_num_certif",
-        "sfec_signature", "sfec_qr_code", "sfec_date_certif", "sfec_id"
-    ]
+    "date_facture", "date_echeance", "reference", "contact_id",
+    "tiers_code", "tiers_nom", "tiers_niu", "tiers_email",
+    "tiers_telephone", "tiers_adresse", "tiers_type",
+    "statut", "valide", "notes", "sfec_statut", "sfec_num_certif",
+    "sfec_signature", "sfec_qr_code", "sfec_date_certif", "sfec_id",
+    "payment_method", "devise", "recipient_rccm",
+    "is_recipient_taxable", "payment_date",
+]
 
     for field in updatable:
         if field in data:
@@ -233,6 +294,10 @@ def _save_lines(invoice_id, lignes):
             famille = ligne.get("famille", "")
             unite = ligne.get("unite", "U")
             product_id = ligne.get("product_id")
+            subtotal = ligne.get("subtotal")
+            discount_type = ligne.get("discount_type")
+            type_article = ligne.get("type_article")
+            classification_code = ligne.get("classification_code")
 
             montant_ht, montant_tva, montant_ttc = calc_line_totals(
                 quantite, prix_unitaire, remise_pct, taux_tva
@@ -244,13 +309,19 @@ def _save_lines(invoice_id, lignes):
                     invoice_id, numero_ligne, designation, quantite, prix_unitaire,
                     remise_pct, remise_montant, montant_ht, taux_tva,
                     montant_tva, montant_ttc, code_article, code_compte,
-                    famille, unite, product_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    famille, unite, product_id, subtotal,
+discount_type,
+type_article,
+classification_code
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 invoice_id, numero_ligne, designation, quantite, prix_unitaire,
                 remise_pct, remise_montant, montant_ht, taux_tva,
                 montant_tva, montant_ttc, code_article, code_compte,
-                famille, unite, product_id
+                famille, unite, product_id, subtotal,
+discount_type,
+type_article,
+classification_code,
             ))
 
 

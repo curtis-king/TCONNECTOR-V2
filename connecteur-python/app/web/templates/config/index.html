@@ -61,6 +61,9 @@
 <h2 style="margin-bottom:16px">Configuration Entreprise</h2>
 <form id="form-company" onsubmit="event.preventDefault();saveForm('form-company','/api/config/company')">
 <div class="grid-2">
+<div><label>Forme juridique</label><input type="text" name="legal_form" value="{{ legal_form | safe }}"></div>
+<div><label>N° RCCM</label><input type="text" name="rc_number" value="{{ rc_number | safe }}"></div>
+<div><label>Capital social</label><input type="text" name="capital" value="{{ capital | safe }}"></div>
 <div><label>Nom de l'entreprise</label><input type="text" name="name" value="{{ name | safe }}"></div>
 <div><label>NIU (Tax Number)</label><input type="text" name="tax_number" value="{{ tax_number | safe }}"></div>
 <div><label>Adresse</label><input type="text" name="address" value="{{ address | safe }}"></div>

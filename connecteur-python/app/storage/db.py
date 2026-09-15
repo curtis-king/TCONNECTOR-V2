@@ -79,6 +79,8 @@ def get_cursor():
 SCHEMA = """
             CREATE TABLE IF NOT EXISTS contacts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rccm TEXT DEFAULT '',
+                is_taxable INTEGER DEFAULT 1,
                 code TEXT UNIQUE NOT NULL,
                 nom TEXT NOT NULL DEFAULT '',
                 type TEXT NOT NULL DEFAULT 'client',
@@ -174,6 +176,20 @@ SCHEMA = """
                 sage_piece TEXT DEFAULT '',
                 notes TEXT DEFAULT '',
                 vendeur_id INTEGER,
+                payment_method TEXT DEFAULT 'bank_transfer',
+                devise TEXT DEFAULT 'XAF',
+                montant_ht_brut REAL DEFAULT 0.0,
+                total_tax_t_amount REAL DEFAULT 0.0,
+                total_tax_r_amount REAL DEFAULT 0.0,
+                total_exempt_amount REAL DEFAULT 0.0,
+                discount_amount REAL DEFAULT 0.0,
+                total_line_discount_amount REAL DEFAULT 0.0,
+                additional_cent_tax REAL DEFAULT 0.0,
+                electronic_stamp_duty REAL DEFAULT 0.0,
+                is_recipient_taxable INTEGER DEFAULT 1,
+                recipient_rccm TEXT DEFAULT '',
+                reference_invoice_id TEXT DEFAULT '',
+                payment_date TEXT DEFAULT '',
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now')),
                 FOREIGN KEY (contact_id) REFERENCES contacts(id),
@@ -198,6 +214,10 @@ SCHEMA = """
                 famille TEXT DEFAULT '',
                 unite TEXT DEFAULT 'U',
                 product_id INTEGER,
+                subtotal REAL DEFAULT 0.0,
+                discount_type TEXT DEFAULT 'fixed',
+                type_article TEXT DEFAULT 'product',
+                classification_code TEXT DEFAULT '',
                 created_at TEXT DEFAULT (datetime('now')),
                 FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE CASCADE,
                 FOREIGN KEY (product_id) REFERENCES products(id)
@@ -281,6 +301,11 @@ SCHEMA = """
             CREATE INDEX IF NOT EXISTS idx_vendeurs_code ON vendeurs(code);
             CREATE INDEX IF NOT EXISTS idx_sync_log_table ON sync_log(table_name);
             CREATE INDEX IF NOT EXISTS idx_sync_log_status ON sync_log(status);
+                        CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_avoir_unique
+                ON invoices(reference_invoice_id)
+                WHERE type_doc = 'avoir' AND reference_invoice_id <> '';
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_niu_unique
+                ON contacts(niu) WHERE niu <> '';
 """
 
 
@@ -311,6 +336,32 @@ def _migrate():
             ("remise_globale_pct", "REAL DEFAULT 0.0"),
             ("remise_globale_montant", "REAL DEFAULT 0.0"),
         ]),
+        ("invoices", [
+            ("payment_method", "TEXT DEFAULT 'bank_transfer'"),
+            ("devise", "TEXT DEFAULT 'XAF'"),
+            ("montant_ht_brut", "REAL DEFAULT 0.0"),
+            ("total_tax_t_amount", "REAL DEFAULT 0.0"),
+            ("total_tax_r_amount", "REAL DEFAULT 0.0"),
+            ("total_exempt_amount", "REAL DEFAULT 0.0"),
+            ("discount_amount", "REAL DEFAULT 0.0"),
+            ("total_line_discount_amount", "REAL DEFAULT 0.0"),
+            ("additional_cent_tax", "REAL DEFAULT 0.0"),
+            ("electronic_stamp_duty", "REAL DEFAULT 0.0"),
+            ("is_recipient_taxable", "INTEGER DEFAULT 1"),
+            ("recipient_rccm", "TEXT DEFAULT ''"),
+            ("reference_invoice_id", "TEXT DEFAULT ''"),
+            ("payment_date", "TEXT DEFAULT ''"),
+        ]),
+        ("invoice_lines", [
+            ("subtotal", "REAL DEFAULT 0.0"),
+            ("discount_type", "TEXT DEFAULT 'fixed'"),
+            ("type_article", "TEXT DEFAULT 'product'"),
+            ("classification_code", "TEXT DEFAULT ''"),
+        ]),
+        ("contacts", [
+            ("rccm", "TEXT DEFAULT ''"),
+            ("is_taxable", "INTEGER DEFAULT 1"),
+        ]),
     ]
     with get_cursor() as cur:
         for table, columns in migrations:
@@ -323,6 +374,25 @@ def _migrate():
                 except Exception as e:
                     logger.warning("Migration: %s.%s deja presente (%s)", table, col, e)
 
+        # Index uniques (BUG-003 anti-double-avoir, BUG-005 doublons NIU)
+        try:
+            cur.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_avoir_unique
+                ON invoices(reference_invoice_id)
+                WHERE type_doc = 'avoir' AND reference_invoice_id <> ''
+            """)
+        except Exception as e:
+            logger.warning("Migration: index idx_invoices_avoir_unique - %s", e)
+
+        try:
+            cur.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_niu_unique
+                ON contacts(niu) WHERE niu <> ''
+            """)
+        except Exception as e:
+            logger.warning(
+                "Migration: index idx_contacts_niu_unique - echec, verifier les doublons NIU (%s)", e
+            )
 
 def _seed_default_tax_rates():
     defaults = [
@@ -349,6 +419,10 @@ def _seed_default_settings():
         "default_tva_code": "18",
         "company_logo_path": "",
         "ticket_message": "Merci pour votre achat !",
+        "avoir_prefix": "",
+        "avoir_format": "",
+        "avoir_next_number": ""
+
     }
     with get_cursor() as cur:
         for key, value in defaults.items():
@@ -417,6 +491,22 @@ def generate_invoice_number():
                 return numero
             num += 1
 
+def generate_avoir_number():
+    fmt = get_setting("doc_format_avoir", "AV{:06d}")
+    with get_cursor() as cur:
+        cur.execute("SELECT value FROM settings WHERE key = 'doc_next_avoir'")
+        row = cur.fetchone()
+        num = int(row["value"]) if row else 1
+        while True:
+            numero = fmt.format(num)
+            cur.execute("SELECT id FROM invoices WHERE numero = ?", (numero,))
+            if not cur.fetchone():
+                cur.execute(
+                    "UPDATE settings SET value = ?, updated_at = datetime('now') WHERE key = 'doc_next_avoir'",
+                    (str(num + 1),)
+                )
+                return numero
+            num += 1
 
 def generate_ticket_number():
     prefix = get_setting("pos_ticket_prefix", "TK")
@@ -464,20 +554,42 @@ def recalc_invoice_totals(invoice_id):
             SELECT
                 COALESCE(SUM(montant_ht), 0) as total_ht,
                 COALESCE(SUM(montant_tva), 0) as total_tva,
-                COALESCE(SUM(montant_ttc), 0) as total_ttc
+                COALESCE(SUM(montant_ttc), 0) as total_ttc,
+                COALESCE(SUM(subtotal), 0) as total_brut,
+                COALESCE(SUM(subtotal - montant_ht), 0) as total_remise_lignes,
+                COALESCE(SUM(CASE WHEN taux_tva = 18 THEN montant_tva ELSE 0 END), 0) as tva_t,
+                COALESCE(SUM(CASE WHEN taux_tva = 5 THEN montant_tva ELSE 0 END), 0) as tva_r,
+                COALESCE(SUM(CASE WHEN taux_tva = 0 THEN montant_ht ELSE 0 END), 0) as exonere
             FROM invoice_lines WHERE invoice_id = ?
         """, (invoice_id,))
         row = cur.fetchone()
         if row:
+            additional_cent_tax = round(row["tva_t"] * 0.05, 2)
             cur.execute("""
                 UPDATE invoices SET
                     montant_ht = ?, montant_tva = ?, montant_ttc = ?,
-                    montant_restant = ?, updated_at = datetime('now')
+                    montant_restant = ?,
+                    montant_ht_brut = ?,
+                    total_line_discount_amount = ?,
+                    total_tax_t_amount = ?,
+                    total_tax_r_amount = ?,
+                    total_exempt_amount = ?,
+                    additional_cent_tax = ?,
+                    updated_at = datetime('now')
                 WHERE id = ?
-            """, (row["total_ht"], row["total_tva"], row["total_ttc"],
-                  row["total_ttc"], invoice_id))
+            """, (
+                row["total_ht"], row["total_tva"], row["total_ttc"],
+                row["total_ttc"],
+                row["total_brut"],
+                row["total_remise_lignes"],
+                row["tva_t"],
+                row["tva_r"],
+                row["exonere"],
+                additional_cent_tax,
+                invoice_id
+            ))
 
-
+            
 def recalc_ticket_totals(ticket_id):
     with get_cursor() as cur:
         cur.execute("""

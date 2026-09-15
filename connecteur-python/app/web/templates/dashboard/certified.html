@@ -23,11 +23,12 @@
 <th data-sort="numero" onclick="toggleSortC('numero')">Numero<span id="so_numero"></span></th>
 <th data-sort="date" onclick="toggleSortC('date')">Date certif<span id="so_date"></span></th>
 <th data-sort="statut" onclick="toggleSortC('statut')">Statut<span id="so_statut"></span></th>
+<th>Type</th>
 <th data-sort="buyer" onclick="toggleSortC('buyer')">Client<span id="so_buyer"></span></th>
 <th data-sort="montant" onclick="toggleSortC('montant')" style="text-align:right">Montant TTC<span id="so_montant"></span></th>
 <th class="no-print">Action</th>
 </tr></thead>
-<tbody id="cert-body"><tr><td colspan="6" style="text-align:center;color:#64748b">Chargement...</td></tr></tbody>
+<tbody id="cert-body"><tr><td colspan="7" style="text-align:center;color:#64748b">Chargement...</td></tr></tbody>
 </table>
 <div class="no-print" id="cert-pag" style="margin-top:12px"></div>
 </div>
@@ -77,8 +78,10 @@ function renderCert(){
   var html="";
   for(var i=0;i<slice.length;i++){
     var v=slice[i];
-    html+="<tr><td>"+escC(v.numero)+"</td><td>"+escC(v.date||"-")+"</td><td>"+badgeStatut(v.statut)+"</td><td>"+escC(v.buyer||"-")+"</td><td style='text-align:right'>"+fmtMoney(v.montant)+"</td><td class='no-print'><a class='btn btn-sm btn-primary' href='/certified/"+encodeURIComponent(v.id)+"/print' target='_blank'>Imprimer</a></td></tr>";
-  }
+    html+="<tr><td>"+escC(v.numero)+"</td><td>"+escC(v.date||"-")+"</td><td>"+badgeStatut(v.statut)+"</td>"
++"<td>"+(v.invoice_type==="creditNote"?'<span class="badge badge-warn">Avoir</span>':'<span class="badge badge-info">Vente</span>')+"</td>"
++"<td>"+escC(v.buyer||"-")+"</td><td style='text-align:right'>"+fmtMoney(v.montant)+"</td>"
++"<td class='no-print'><a class='btn btn-sm btn-primary' href='/certified/"+encodeURIComponent(v.id)+"/print' target='_blank'>Imprimer</a></td></tr>";  }
   if(!slice.length)html='<tr><td colspan="6" style="text-align:center;color:#64748b">Aucune facture correspondante</td></tr>';
   document.getElementById("cert-body").innerHTML=html;
   setArrowsC();

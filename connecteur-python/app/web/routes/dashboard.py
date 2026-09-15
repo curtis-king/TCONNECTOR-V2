@@ -157,7 +157,7 @@ def print_certified(invoice_id):
     else:
         qr_display = '<p style="color:#999">QR Code non disponible</p>'
  
-    items = inv.get("items_json") or []
+    items = inv.get("items") or inv.get("items_json") or []
     item_rows = ""
     for item in items:
         item_rows += "<tr><td>{}</td><td style='text-align:right'>{}</td><td style='text-align:right'>{}</td><td style='text-align:right'>{}</td><td style='text-align:right'>{}</td></tr>".format(
@@ -167,8 +167,17 @@ def print_certified(invoice_id):
             _esc(item.get("tax_rate", "0")),
             fmt_money(item.get("net_amount", 0), 2),
             )
-
+    inv_type = inv.get("invoice_type", "") or inv.get("invoice_status", "")
+    doc_label = "FACTURE D'AVOIR" if inv_type == "creditNote" else "FACTURE"
     return render_template("dashboard/print.html",
+        doc_label=_esc(doc_label),
+        invoice_type=_esc(inv_type),
+        recipient_type=_esc(inv.get("recipient_type", "")),
+        reference_invoice_id=_esc(inv.get("reference_invoice_id", "") or ""),
+        discount_amount=_esc(fmt_money(inv.get("discount_amount", "0"))),
+        total_exempt=_esc(fmt_money(inv.get("total_exempt_amount", "0"))),
+        additional_cent_tax=_esc(fmt_money(inv.get("additional_cent_tax", "0"))),
+        electronic_stamp_duty=_esc(fmt_money(inv.get("electronic_stamp_duty", "0"))),
         invoice_number=_esc(inv.get("invoice_number", "")),
         invoice_date=_esc((inv.get("invoice_date") or "")[:10]),
         currency=_esc(inv.get("currency", "XAF")),

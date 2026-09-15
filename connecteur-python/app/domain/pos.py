@@ -1,4 +1,5 @@
 import logging
+import sqlite3
 from datetime import datetime
 from app.storage.db import (
     get_cursor, generate_ticket_number, generate_invoice_number,
@@ -6,6 +7,17 @@ from app.storage.db import (
     log_sync, row_to_dict, rows_to_list
 )
 from app.config.manager import get_config
+
+_MODE_PAIEMENT_TO_SFEC = {
+    "especes": "cash",
+    "carte": "card",
+    "cheque": "check",
+    "virement": "bank_transfer",
+    "mobile_money": "mobile_money",
+}
+
+def _map_payment_method(mode_paiement):
+    return _MODE_PAIEMENT_TO_SFEC.get((mode_paiement or "").strip().lower(), "bank_transfer")
 
 logger = logging.getLogger("t-connector.pos")
 
@@ -86,6 +98,8 @@ def _create_invoice_for_ticket(ticket_id, data, totals):
         date_facture = date_ticket[:10]
         tiers_nom = data.get("tiers_nom", "Client comptoir")
         mode_paiement = data.get("mode_paiement", "especes")
+        payment_method = _map_payment_method(mode_paiement)
+        devise = data.get("devise", "XAF")
 
         with get_cursor() as cur:
             cur.execute("""
@@ -93,42 +107,70 @@ def _create_invoice_for_ticket(ticket_id, data, totals):
                     numero, date_facture, reference, contact_id,
                     tiers_code, tiers_nom, tiers_type, montant_ht, montant_tva,
                     montant_ttc, montant_restant, statut, valide,
-                    type_doc, source, vendeur_id, notes
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'a_comptabiliser', 1, 'vente', 'pos', ?, ?)
+                    type_doc, source, vendeur_id, notes,
+                    payment_method, devise
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'a_comptabiliser', 1, 'vente', 'pos', ?, ?, ?, ?)
             """, (
                 numero, date_facture, "PAIEMENT " + mode_paiement,
                 data.get("contact_id"), data.get("tiers_code", ""), tiers_nom,
                 data.get("tiers_type", "particulier"),
                 totals.get("montant_ht", 0), totals.get("montant_tva", 0),
                 totals.get("montant_ttc", 0), 0,
-                data.get("vendeur_id"), ""
+                data.get("vendeur_id"), "",
+                payment_method, devise,
             ))
             invoice_id = cur.lastrowid
 
         ligne_infos = []
+        montant_ht_brut = 0.0
+        total_line_discount_amount = 0.0
+        total_tax_t_amount = 0.0
+        total_tax_r_amount = 0.0
+        total_exempt_amount = 0.0
+        sum_line_net_ht = 0.0
+
         with get_cursor() as cur:
             for i, ligne in enumerate(data.get("lignes", [])):
                 quantite = float(ligne.get("quantite", 1))
                 prix_unitaire = float(ligne.get("prix_unitaire", 0))
                 taux_tva = float(ligne.get("taux_tva", 18))
-                net_ht, montant_tva, montant_ttc, _ = calc_line_ticket_totals(
-                    quantite, prix_unitaire,
-                    float(ligne.get("remise_pct", 0) or 0),
-                    float(ligne.get("remise_montant", 0) or 0),
-                    taux_tva
+                remise_pct = float(ligne.get("remise_pct", 0) or 0)
+                remise_montant_saisie = float(ligne.get("remise_montant", 0) or 0)
+
+                net_ht, montant_tva, montant_ttc, remise_total = calc_line_ticket_totals(
+                    quantite, prix_unitaire, remise_pct, remise_montant_saisie, taux_tva
                 )
+
+                subtotal = round(quantite * prix_unitaire, 2)
+                discount_type = "percentage" if remise_pct else "fixed"
+                type_article = ligne.get("type_article", "product")
+                classification_code = ligne.get("classification_code", ligne.get("famille", ""))
+
                 cur.execute("""
                     INSERT INTO invoice_lines (
                         invoice_id, numero_ligne, designation, quantite, prix_unitaire,
-                        montant_ht, taux_tva, montant_tva, montant_ttc,
-                        code_article, code_compte, famille, product_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        remise_pct, remise_montant, montant_ht, taux_tva, montant_tva, montant_ttc,
+                        code_article, code_compte, famille, product_id,
+                        subtotal, discount_type, type_article, classification_code
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     invoice_id, i + 1, ligne.get("designation", ""), quantite,
-                    prix_unitaire, net_ht, taux_tva, montant_tva, montant_ttc,
+                    prix_unitaire, remise_pct, remise_total, net_ht, taux_tva, montant_tva, montant_ttc,
                     ligne.get("code_article", ""), ligne.get("code_compte", ""),
-                    ligne.get("famille", ""), ligne.get("product_id")
+                    ligne.get("famille", ""), ligne.get("product_id"),
+                    subtotal, discount_type, type_article, classification_code
                 ))
+
+                montant_ht_brut += subtotal
+                total_line_discount_amount += remise_total
+                sum_line_net_ht += net_ht
+                if taux_tva == 5:
+                    total_tax_r_amount += montant_tva
+                elif taux_tva == 0:
+                    total_exempt_amount += net_ht
+                else:
+                    total_tax_t_amount += montant_tva
+
                 ligne_infos.append({
                     "numero_ligne": i + 1, "designation": ligne.get("designation", ""),
                     "quantite": quantite, "prix_unitaire": prix_unitaire,
@@ -137,8 +179,33 @@ def _create_invoice_for_ticket(ticket_id, data, totals):
                     "code_article": ligne.get("code_article", ""),
                     "code_compte": ligne.get("code_compte", ""),
                     "famille": ligne.get("famille", ""),
-                    "product_id": ligne.get("product_id")
+                    "product_id": ligne.get("product_id"),
+                    "remise_montant": remise_total,
+                    "discount_type": discount_type,
+                    "type_article": type_article,
+                    "classification_code": classification_code,
+                    "subtotal": subtotal,
                 })
+
+        # Remise globale du ticket (non repartie par ligne) : ecart entre la somme
+        # des net_ht par ligne et le montant_ht final du ticket, deja reduit par
+        # recalc_ticket_totals via remise_globale_pct / remise_globale_montant.
+        discount_amount = round(max(sum_line_net_ht - totals.get("montant_ht", sum_line_net_ht), 0), 2)
+        additional_cent_tax = round(total_tax_t_amount * 0.05, 2)  # a verifier: 5% TVA 18% seulement ?
+
+        with get_cursor() as cur:
+            cur.execute("""
+                UPDATE invoices SET
+                    montant_ht_brut = ?, total_tax_t_amount = ?, total_tax_r_amount = ?,
+                    total_exempt_amount = ?, total_line_discount_amount = ?,
+                    discount_amount = ?, additional_cent_tax = ?
+                WHERE id = ?
+            """, (
+                round(montant_ht_brut, 2), round(total_tax_t_amount, 2), round(total_tax_r_amount, 2),
+                round(total_exempt_amount, 2), round(total_line_discount_amount, 2),
+                discount_amount, additional_cent_tax,
+                invoice_id
+            ))
 
         with get_cursor() as cur:
             cur.execute("UPDATE pos_tickets SET invoice_id = ? WHERE id = ?", (invoice_id, ticket_id))
@@ -163,12 +230,18 @@ def _create_invoice_for_ticket(ticket_id, data, totals):
                     "montant_ht": totals.get("montant_ht", 0),
                     "montant_tva": totals.get("montant_tva", 0),
                     "montant_ttc": totals.get("montant_ttc", 0),
+                    "montant_restant": 0,
                     "tiers_nom": tiers_nom,
                     "tiers_type": data.get("tiers_type", "particulier"),
                     "tiers_niu": data.get("tiers_niu", ""),
                     "tiers_telephone": data.get("tiers_telephone", ""),
                     "tiers_email": data.get("tiers_email", ""),
                     "tiers_adresse": data.get("tiers_adresse", ""),
+                    "type_doc": "vente",
+                    "payment_method": payment_method,
+                    "devise": devise,
+                    "discount_amount": discount_amount,
+                    "additional_cent_tax": additional_cent_tax,
                     "lignes": ligne_infos,
                 }
                 cert_res = certify_sqlite_invoice(cert_inv)
@@ -235,7 +308,6 @@ def _create_invoice_for_ticket(ticket_id, data, totals):
         logger.error("Creation invoice POS echouee pour ticket %s: %s", ticket_id, e)
         return {"invoice_id": None, "invoice_numero": None,
                 "sage_ok": False, "sage_error": str(e)[:200]}
-
 
 def get_ticket(ticket_id):
     with get_cursor() as cur:
@@ -548,26 +620,51 @@ def create_contact(data):
     if not code or not nom:
         return {"success": False, "error": "Code et nom requis"}
 
-    with get_cursor() as cur:
-        cur.execute("""
-            INSERT INTO contacts (code, nom, type, email, telephone, niu, adresse, ville, pays)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            code, nom,
-            data.get("type", "client"),
-            data.get("email", ""),
-            data.get("telephone", ""),
-            data.get("niu", ""),
-            data.get("adresse", ""),
-            data.get("ville", ""),
-            data.get("pays", "CG")
-        ))
-        contact_id = cur.lastrowid
+    niu = data.get("niu", "")
+    if niu:
+        with get_cursor() as cur:
+            cur.execute("SELECT id FROM contacts WHERE niu = ?", (niu,))
+            existing = cur.fetchone()
+        if existing:
+            return {
+                "success": False,
+                "error": "Un contact existe deja avec ce NIU",
+                "field": "niu",
+                "existing_value": niu,
+                "existing_contact_id": existing["id"],
+            }
+
+    try:
+        with get_cursor() as cur:
+            cur.execute("""
+                INSERT INTO contacts (
+                    code, nom, type, email, telephone, niu, adresse, ville, pays,
+                    rccm, is_taxable
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                code, nom,
+                data.get("type", "client"),
+                data.get("email", ""),
+                data.get("telephone", ""),
+                niu,
+                data.get("adresse", ""),
+                data.get("ville", ""),
+                data.get("pays", "CG"),
+                data.get("rccm", ""),
+                int(data.get("is_taxable", 1)),
+            ))
+            contact_id = cur.lastrowid
+    except sqlite3.IntegrityError as e:
+        logger.warning("Contact creation - doublon NIU (fallback IntegrityError): %s", e)
+        return {
+            "success": False,
+            "error": "Un contact existe deja avec ce NIU",
+            "field": "niu",
+            "existing_value": niu,
+        }
 
     logger.info("Contact cree: %s - %s (id=%d)", code, nom, contact_id)
     return {"success": True, "id": contact_id}
-
-
 def list_contacts(type_filter=None, search=None, limit=200):
     where_clauses = []
     params = []

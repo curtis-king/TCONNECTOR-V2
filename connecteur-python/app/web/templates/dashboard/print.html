@@ -21,9 +21,12 @@ th{background:#f5f5f5}
 <div class="company-info">{{ seller_addr | safe }}</div>
 <div class="company-info">NIU: {{ seller_niu | safe }}</div>
 <div class="company-info">RCCM: {{ seller_rccm | safe }}</div>
+<div class="company-info">{{ seller_legal_form | safe }} {{ seller_tax_regime | safe }}</div>
+<div class="company-info">Capital: {{ seller_capital | safe }}</div>
 </div>
 <div style="text-align:right">
-<h2>FACTURE</h2>
+<h2>{{ doc_label }}</h2>
+{{ avoir_banner | safe }}
 <div class="company-info">Numero: {{ invoice_number | safe }}</div>
 <div class="company-info">Date: {{ invoice_date | safe }}</div>
 <div class="company-info">Devise: {{ currency | safe }}</div>
@@ -51,7 +54,12 @@ th{background:#f5f5f5}
 <tr class="total-row"><td colspan="4">Total HT</td><td style="text-align:right">{{ total_ht | safe }} {{ currency | safe }}</td></tr>
 <tr class="total-row"><td colspan="4">TVA 18%</td><td style="text-align:right">{{ total_tax18 | safe }} {{ currency | safe }}</td></tr>
 <tr class="total-row"><td colspan="4">TVA 5%</td><td style="text-align:right">{{ total_tax5 | safe }} {{ currency | safe }}</td></tr>
+<tr class="total-row"><td colspan="4">Exonere</td><td style="text-align:right">{{ total_exempt | safe }} {{ currency | safe }}</td></tr>
+<tr class="total-row"><td colspan="4">Remise globale</td><td style="text-align:right">-{{ discount_amount | safe }} {{ currency | safe }}</td></tr>
+<tr class="total-row"><td colspan="4">Centime additionnel</td><td style="text-align:right">{{ additional_cent_tax | safe }} {{ currency | safe }}</td></tr>
+<tr class="total-row"><td colspan="4">Timbre electronique</td><td style="text-align:right">{{ electronic_stamp_duty | safe }} {{ currency | safe }}</td></tr>
 <tr class="total-row"><td colspan="4"><strong>TOTAL TTC</strong></td><td style="text-align:right"><strong>{{ total_ttc | safe }} {{ currency | safe }}</strong></td></tr>
+<tr class="total-row"><td colspan="4"><strong>Net a payer</strong></td><td style="text-align:right"><strong>{{ amount_due | safe }} {{ currency | safe }}</strong></td></tr>
 </tbody></table>
 
 <div class="cert-box">

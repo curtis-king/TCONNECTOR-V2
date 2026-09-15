@@ -11,6 +11,11 @@ from app.integration.sfec.client import SfecClient
 _DEFAULT_RECIPIENT_NIU = "M000000000000001"
 _DEFAULT_RECIPIENT_PHONE = "069134144"
 _DEFAULT_RECIPIENT_EMAIL = "relaud.aka@alucongo.com"
+_TYPE_DOC_TO_SFEC = {
+    "vente": "salesInvoice",
+    "avoir": "creditNote",
+}
+
 
 logger = logging.getLogger("t-connector.sfec.endpoints")
 
@@ -67,6 +72,8 @@ def _map_recipient_type(raw_value):
             return "individual"
     return "business"
 
+def _map_invoice_type(type_doc):
+    return _TYPE_DOC_TO_SFEC.get(type_doc, "salesInvoice")
 
 def _safe_str(val, default=""):
     if val is None:
@@ -123,7 +130,11 @@ def db_invoice_to_sfec(invoice):
         quantity = max(_safe_float(line.get("quantite", 1), 1), 1)
         unit_price = max(_safe_float(line.get("prix_unitaire", 0), 0), 0)
         subtotal = round(unit_price * quantity, 2)
-        discount_amount = 0
+
+        discount_amount = _safe_float(
+            line.get("discount_amount", line.get("remise_montant", 0)), 0
+        )
+        discount_type = _safe_str(line.get("discount_type"), "fixed")
         net_amount = round(subtotal - discount_amount, 2)
 
         rate_num, rate_str = _extract_tax_rate(line.get("taux_tva", "18"))
@@ -138,20 +149,25 @@ def db_invoice_to_sfec(invoice):
         if not designation:
             designation = _safe_str(line.get("article_design"), "")
         if not designation:
+            designation = _safe_str(line.get("designation"), "")
+        if not designation:
             designation = "Article"
 
-        article_famille = _safe_str(line.get("article_famille"), "")
-        classification_code = article_famille if article_famille else None
+        classification_code = _safe_str(line.get("classification_code"), "")
+        if not classification_code:
+            classification_code = _safe_str(line.get("article_famille"), "")
+        classification_code = classification_code or None
 
-        article_nature = line.get("article_nature")
-        try:
-            article_nature = int(article_nature) if article_nature else 0
-        except (ValueError, TypeError):
-            article_nature = 0
-        if article_nature == 1:
-            item_type = "service"
+        type_article = _safe_str(line.get("type_article"), "")
+        if type_article in ("product", "service"):
+            item_type = type_article
         else:
-            item_type = "product"
+            article_nature = line.get("article_nature")
+            try:
+                article_nature = int(article_nature) if article_nature else 0
+            except (ValueError, TypeError):
+                article_nature = 0
+            item_type = "service" if article_nature == 1 else "product"
 
         item = {
             "designation": designation,
@@ -160,8 +176,8 @@ def db_invoice_to_sfec(invoice):
             "unit_price": round(unit_price, 2),
             "quantity": round(quantity, 2),
             "subtotal": round(subtotal, 2),
-            "discount_amount": discount_amount,
-            "discount_type": "fixed",
+            "discount_amount": round(discount_amount, 2),
+            "discount_type": discount_type,
             "net_amount": round(net_amount, 2),
             "tax_rate": rate_str,
             "tax_amount": round(tax_amount, 2),
@@ -227,25 +243,31 @@ def db_invoice_to_sfec(invoice):
         if recipient_type == "business":
             recipient_type = "individual"
 
+    invoice_type = _map_invoice_type(invoice.get("type_doc", "vente"))
+
+    devise = _safe_str(invoice.get("devise"), "")
+    if not devise:
+        devise = "XAF" if company.get("currency", "XAF") == "XAF" else "USD"
+
     sfec_req = {
         "invoice_id": _safe_str(invoice.get("numero"), invoice.get("id", "")),
-        "invoice_type": "salesInvoice",
+        "invoice_type": invoice_type,
         "recipient_type": recipient_type,
         "recipient_name": recipient_name,
-        "is_recipient_taxable": True,
+        "is_recipient_taxable": bool(invoice.get("is_recipient_taxable", True)),
         "subtotal": subtotal,
         "total_tax_t_amount": round(total_tax_t, 2),
         "total_tax_r_amount": round(total_tax_r, 2),
         "total_exempt_amount": round(total_exempt, 2),
         "total_tax_amount": total_tax,
-        "discount_amount": 0,
+        "discount_amount": round(_safe_float(invoice.get("discount_amount", 0), 0), 2),
         "total_line_discount_amount": total_line_discount,
-        "additional_cent_tax": 0,
-        "electronic_stamp_duty": 0,
+        "additional_cent_tax": round(_safe_float(invoice.get("additional_cent_tax", 0), 0), 2),
+        "electronic_stamp_duty": 0,  # regle absolue SFEC : toujours 0, jamais lu depuis invoice
         "total_amount": total_amount,
         "amount_due": round(_safe_float(invoice.get("montant_restant"), total_amount), 2),
-        "currency": "XAF" if company.get("currency", "XAF") == "XAF" else "USD",
-        "payment_method": "bank_transfer",
+        "currency": devise,
+        "payment_method": _safe_str(invoice.get("payment_method"), "bank_transfer"),
         "items": items,
     }
 
@@ -261,6 +283,19 @@ def db_invoice_to_sfec(invoice):
     due_date = _normalize_date(invoice.get("date_echeance"))
     if due_date:
         sfec_req["invoice_due_date"] = due_date
+
+    if invoice_type == "creditNote":
+        ref_invoice_id = _safe_str(invoice.get("reference_invoice_id"))
+        if ref_invoice_id:
+            sfec_req["reference_invoice_id"] = ref_invoice_id
+
+    recipient_rccm = _safe_str(invoice.get("recipient_rccm"))
+    if recipient_rccm:
+        sfec_req["recipient_rccm"] = recipient_rccm
+
+    payment_date = _normalize_date(invoice.get("payment_date"))
+    if payment_date:
+        sfec_req["payment_date"] = payment_date
 
     recipient_niu = raw_niu or comp_niu or _DEFAULT_RECIPIENT_NIU
     if recipient_niu and len(recipient_niu) not in (16, 17):
@@ -278,8 +313,7 @@ def db_invoice_to_sfec(invoice):
 
     return sfec_req
 
-
-def validate_sfec_payload(payload):
+def validate_sfec_payload(payload, tolerance_amount=None):
     errors = []
     total = payload.get("total_amount", 0)
     if not total or total <= 0:
@@ -294,6 +328,8 @@ def validate_sfec_payload(payload):
                 errors.append("items[{}].total_amount doit etre > 0".format(i))
             if not item.get("designation"):
                 errors.append("items[{}].designation vide".format(i))
+            if item.get("type") not in ("product", "service"):
+                errors.append("items[{}].type doit etre 'product' ou 'service'".format(i))
 
     if not payload.get("currency"):
         errors.append("currency requis")
@@ -304,8 +340,48 @@ def validate_sfec_payload(payload):
     if not payload.get("recipient_name"):
         errors.append("recipient_name requis")
 
-    return errors
+    # BUG-002 : un avoir doit obligatoirement referencer sa facture de vente
+    if payload.get("invoice_type") == "creditNote" and not payload.get("reference_invoice_id"):
+        errors.append("reference_invoice_id requis pour un avoir (creditNote)")
 
+    # Regles complementaires (section 5 du plan) -- ajout au-dela de la demande initiale
+    recipient_type = payload.get("recipient_type")
+    if recipient_type in ("business", "government") and not payload.get("recipient_niu"):
+        errors.append("recipient_niu requis pour recipient_type={}".format(recipient_type))
+    if recipient_type == "foreign":
+        for f in ("recipient_email", "recipient_phone", "recipient_address"):
+            if not payload.get(f):
+                errors.append("{} requis pour recipient_type=foreign".format(f))
+
+    # BUG-001 : coherence des totaux (tolerance configurable)
+    if tolerance_amount is None:
+        try:
+            company = get_company_config()
+            tolerance_amount = float(
+                (company.get("validation") or {}).get("tolerance_amount", 1)
+            )
+        except Exception:
+            tolerance_amount = 1.0
+
+    expected_total = round(
+        _safe_float(payload.get("subtotal"), 0)
+        - _safe_float(payload.get("discount_amount"), 0)
+        - _safe_float(payload.get("total_line_discount_amount"), 0)
+        + _safe_float(payload.get("total_tax_amount"), 0)
+        + _safe_float(payload.get("additional_cent_tax"), 0)
+        + _safe_float(payload.get("electronic_stamp_duty"), 0),
+        2
+    )
+    actual_total = _safe_float(payload.get("total_amount"), 0)
+    if abs(expected_total - actual_total) > tolerance_amount:
+        errors.append(
+            "Incoherence totaux: total_amount={} mais attendu~={} (ecart {} > tolerance {})".format(
+                actual_total, expected_total,
+                round(abs(expected_total - actual_total), 2), tolerance_amount
+            )
+        )
+
+    return errors
 
 def _extract_cert_data(sfec_inv):
     cert_number = (sfec_inv.get("certification_short_signature", "")
@@ -447,12 +523,22 @@ def sqlite_invoice_to_sfec(invoice):
         "montant_ht": invoice.get("montant_ht", 0),
         "montant_tva": invoice.get("montant_tva", 0),
         "montant_ttc": invoice.get("montant_ttc", 0),
+        "montant_restant": invoice.get("montant_restant", 0),  # fix: manquait, amount_due retombait toujours sur total_amount
         "recipient_niu": invoice.get("tiers_niu", ""),
         "recipient_phone": invoice.get("tiers_telephone", ""),
         "recipient_email": invoice.get("tiers_email", ""),
         "recipient_type_raw": invoice.get("tiers_type", "business"),
         "recipient_address": invoice.get("tiers_adresse", ""),
         "nom_tiers": invoice.get("tiers_nom", ""),
+        "type_doc": invoice.get("type_doc", "vente"),
+        "payment_method": invoice.get("payment_method", "bank_transfer"),
+        "devise": invoice.get("devise", "XAF"),
+        "recipient_rccm": invoice.get("recipient_rccm", ""),
+        "is_recipient_taxable": invoice.get("is_recipient_taxable", 1),
+        "discount_amount": invoice.get("discount_amount", 0),
+        "additional_cent_tax": invoice.get("additional_cent_tax", 0),
+        "reference_invoice_id": invoice.get("reference_invoice_id", ""),
+        "payment_date": invoice.get("payment_date", ""),
     }
 
     lignes_adaptees = []
@@ -460,18 +546,23 @@ def sqlite_invoice_to_sfec(invoice):
         lignes_adaptees.append({
             "description": l.get("designation", ""),
             "article_design": l.get("designation", ""),
+            "designation": l.get("designation", ""),
             "article_famille": l.get("famille", l.get("code_article", "")),
+            "classification_code": l.get("classification_code", ""),
             "article_nature": 0,
+            "type_article": l.get("type_article", "product"),
             "quantite": l.get("quantite", 1),
             "prix_unitaire": l.get("prix_unitaire", 0),
             "montant_tva": l.get("montant_tva", 0),
             "montant_ttc": l.get("montant_ttc", 0),
             "taux_tva": str(l.get("taux_tva", 18)),
+            "discount_amount": l.get("remise_montant", 0),
+            "discount_type": l.get("discount_type", "fixed"),
+            "subtotal": l.get("subtotal", 0),
         })
     adapted["lignes"] = lignes_adaptees
 
     return db_invoice_to_sfec(adapted)
-
 
 def certify_sqlite_invoice(invoice):
     sfec_req = sqlite_invoice_to_sfec(invoice)
