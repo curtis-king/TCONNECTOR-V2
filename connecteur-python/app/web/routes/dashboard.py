@@ -157,7 +157,7 @@ def print_certified(invoice_id):
     else:
         qr_display = '<p style="color:#999">QR Code non disponible</p>'
  
-    items = inv.get("items_json") or []
+    items = inv.get("items") or inv.get("items_json") or []
     item_rows = ""
     for item in items:
         item_rows += "<tr><td>{}</td><td style='text-align:right'>{}</td><td style='text-align:right'>{}</td><td style='text-align:right'>{}</td><td style='text-align:right'>{}</td></tr>".format(
@@ -167,7 +167,8 @@ def print_certified(invoice_id):
             _esc(item.get("tax_rate", "0")),
             fmt_money(item.get("net_amount", 0), 2),
             )
-
+    inv_type = inv.get("invoice_type", "") or inv.get("invoice_status", "")
+    doc_label = "FACTURE D'AVOIR" if inv_type == "creditNote" else "FACTURE"
     return render_template("dashboard/print.html",
         doc_label=_esc(doc_label),
         invoice_type=_esc(inv_type),

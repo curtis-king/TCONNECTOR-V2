@@ -419,6 +419,10 @@ def _seed_default_settings():
         "default_tva_code": "18",
         "company_logo_path": "",
         "ticket_message": "Merci pour votre achat !",
+        "avoir_prefix": "",
+        "avoir_format": "",
+        "avoir_next_number": ""
+
     }
     with get_cursor() as cur:
         for key, value in defaults.items():

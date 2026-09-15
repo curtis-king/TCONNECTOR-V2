@@ -77,7 +77,7 @@ def create_invoice(data):
     montant_ht_brut = data.get("montant_ht_brut")
 
     if type_doc == 'avoir' : 
-        print("c'est un autre avoir")
+        _validate_avoir(reference_invoice_id)
 
 
     with get_cursor() as cur:
@@ -86,13 +86,18 @@ def create_invoice(data):
                 numero, date_facture, date_echeance, reference,
                 contact_id, tiers_code, tiers_nom, tiers_niu,
                 tiers_email, tiers_telephone, tiers_adresse, tiers_type,
-                statut, type_doc, source, notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                statut, type_doc, source, notes, payment_method, devise, recipient_rccm, is_recipient_taxable, reference_invoice_id, montant_ht_brut
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             numero, date_facture, date_echeance, reference,
             contact_id, tiers_code, tiers_nom, tiers_niu,
             tiers_email, tiers_telephone, tiers_adresse, tiers_type,
-            statut, type_doc, source, notes
+            statut, type_doc, source, notes, payment_method,
+devise,
+recipient_rccm,
+is_recipient_taxable,
+reference_invoice_id,
+montant_ht_brut
         ))
         invoice_id = cur.lastrowid
 
@@ -289,6 +294,10 @@ def _save_lines(invoice_id, lignes):
             famille = ligne.get("famille", "")
             unite = ligne.get("unite", "U")
             product_id = ligne.get("product_id")
+            subtotal = ligne.get("subtotal")
+            discount_type = ligne.get("discount_type")
+            type_article = ligne.get("type_article")
+            classification_code = ligne.get("classification_code")
 
             montant_ht, montant_tva, montant_ttc = calc_line_totals(
                 quantite, prix_unitaire, remise_pct, taux_tva
@@ -300,13 +309,19 @@ def _save_lines(invoice_id, lignes):
                     invoice_id, numero_ligne, designation, quantite, prix_unitaire,
                     remise_pct, remise_montant, montant_ht, taux_tva,
                     montant_tva, montant_ttc, code_article, code_compte,
-                    famille, unite, product_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    famille, unite, product_id, subtotal,
+discount_type,
+type_article,
+classification_code
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 invoice_id, numero_ligne, designation, quantite, prix_unitaire,
                 remise_pct, remise_montant, montant_ht, taux_tva,
                 montant_tva, montant_ttc, code_article, code_compte,
-                famille, unite, product_id
+                famille, unite, product_id, subtotal,
+discount_type,
+type_article,
+classification_code,
             ))
 
 

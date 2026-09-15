@@ -83,6 +83,7 @@ def api_invoices_list():
     page = max(1, request.args.get("page", 1, type=int))
     limit = max(1, min(request.args.get("limit", 25, type=int), 200))
     res = invoice_engine.list_invoices(
+        type_doc=request.args.get("type") or None,
         statut=request.args.get("statut") or None,
         source=request.args.get("source") or None,
         search=request.args.get("search") or None,
@@ -131,6 +132,7 @@ def invoice_detail_page(invoice_id):
         sfb = "badge-ok" if ss in ("CERTIFIE", "DEJA_CERTIFIE") else "badge-err" if ss == "ERREUR" else "badge-warn"
         sfec_html = '<tr><td>SFEC</td><td><span class="badge {}">{}</span></td></tr><tr><td>N Certif</td><td>{}</td></tr>'.format(sfb, _esc(ss), _esc(inv.get("sfec_num_certif", "")[:30] or "-"))
     return _page(render_template("billing/detail.html",
+        meta_rows=meta_rows,
         numero=_esc(inv.get("numero", "")),
         inv_id=inv["id"],
         date_facture=_esc(inv.get("date_facture", "")),
