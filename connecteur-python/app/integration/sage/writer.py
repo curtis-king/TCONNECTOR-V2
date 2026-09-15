@@ -18,7 +18,7 @@ def _get_sage_cursor():
 
 
 def _get_sage_domaine_type():
-    return {"vente_domaine": 0, "vente_type": 6, "achat_domaine": 1}
+    return {"vente_domaine": 0, "vente_type": 6, "avoir_type": 7, "achat_domaine": 1}
 
 
 def write_invoice_to_sage(invoice):
@@ -33,6 +33,9 @@ def write_invoice_to_sage(invoice):
     date_str = invoice.get("date_facture", "")
     try:
         date_val = datetime.strptime(date_str[:10], "%Y-%m-%d")
+        is_avoir = invoice.get("type_doc") == "avoir"
+        doc_type = dc["avoir_type"] if is_avoir else dc["vente_type"]
+        sign = -1 if is_avoir else 1        
     except (ValueError, TypeError):
         date_val = datetime.utcnow()
 
@@ -50,7 +53,7 @@ def write_invoice_to_sage(invoice):
             """.format(tiers_col=tiers_col)
 
             cur.execute(sql, (
-                dc["vente_domaine"], dc["vente_type"], numero, date_val,
+                dc["vente_domaine"], doc_type, numero, date_val,
                 tiers_val, invoice.get("reference", ""),
                 invoice.get("montant_ht", 0), invoice.get("montant_tva", 0),
                 invoice.get("montant_ttc", 0), invoice.get("montant_ttc", 0),
@@ -66,7 +69,7 @@ def write_invoice_to_sage(invoice):
                         DL_Taxe1, DL_MontantTTC, CO_No, AR_Ref
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    dc["vente_domaine"], dc["vente_type"], numero,
+                    dc["vente_domaine"], doc_type, numero,
                     ligne.get("numero_ligne", 1),
                     ligne.get("designation", ""),
                     ligne.get("quantite", 1),

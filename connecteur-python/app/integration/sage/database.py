@@ -529,7 +529,9 @@ def fetch_sales_invoices(updated_from=None, limit=None):
             '' AS sfec_statut"""
 
     limit_clause = "TOP {}".format(limit) if limit else ""
-    where = "WHERE d.DO_Domaine = {} AND d.DO_Type = {}".format(dc["vente_domain"], dc["facture_type"])
+    where = "WHERE d.DO_Domaine = {} AND d.DO_Type IN ({}, {})".format(
+        dc["vente_domain"], dc["facture_type"], dc["avoir_type"]
+    )
 
     tiers_col = _get_tiers_col()
     has_third_party = bool(t.get("third_party"))
@@ -573,6 +575,8 @@ def fetch_sales_invoices(updated_from=None, limit=None):
     ref_select = "ISNULL(d.DO_Ref, '') AS reference" if "DO_REF" in doc_cols else "'' AS reference"
     net_select = "ISNULL(d.DO_NetAPayer, {}) AS montant_restant".format(ttc_expr) if "DO_NETAPAYER" in doc_cols else "{} AS montant_restant".format(ttc_expr)
     valide_select = "ISNULL(d.DO_Valide, 0) AS valide" if "DO_VALIDE" in doc_cols else "0 AS valide"
+    payment_select = "ISNULL(d.DO_ModeReglement, '') AS payment_method" if "DO_MODEREGLEMENT" in doc_cols else "'' AS payment_method"
+    devise_select = "ISNULL(d.DO_Devise, 'XAF') AS devise" if "DO_DEVISE" in doc_cols else "'XAF' AS devise"
 
     params = []
     if updated_from:
@@ -614,6 +618,7 @@ def fetch_sales_invoices(updated_from=None, limit=None):
             {tva_expr} AS montant_tva,
             {ttc_expr} AS montant_ttc,
             {net},
+            {payment}, {devise},
             d.DO_Statut AS statut_code,
             CASE
                 WHEN d.DO_Statut = 0 THEN 'SAISI'
@@ -624,6 +629,8 @@ def fetch_sales_invoices(updated_from=None, limit=None):
                 ELSE 'SAISI'
             END AS statut,
             {valide},
+            CASE WHEN d.DO_Type = {at} THEN 'avoir' ELSE 'vente' END AS type_doc,
+            d.DO_Type AS do_type_raw,
             {dates}
             {sfec}
         FROM {tbl} d
@@ -631,6 +638,9 @@ def fetch_sales_invoices(updated_from=None, limit=None):
         {where}
         ORDER BY d.DO_Date DESC
     """.format(
+        at=dc["avoir_type"],
+        payment=payment_select, 
+        devise=devise_select,
         limit=limit_clause, vd=dc["vente_domain"], ft=dc["facture_type"],
         ref=ref_select, tiers=tiers_select, nom_tiers=nom_tiers_select,
         niu=niu_select, phone=phone_select, email=email_select, addr=addr_select,
@@ -660,7 +670,11 @@ def fetch_sales_invoices(updated_from=None, limit=None):
                 inv["valide"] = int(_safe_float(row[columns.index("valide")]))
             except (ValueError, TypeError):
                 inv["valide"] = 0
-            inv["lignes"] = fetch_doc_lines(dc["vente_domain"], dc["facture_type"], inv["numero"])
+            try:
+                do_type_raw = int(_safe_float(row[columns.index("do_type_raw")]))
+            except (ValueError, TypeError):
+                do_type_raw = dc["facture_type"]
+            inv["lignes"] = fetch_doc_lines(dc["vente_domain"], do_type_raw, inv["numero"])
             invoices.append(inv)
 
         if invoices:
@@ -1468,12 +1482,13 @@ def fetch_certified_invoices():
                     SFEC_NUM_CERTIF AS certif_num,
                     SFEC_SIGNATURE AS signature,
                     SFEC_QR_CODE AS qr_code,
+                    CASE WHEN DO_Type = ? THEN 'creditNote' ELSE 'salesInvoice' END AS invoice_type,
                     ISNULL(TRY_CONVERT(VARCHAR(30), SFEC_DATE_CERTIF, 126), '') AS date
                 FROM {}
                 WHERE DO_Domaine = ?
-                  AND DO_Type = ?
+                  AND DO_Type IN (?, ?)
                   AND SFEC_STATUT IN ('CERTIFIE', 'DEJA_CERTIFIE')
-            """.format(t["documents"]), dc["vente_domain"], dc["facture_type"])
+            """.format(t["documents"]), dc["avoir_type"], dc["vente_domain"], dc["facture_type"], dc["avoir_type"])
             columns = [desc[0] for desc in cur.description]
             return [dict(zip(columns, [str(v) if v is not None else "" for v in row])) for row in cur.fetchall()]
     except Exception:

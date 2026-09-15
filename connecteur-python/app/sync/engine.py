@@ -545,6 +545,49 @@ def auto_certify_invoices():
         numero = inv.get("numero", "")
         sfec_statut = inv.get("sfec_statut", "")
 
+        type_doc = inv.get("type_doc", "vente")
+
+        if sfec_statut in ("EN_COURS", "ERREUR"):
+            continue
+
+        if numero in sfec_lookup:
+            sfec_matched += 1
+            if sfec_statut not in ("DEJA_CERTIFIE", "CERTIFIE"):
+                try:
+                    _handle_already_certified(inv, sfec_lookup)
+                except Exception:
+                    pass
+            continue
+
+        if type_doc == "avoir":
+            ref = inv.get("reference", "")  # HYPOTHESE: DO_Ref porte le numero de la facture d'origine
+            if not ref:
+                try:
+                    mark_certification_failed(inv["id"], "Avoir sans reference facture d'origine")
+                except Exception:
+                    pass
+                continue
+            ref_invoice = next((x for x in invoices_snapshot if x.get("numero") == ref), None)
+            if not ref_invoice or ref_invoice.get("sfec_statut") not in ("CERTIFIE", "DEJA_CERTIFIE"):
+                try:
+                    mark_certification_failed(inv["id"], "Facture d'origine '{}' non certifiee".format(ref))
+                except Exception:
+                    pass
+                continue
+            deja_avoir = any(
+                x.get("type_doc") == "avoir" and x.get("reference") == ref and x.get("id") != inv.get("id")
+                and x.get("sfec_statut") in ("CERTIFIE", "DEJA_CERTIFIE")
+                for x in invoices_snapshot
+            )
+            if deja_avoir:
+                try:
+                    mark_certification_failed(inv["id"], "Un avoir deja certifie existe pour '{}'".format(ref))
+                except Exception:
+                    pass
+                continue
+
+        to_certify.append(inv)
+
         if sfec_statut in ("EN_COURS", "ERREUR"):
             continue
 
