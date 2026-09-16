@@ -8,6 +8,8 @@
 
 ## 1. Verdict global
 
+> **MAJ 2026-09-16 : chantier soldé.** B1 ✅ + B2 ✅, commités. pytest 12/12, comparateur 51/51. Restent connus et documentés : bug pré-existant `api_create_contact` (400 « code unbound » sur succès, non corrigé — hors périmètre) et D1 (helpers JS globaux, optionnel).
+
 Le gros du chantier (étapes 6, 7, 8) est **fait et bien fait**. Il reste : **2 bugs réels**, **3 manques fonctionnels**, **1 dette de sécurité**, et toute l'**étape 9** (tests + snapshots) à finir.
 
 **Filet de sécurité actuel** : après installation de `qrcode` dans le venv (était dans `requirements.txt` mais pas installé) → `pytest` 5/5 vert. Comparateur : **39/51 OK, 12 DIFF** (évolution attendue liée aux avoirs — à inspecter puis régénérer, étape 9.1).
@@ -95,7 +97,7 @@ Critères : pytest vert (anciens + nouveaux tests), comparateur 100 % OK sur bas
 | Agent | Mission | Statut | Fin |
 |---|---|---|---|
 | B1 | Correctifs (pdf, avoir_number, badges, count) | ✅ | 2026-09-16 18:35 |
-| B2 | Sécurité clé SFEC + tests avoirs + snapshots | 🔄 | — |
+| B2 | Sécurité clé SFEC + tests avoirs + snapshots | ✅ | 2026-09-16 19:04 |
 
 ---
 
