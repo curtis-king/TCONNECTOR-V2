@@ -8,6 +8,6 @@
   "status_code": 200,
   "content_type": "application/json",
   "encoding": "text",
-  "body": "{\"last_check\":\"2026-09-13T10:55:07.520158\",\"last_offline\":null,\"last_online\":\"2026-09-13T09:55:07.520167Z\",\"offline_duration_seconds\":null,\"online\":true,\"status\":\"ONLINE\"}\n",
-  "sha256": "a423647bbfc8cd43734ae273d04ee8ca4b219749d35aa856727202f3c2f53e5e"
+  "body": "{\"last_check\":\"2026-09-16T18:59:45.792137\",\"last_offline\":null,\"last_online\":\"2026-09-16T17:59:45.792148Z\",\"offline_duration_seconds\":null,\"online\":true,\"status\":\"ONLINE\"}\n",
+  "sha256": "6756570c0bd7309073f61b6c735787116dfbff00ed5caf4247d8e795b9914f26"
 }

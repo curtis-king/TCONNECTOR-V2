@@ -1,4 +1,5 @@
 {
+  "_readme_sfec_api_key": "SECURITE (S1) : la cle API SFEC est lue en PRIORITE depuis la variable d'environnement SFEC_API_KEY si elle est definie ; sinon depuis la valeur sfec.api_key ci-dessous. Copier ce fichier vers config.json (gitignore) et renseigner la cle dans l'un des deux endroits.",
   "db": {
     "server": "localhost",
     "port": 1433,

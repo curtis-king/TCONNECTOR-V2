@@ -5,7 +5,7 @@ import time
 import logging
 import threading
 from datetime import datetime
-from app.config.manager import get_company_config
+from app.config.manager import get_company_config, get_config
 from app.integration.sfec.client import SfecClient
 
 _DEFAULT_RECIPIENT_NIU = "M000000000000001"
@@ -356,9 +356,13 @@ def validate_sfec_payload(payload, tolerance_amount=None):
     # BUG-001 : coherence des totaux (tolerance configurable)
     if tolerance_amount is None:
         try:
-            company = get_company_config()
+            # T2 (audit 2026-09) : la tolerance vit dans la section TOP-LEVEL
+            # `validation` de la config (config.validation.tolerance_amount),
+            # pas sous `company` — l'ancien lookup lisait company.validation,
+            # toujours absent, et la tolerance effective restait 1.0 quel que
+            # soit la config.
             tolerance_amount = float(
-                (company.get("validation") or {}).get("tolerance_amount", 1)
+                get_config().get("validation", {}).get("tolerance_amount", 1)
             )
         except Exception:
             tolerance_amount = 1.0

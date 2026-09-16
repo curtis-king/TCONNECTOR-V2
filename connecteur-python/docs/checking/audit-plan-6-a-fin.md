@@ -94,8 +94,8 @@ Critères : pytest vert (anciens + nouveaux tests), comparateur 100 % OK sur bas
 
 | Agent | Mission | Statut | Fin |
 |---|---|---|---|
-| B1 | Correctifs (pdf, avoir_number, badges, count) | 🔄 | — |
-| B2 | Sécurité clé SFEC + tests avoirs + snapshots | ⏳ | — |
+| B1 | Correctifs (pdf, avoir_number, badges, count) | ✅ | 2026-09-16 18:35 |
+| B2 | Sécurité clé SFEC + tests avoirs + snapshots | 🔄 | — |
 
 ---
 
@@ -123,6 +123,43 @@ Critères : pytest vert (anciens + nouveaux tests), comparateur 100 % OK sur bas
 ---
 
 ## B2 — Sécurité + Tests + Snapshots
-**Statut** : ⏳ EN ATTENTE
+**Statut** : ✅ TERMINÉ — mer. 16 sept. 2026 19:02 WAT — **aucun commit** (remise à l'orchestrateur)
 
-(à remplir par l'agent)
+**Fichiers modifiés / créés** :
+- `app/config/manager.py` — **S1** : overlay de la variable d'environnement `SFEC_API_KEY` appliqué dans `load_config()` (PRIORITÉ sur `config.json`), avec commentaire documenté. Choix de l'overlay central : tous les lecteurs existants (`get_sfec_config`, `engine.py` ×3, `pos.py`, `routes/config.py` ×2) lisent `get_config().get("sfec")` et voient la clé effective sans toucher au code métier. La clé réelle de `config.json` (gitignoré) est **préservée** — fallback intact, le système continue de marcher sans l'env.
+- `config.example.json` — **S1** : clé `_readme_sfec_api_key` documentant la priorité env > config.json (JSON sans commentaires).
+- `app/integration/sfec/endpoints.py` — **fix T2 requis par le cas 5** : `validate_sfec_payload` lisait `company.validation.tolerance_amount` (section inexistante → tolérance effective bloquée à 1.0, `config.validation.tolerance_amount=0.01` ignoré). Corrigé en lecture de la section top-level `validation`. Correction minimale signalée ici car hors périmètre déclaré (justifiée par la mission « les tests doivent passer réellement »).
+- `tests/test_avoirs.py` — **créé** : 7 tests (les 5 cas du plan ; le cas 5 en 3 sous-tests). Numéros explicites préfixés `TEST-B2-` (aucun compteur de numérotation touché) + fixture autouse de nettoyage avant/après session (base SQLite partagée avec les snapshots).
+- `tests/snapshot_routes.py` + `tests/compare_snapshots.py` — **S1/T1** : `_mask_sensitive()` masque la clé API (`"api_key":"…"` JSON et `name="api_key" value="…"` HTML) → les snapshots trackés par git ne contiennent plus jamais la vraie clé (marqueur `<SFEC_API_KEY>`, sha comparables).
+- `tests/snapshots/*` + `_manifest.json` — **régénérés** (51 snapshots).
+
+**Comportement serveur différent du plan (documenté, tests non faussés)** :
+- **Cas 4 (doublon NIU)** : la création initiale du contact réussit côté base mais la route renvoie **400** « local variable 'code' referenced before assignment » — bug PRÉ-EXISTANT de `api_create_contact` (`directory.py` : `code` n'est affecté que dans la branche d'échec, masqué par le try/except). L'INSERT étant commité avant la réponse, le doublon NIU est bien détecté ensuite → **409 vérifié**. Correction de la route laissée à l'orchestrateur (hors périmètre B2, non requis pour l'intégrité du test).
+
+**Inspection des 13 DIFF (tous explicables, aucun suspect, aucun STOP)** :
+1. `/` — badge SFEC « Déconnectée » → « Connectée » : la vraie clé API a été ajoutée à `config.json` après la prise des snapshots (sandbox SFEC répond désormais). Données/env, pas une régression.
+2. `/api/config/export` — `api_key: ""` → vraie clé : même cause. ⚠️ motivé le masquage S1 dans les snapshots.
+3. `/api/invoices/stats` — nouvelles clés `avoirs`/`ventes` : correctif **M3 de B1** (attendu).
+4. `/api/sfec/certified-from-api` — 500 → 200 : la clé valide remplace l'ancien 401 « API key is required » ; corps = données réelles du sandbox. Effet attendu de la config, pas un effet de bord de code.
+5. `/api/sfec/test` — `connected:false` → `true` : même cause (clé valide).
+6. `/api/utilisateurs` — compte `admin@admin.com` (id=2) créé en base depuis la prise des snapshots + timestamps de connexion. Évolution de données de dev ; timestamps neutralisés par la normalisation.
+7. `/billing` — filtre `type_doc`, colonne Type, badge Avoir/Vente : étapes **6.2/7.3** (attendues).
+8. `/billing/invoice/new` — formulaire réécrit (type_doc, paiement, devise, réf. avoir, RCCM, JS) : étape **7.1** (attendue).
+9. `/certified` — filtres restructurés + colonne Type + badge Avoir (étapes **7.6/M1**) (attendu ; NB `colspan="6"` résiduel dans le message « Aucune facture correspondante », cosmétique).
+10. `/clients` — champs RCCM + assujetti TVA + toast doublon NIU : étape **7.7** (attendue).
+11. `/config` — clé API affichée (masquée désormais dans les snapshots) + champs `legal_form`/`rc_number`/`capital` (attendu).
+12. `/invoices` — bouton filtre « Avoir » + colonne Type (attendu, évolution avoirs).
+13. `/static/css/app.css` — refonte sidebar (rétractée, hover-expand retiré) : évolution UI intervenue entre les deux prises, conforme au plan (templates étape 7).
+
+**Vérifications finales** :
+1. `.venv/bin/python -m pytest` → **12/12 VERT** (5 anciens + 7 nouveaux), ~4 s.
+2. `tests/compare_snapshots.py` → **RAPPORT 51/51 OK, 0 DIFF/ERROR** (régénéré puis re-vérifié APRÈS un run pytest → pas de dérive de données, nettoyage efficace).
+3. `.venv/bin/python -m compileall app main.py` → propre.
+4. Lancement réel : port 3000 déjà occupé par un service tiers (`node dist/server.js`, `OSError 98`) → lancement de l'app réelle (`create_app` + waitress, même chemin que `main.py`) sur 127.0.0.1:3100 via lanceur jetable → `curl /login` → **HTTP 200** (page « T-CONNECTOR - Connexion »), arrêt SIGTERM propre (connexion refusée ensuite).
+5. S1 vérifié fonctionnellement : sans env → clé `config.json` (`def1e8…`) préservée ; avec `SFEC_API_KEY=ENVKEY123` → priorité env dans `get_config()` ET `get_sfec_config()`.
+6. Aucun snapshot ne contient la clé réelle (`grep def1e87 tests/snapshots/` → vide).
+
+**Décisions** :
+- **S1** : option « env prioritaire + clé conservée dans `config.json` (gitignoré) » — conforme à la consigne (système toujours fonctionnel, pas de suppression sans backup). Effet de bord accepté et documenté : si l'env est définie ET qu'on sauvegarde la config via l'UI, la clé env est persistée dans `config.json` (filet de sécurité, fichier gitignoré).
+- **Snapshots** : ajout du masquage clé API car les snapshots sont trackés par git — une régénération brute aurait commité la vraie clé (fuite S1 exactement à l'inverse du chantier).
+- **`certified-from-api` 500→200** : classé explicable (clé valide), conforme au doute de l'audit — vérifié comme comportement réel du sandbox, non un effet de bord des correctifs B1.

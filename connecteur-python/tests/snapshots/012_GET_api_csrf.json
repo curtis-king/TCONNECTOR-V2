@@ -8,6 +8,6 @@
   "status_code": 200,
   "content_type": "application/json",
   "encoding": "text",
-  "body": "{\"token\":\"5Yk2lAzH_ZF_0amPKhvNYqhXzT1HbD4aKrGEOEyhpEg\"}\n",
-  "sha256": "d12c57474607fef846c27b167cc3cb17d9d61a3a1703d626141cc2d0cd1c2887"
+  "body": "{\"token\":\"plKDfcq5Ba2nYxHaY9-Cfhm19ttV5NyiTJpbxjO1FpQ\"}\n",
+  "sha256": "be0b462f10022eeeef12e4fc6f4fc037a1b0b815413519ad19ef0a96916eecf9"
 }

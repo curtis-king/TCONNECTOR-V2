@@ -123,9 +123,29 @@ def _snapshot_name(index, rule, path):
     return f"{index:03d}_{methods}_{safe[:80]}.json"
 
 
+def _mask_sensitive(raw):
+    """Masque la clé API SFEC (S1, audit 2026-09).
+
+    Les snapshots sont trackés par git : on n'y stocke JAMAIS la vraie clé.
+    Masquage appliqué aux deux contextes observés :
+      - JSON  : "api_key": "def1e8…"        (/api/config/export)
+      - HTML  : name="api_key" value="…"    (/config)
+    Le marqueur <SFEC_API_KEY> est stable → les sha256 restent comparables
+    d'une exécution à l'autre, que la clé vienne de l'env ou de config.json.
+    """
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw
+    text = re.sub(r'("api_key"\s*:\s*")[^"]*(")', r"\1<SFEC_API_KEY>\2", text)
+    text = re.sub(r'(name="api_key"\s+value=")[^"]*(")',
+                  r"\1<SFEC_API_KEY>\2", text)
+    return text.encode("utf-8")
+
+
 def _body_to_json(resp):
     """Corps de réponse → dict {encoding, body, sha256}."""
-    raw = resp.get_data()
+    raw = _mask_sensitive(resp.get_data())
     sha = hashlib.sha256(raw).hexdigest()
     content_type = resp.content_type or ""
     if content_type.startswith(("text/", "application/json")) or (

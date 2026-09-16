@@ -147,6 +147,16 @@ def load_config():
         else:
             _config = defaults
             save_config(_config)
+        # S1 (sécurité, audit 2026-09) : la clé API SFEC peut être fournie par
+        # la variable d'environnement SFEC_API_KEY, qui PREND LA PRIORITÉ sur
+        # la valeur de config.json. config.json (gitignoré) reste le fallback
+        # pour les installations existantes — la clé n'y est PAS supprimée.
+        # L'overlay est appliqué ici, sur la config chargée, afin que TOUS les
+        # lecteurs (get_sfec_config, engine.py, pos.py, routes/config.py, ...)
+        # voient la clé effective sans modification de leur code.
+        env_key = os.environ.get("SFEC_API_KEY", "").strip()
+        if env_key:
+            _config.setdefault("sfec", {})["api_key"] = env_key
     return _config
 
 

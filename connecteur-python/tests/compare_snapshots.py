@@ -105,8 +105,8 @@ def compare_snapshots(verbose=False):
 
     from tests.conftest import _init_sqlite, _login_client
 
-    from tests.snapshot_routes import _reset_audit_log  # même règle de
-    # déterminisme que lors de la génération
+    from tests.snapshot_routes import _mask_sensitive, _reset_audit_log  # même règle de
+    # déterminisme que lors de la génération (+ masquage clé API, S1)
 
     _init_sqlite()
     _reset_audit_log()
@@ -136,7 +136,7 @@ def compare_snapshots(verbose=False):
             continue
 
         status_ok = resp.status_code == snap["status_code"]
-        raw = resp.get_data()
+        raw = _mask_sensitive(resp.get_data())
         new_sha = hashlib.sha256(raw).hexdigest()
         body_ok = new_sha == snap["sha256"]
 
