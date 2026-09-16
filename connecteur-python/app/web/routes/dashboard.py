@@ -113,8 +113,9 @@ def pending_page():
     val_count = sum(1 for inv in cache.get("sales_invoices", []) if inv.get("valide", 0) == 1)
     rows = ""
     for inv in uncertified[:200]:
-        rows += "<tr><td>{}</td><td>{}</td><td>{}</td><td style='text-align:right'>{:,.2f}</td><td><button class='btn btn-sm btn-success' onclick=\"certifySingle('{}')\">Certifier</button> <button class='btn btn-sm' style='background:#4a1d96;color:#fff' onclick=\"toMonitor('{}')\">Surveiller</button></td></tr>".format(
-            _esc(inv.get("numero", "")), _esc(inv.get("date_facture", "")), _esc(inv.get("nom_tiers", "")),
+        badge_avoir = ' <span class="badge badge-warn">Avoir</span>' if inv.get("type_doc") == "avoir" else ""
+        rows += "<tr><td>{}{}</td><td>{}</td><td>{}</td><td style='text-align:right'>{:,.2f}</td><td><button class='btn btn-sm btn-success' onclick=\"certifySingle('{}')\">Certifier</button> <button class='btn btn-sm' style='background:#4a1d96;color:#fff' onclick=\"toMonitor('{}')\">Surveiller</button></td></tr>".format(
+            _esc(inv.get("numero", "")), badge_avoir, _esc(inv.get("date_facture", "")), _esc(inv.get("nom_tiers", "")),
             inv.get("montant_ttc", 0), inv.get("id", ""), inv.get("id", "")
         )
     sfec_warn = ""

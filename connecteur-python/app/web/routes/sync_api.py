@@ -83,6 +83,7 @@ def api_certified_list():
                        or inv.get("status") or ""),
             "buyer": inv.get("buyer_name", ""),
             "montant": inv.get("total_ttc", "0"),
+            "invoice_type": inv.get("invoice_type", ""),
         })
     return jsonify({
         "invoices": out,

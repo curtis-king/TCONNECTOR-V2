@@ -2,14 +2,15 @@ import os
 import logging
 from io import BytesIO
 from app.config.manager import get_config
+
+logger = logging.getLogger("t-connector.pdf")
+
 try:
     import qrcode
     HAS_QRCODE = True
 except ImportError:
     HAS_QRCODE = False
     logger.warning("qrcode non installe - generation QR desactivee")
-
-logger = logging.getLogger("t-connector.pdf")
 
 try:
     from reportlab.lib import colors

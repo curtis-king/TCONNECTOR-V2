@@ -290,6 +290,10 @@ def count_invoices():
         stats["certifiees"] = cur.fetchone()["cnt"]
         cur.execute("SELECT COUNT(*) as cnt FROM invoices WHERE sfec_statut = 'EN_COURS'")
         stats["en_cours_certif"] = cur.fetchone()["cnt"]
+        cur.execute("SELECT COUNT(*) as cnt FROM invoices WHERE type_doc = 'avoir'")
+        stats["avoirs"] = cur.fetchone()["cnt"]
+        cur.execute("SELECT COUNT(*) as cnt FROM invoices WHERE type_doc = 'vente'")
+        stats["ventes"] = cur.fetchone()["cnt"]
         cur.execute("SELECT COALESCE(SUM(montant_ttc), 0) as total FROM invoices WHERE statut != 'brouillon'")
         stats["ca_total"] = cur.fetchone()["total"]
     return stats

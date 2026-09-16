@@ -394,6 +394,30 @@ def _migrate():
                 "Migration: index idx_contacts_niu_unique - echec, verifier les doublons NIU (%s)", e
             )
 
+        # Migration settings avoirs : anciennes cles erronees -> cles seedees
+        for old_key, new_key, default in (
+            ("doc_format_avoir", "avoir_format", "AV{:06d}"),
+            ("doc_next_avoir", "avoir_next_number", "1"),
+        ):
+            cur.execute("SELECT value FROM settings WHERE key = ?", (old_key,))
+            old_row = cur.fetchone()
+            cur.execute("SELECT value FROM settings WHERE key = ?", (new_key,))
+            new_row = cur.fetchone()
+            new_val = new_row["value"] if new_row else ""
+            if not new_val:
+                valeur = old_row["value"] if (old_row and old_row["value"]) else default
+                if new_row:
+                    cur.execute(
+                        "UPDATE settings SET value = ?, updated_at = datetime('now') WHERE key = ?",
+                        (valeur, new_key)
+                    )
+                else:
+                    cur.execute(
+                        "INSERT INTO settings (key, value) VALUES (?, ?)",
+                        (new_key, valeur)
+                    )
+            cur.execute("DELETE FROM settings WHERE key = ?", (old_key,))
+
 def _seed_default_tax_rates():
     defaults = [
         ("18", "TVA Standard 18%", 18.0),
@@ -419,9 +443,9 @@ def _seed_default_settings():
         "default_tva_code": "18",
         "company_logo_path": "",
         "ticket_message": "Merci pour votre achat !",
-        "avoir_prefix": "",
-        "avoir_format": "",
-        "avoir_next_number": ""
+        "avoir_prefix": "AV",
+        "avoir_format": "AV{:06d}",
+        "avoir_next_number": "1"
 
     }
     with get_cursor() as cur:
@@ -492,17 +516,20 @@ def generate_invoice_number():
             num += 1
 
 def generate_avoir_number():
-    fmt = get_setting("doc_format_avoir", "AV{:06d}")
+    fmt = get_setting("avoir_format") or "AV{:06d}"
     with get_cursor() as cur:
-        cur.execute("SELECT value FROM settings WHERE key = 'doc_next_avoir'")
+        cur.execute("SELECT value FROM settings WHERE key = 'avoir_next_number'")
         row = cur.fetchone()
-        num = int(row["value"]) if row else 1
+        try:
+            num = int(row["value"]) if row and row["value"] else 1
+        except (TypeError, ValueError):
+            num = 1
         while True:
             numero = fmt.format(num)
             cur.execute("SELECT id FROM invoices WHERE numero = ?", (numero,))
             if not cur.fetchone():
                 cur.execute(
-                    "UPDATE settings SET value = ?, updated_at = datetime('now') WHERE key = 'doc_next_avoir'",
+                    "UPDATE settings SET value = ?, updated_at = datetime('now') WHERE key = 'avoir_next_number'",
                     (str(num + 1),)
                 )
                 return numero
