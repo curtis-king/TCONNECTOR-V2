@@ -105,10 +105,35 @@ def read_invoices_from_sage():
 
     try:
         with cursor_ctx as cur:
+            # I3 : détection dynamique des colonnes SFEC_* — la migration
+            # n'a jamais été lancée sur BIJOU, donc on ne peut pas les
+            # coder en dur sous peine de faire planter toute la lecture.
             cur.execute("""
+                SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_NAME = 'F_DOCENTETE' AND COLUMN_NAME LIKE 'SFEC%'
+            """)
+            sfec_cols_present = {row[0] for row in cur.fetchall()}
+
+            sfec_fields = ["SFEC_STATUT", "SFEC_NUM_CERTIF", "SFEC_SIGNATURE", "SFEC_QR_CODE"]
+            sfec_select = ",\n                    ".join(
+                f"ISNULL(d.{col}, '') AS {col.lower()}" if col in sfec_cols_present
+                else f"'' AS {col.lower()}"
+                for col in sfec_fields
+            )
+
+            # I2 : DO_Type IN (6,7) pour lire aussi les avoirs.
+            # I1 : DO_Ref n'est JAMAIS utilisé comme lien avoir->facture,
+            # c'est une référence externe (n° commande). reference_invoice_id
+            # reste vide et doit être complété manuellement côté connecteur.
+            query = f"""
                 SELECT
                     CAST(d.DO_Domaine AS VARCHAR) + '-' + CAST(d.DO_Type AS VARCHAR) + '-' + d.DO_Piece AS id,
                     d.DO_Piece AS numero,
+                    d.DO_Domaine AS sage_domaine,
+                    d.DO_Type AS sage_type,
+                    d.DO_Piece AS sage_piece,
+                    CASE WHEN d.DO_Type = 7 THEN 'avoir' ELSE 'facture' END AS type_doc,
+                    '' AS reference_invoice_id,
                     ISNULL(TRY_CONVERT(VARCHAR(10), d.DO_Date, 120), '') AS date_facture,
                     ISNULL(d.DO_Tiers, '') AS tiers_code,
                     ISNULL(d.DO_Ref, '') AS reference,
@@ -122,14 +147,13 @@ def read_invoices_from_sage():
                         WHEN d.DO_Statut = 3 THEN 'COMPTABILISE'
                         ELSE 'AUTRE'
                     END AS statut,
-                    ISNULL(d.SFEC_STATUT, '') AS sfec_statut,
-                    ISNULL(d.SFEC_NUM_CERTIF, '') AS sfec_num_certif,
-                    ISNULL(d.SFEC_SIGNATURE, '') AS sfec_signature,
-                    ISNULL(d.SFEC_QR_CODE, '') AS sfec_qr_code
+                    {sfec_select}
                 FROM F_DOCENTETE d
-                WHERE d.DO_Domaine = 0 AND d.DO_Type = 6
+                WHERE d.DO_Domaine = 0 AND d.DO_Type IN (6, 7)
                 ORDER BY d.DO_Date DESC
-            """)
+            """
+            cur.execute(query)
+
             columns = [desc[0] for desc in cur.description]
             rows = cur.fetchall()
 
@@ -152,15 +176,21 @@ def read_invoices_from_sage():
                     inv["statut_code"] = int(float(str(inv["statut_code"])))
                 except (ValueError, TypeError):
                     inv["statut_code"] = 0
+                try:
+                    inv["sage_type"] = int(float(str(inv["sage_type"])))
+                except (ValueError, TypeError):
+                    inv["sage_type"] = 0
                 invoices.append(inv)
 
-            logger.info("Factures Sage lues: %d", len(invoices))
+            logger.info(
+                "Factures/avoirs Sage lus: %d (SFEC cols detectees: %s)",
+                len(invoices), sorted(sfec_cols_present) or "aucune"
+            )
             return invoices
 
     except Exception as e:
         logger.error("Lecture Sage echouee: %s", e)
         return []
-
 
 def sync_sage_invoice_to_sqlite(sage_inv):
     numero = sage_inv.get("numero", "")

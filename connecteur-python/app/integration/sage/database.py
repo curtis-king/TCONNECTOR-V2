@@ -197,6 +197,7 @@ def _build_conn_string(cfg):
     import pyodbc as _pyodbc
     available = [d.strip() for d in _pyodbc.drivers()]
     preferred = [
+        "ODBC Driver 18 for SQL Server",
         "ODBC Driver 17 for SQL Server",
         "ODBC Driver 13 for SQL Server",
         "ODBC Driver 11 for SQL Server",
