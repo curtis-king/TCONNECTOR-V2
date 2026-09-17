@@ -261,6 +261,7 @@
 <div class="total-row"><span class="total-label">Remises lignes</span><span class="total-value"><span id="total-remises">0</span> FCFA</span></div>
 <div class="total-row"><span class="total-label">TVA 18%</span><span class="total-value"><span id="total-tva18">0</span> FCFA</span></div>
 <div class="total-row"><span class="total-label">TVA 5%</span><span class="total-value"><span id="total-tva5">0</span> FCFA</span></div>
+<div class="total-row"><span class="total-label">Centime additionnel</span><span class="total-value"><span id="total-cent">0</span> FCFA</span></div>
         <div class="total-row grand-total">
           <span class="total-label">TOTAL TTC</span>
           <span class="total-value"><span id="total-ttc">0</span> FCFA</span>
@@ -333,6 +334,8 @@ document.getElementById("is_recipient_taxable").value=(c.is_taxable===0||c.is_ta
     if(t===5)tva5+=tvaVal;else if(t!==0)tva18+=tvaVal;
   });
   var tt=th+tva18+tva5;
+  var cent=round2(tva18*0.05);
+  var tt=th+tva18+tva5+cent;
   document.getElementById("total-ht-brut").textContent=round2(thBrut).toLocaleString();
   document.getElementById("total-remises").textContent=round2(thBrut-th).toLocaleString();
   document.getElementById("total-ht").textContent=round2(th).toLocaleString();
@@ -340,6 +343,8 @@ document.getElementById("is_recipient_taxable").value=(c.is_taxable===0||c.is_ta
   document.getElementById("total-tva5").textContent=round2(tva5).toLocaleString();
   document.getElementById("total-tva").textContent=round2(tva18+tva5).toLocaleString();
   document.getElementById("total-ttc").textContent=round2(tt).toLocaleString();
+  document.getElementById("total-cent").textContent=cent.toLocaleString();
+document.getElementById("total-ttc").textContent=round2(tt).toLocaleString();
 }
   function round2(n){return Math.round(n*100)/100}
 

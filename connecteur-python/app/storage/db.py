@@ -592,6 +592,7 @@ def recalc_invoice_totals(invoice_id):
         row = cur.fetchone()
         if row:
             additional_cent_tax = round(row["tva_t"] * 0.05, 2)
+            montant_ttc = round(row["total_ttc"] + additional_cent_tax, 2)
             cur.execute("""
                 UPDATE invoices SET
                     montant_ht = ?, montant_tva = ?, montant_ttc = ?,
@@ -605,8 +606,8 @@ def recalc_invoice_totals(invoice_id):
                     updated_at = datetime('now')
                 WHERE id = ?
             """, (
-                row["total_ht"], row["total_tva"], row["total_ttc"],
-                row["total_ttc"],
+                row["total_ht"], row["total_tva"], montant_ttc,
+                montant_ttc,
                 row["total_brut"],
                 row["total_remise_lignes"],
                 row["tva_t"],

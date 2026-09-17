@@ -223,7 +223,10 @@ def db_invoice_to_sfec(invoice):
 
     total_tax = round(total_tax_t + total_tax_r, 2)
     subtotal = round(sum(i["subtotal"] for i in items), 2)
-    total_amount = round(sum(i["total_amount"] for i in items), 2)
+    total_amount = round(
+    sum(i["total_amount"] for i in items)
+    + _safe_float(invoice.get("additional_cent_tax"), 0), 2
+)
     total_line_discount = round(sum(i["discount_amount"] for i in items), 2)
 
     raw_niu = _safe_str(invoice.get("recipient_niu"))

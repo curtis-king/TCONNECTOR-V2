@@ -277,3 +277,75 @@ facturation.
 - Pour `recipient_type = business|government` : `recipient_name` + `recipient_niu` requis.
 - `foreign` : email, téléphone, adresse requis.
 - Item `type` requis (`product` / `service`).
+
+La base SQLite cible est résolue par app.core.paths.data_dir() → connecteur-python/data/tconnector.db (≥ connecteur-python, paths.py:19-35). Donc n'importe quel script qui importe app.storage.db tombe toujours sur la bonne base, même lancé depuis ailleurs.
+Où le mettre
+Dans scripts/backfill_centime.py (même pattern que scripts/generate_articles.py), puis le lancer côté Windows. Contenu à coller :
+"""Backfill : integre le centime additionnel dans le TTC/restant des
+brouillons et factures non certifiees (re-run recalc_invoice_totals).
+
+Usage (depuis connecteur-python, cote Windows):
+    python scripts/backfill_centime.py [--dry-run]
+"""
+
+import os
+import sys
+
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+import argparse
+
+from app.storage.db import get_cursor, recalc_invoice_totals, close_connection
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Backfill centime additionnel")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="affiche les factures concernees sans modifier")
+    args = parser.parse_args()
+
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT id, numero, statut, sfec_statut
+            FROM invoices
+            WHERE statut = 'brouillon'
+               OR sfec_statut IS NULL
+               OR sfec_statut NOT IN ('CERTIFIE', 'DEJA_CERTIFIE')
+        """)
+        rows = cur.fetchall()
+
+    if not rows:
+        print("Aucune facture a traiter.")
+        return
+
+    print("{} facture(s) a recalculer :".format(len(rows)))
+    if args.dry_run:
+        for r in rows:
+            print("  - {} (id={}, statut={}, sfec={})".format(
+                r["numero"], r["id"], r["statut"], r["sfec_statut"]))
+        return
+
+    for r in rows:
+        recalc_invoice_totals(r["id"])
+
+    close_connection()
+    print("{} facture(s) recalculee(s).".format(len(rows)))
+
+
+if __name__ == "__main__":
+    main()
+Comment le lancer (Windows)
+cd C:\Users\tp_m2\Documents\projects\TCONNECTOR-V2\connecteur-python
+python scripts/backfill_centime.py --dry-run     # verifier la liste d'abord
+python scripts/backfill_centime.py               # execution
+Points de sécurité :
+- Le script importe le code corrigé de l'Étape 1 (db.py) → il n'a besoin que des étapes 1-3 appliquées, pas de redémarrage du serveur pour ça (processus séparé).
+- Idempotent : relançable sans risque (recalc recompute toujours la même chose).
+- Copie de sûreté avant : copie de data\tconnector.db + -wal + -shm (la base est en WAL — arrêter le serveur avant la copie propre, ou copier avec le serveur arrêté).
+- Préférable : serveur arrêté pendant le backfill (busy_timeout=5s sinon, WAL le tolère).
+Vérification après coup
+python -c "import os,sys; sys.path.insert(0,'.'); from app.storage.db import get_cursor;
+for r in get_cursor().__enter__().execute('SELECT numero,statut,sfec_statut,montant_ht,montant_tva,montant_ttc,additional_cent_tax,montant_restant FROM invoices ORDER BY id DESC LIMIT 10').fetchall(): print(dict(r))"
+Normalement : montant_ttc = montant_ht + montant_tva + additional_cent_tax et montant_restant = montant_ttc pour les factures recalculées ; montant_ttc inchangé (hors centime) pour les certifiées/exportées.
