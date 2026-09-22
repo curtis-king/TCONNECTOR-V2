@@ -20,6 +20,108 @@ def _get_sage_cursor():
 def _get_sage_domaine_type():
     return {"vente_domaine": 0, "vente_type": 6, "avoir_type": 7, "achat_domaine": 1}
 
+
+_CONTACT_TYPE_MAP = {"client": 0, "fournisseur": 1}
+
+
+def _trunc(val, length):
+    return str(val or "").strip()[:length]
+
+
+def write_contact_to_sage(contact):
+    """Cree le tiers dans Sage F_COMPTET (idempotent).
+
+    Le trigger TG_INS_CPTAF_DOCENTETE (erreur 82019) exige que toute piece
+    de vente reference un F_COMPTET existant avec CT_Type=0. Sans ce push
+    prealable, toutes les ecritures de factures echouent.
+    Colonnes minimales uniquement : CT_Raccourci/CT_NumPayeur/CG_NumPrinc/
+    CO_No restent vides pour ne pas declencher les controles TG_INS_F_COMPTET.
+    """
+    code = _trunc(contact.get("code", ""), 17)
+    if not code:
+        return {"success": False, "error": "code contact vide"}
+    nom = _trunc(contact.get("nom", "") or code, 69)
+    ctype = _CONTACT_TYPE_MAP.get(str(contact.get("type", "client")).lower(), 0)
+
+    cursor_ctx = _get_sage_cursor()
+    if cursor_ctx is None:
+        try:
+            log_sync("sage_contact", contact.get("id", 0), code, "write", "sqlite_to_sage",
+                     status="error", error="SQL Server indisponible")
+        except Exception:
+            pass
+        return {"success": False, "error": "SQL Server indisponible"}
+
+    try:
+        with cursor_ctx as cur:
+            cur.execute("SELECT CT_Num, CT_Type FROM F_COMPTET WHERE CT_Num = ?", code)
+            existing = cur.fetchone()
+            if existing:
+                try:
+                    existing_type = int(float(str(existing[1])))
+                except (ValueError, TypeError):
+                    existing_type = -1
+                if existing_type != ctype:
+                    msg = "CT_Num '{}' existe avec CT_Type={} (attendu {})".format(code, existing_type, ctype)
+                    logger.warning(msg)
+                    return {"success": False, "error": msg}
+            else:
+                cur.execute("""
+                    INSERT INTO F_COMPTET (
+                        CT_Num, CT_Intitule, CT_Type, CT_Identifiant,
+                        CT_Telephone, CT_EMail, CT_Adresse, CT_Ville, CT_Pays
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    code, nom, ctype,
+                    _trunc(contact.get("niu", ""), 25),
+                    _trunc(contact.get("telephone", ""), 21),
+                    _trunc(contact.get("email", ""), 69),
+                    _trunc(contact.get("adresse", ""), 35),
+                    _trunc(contact.get("ville", ""), 35),
+                    _trunc(contact.get("pays", "") or "CG", 35),
+                ))
+
+        with get_sqlite_cursor() as cur:
+            cur.execute("""
+                UPDATE contacts SET synced_sage = 1, sage_ct_num = ?, updated_at = datetime('now')
+                WHERE code = ?
+            """, (code, code))
+
+        log_sync("sage_contact", contact.get("id", 0), code, "write", "sqlite_to_sage", status="ok")
+        logger.info("Contact ecrit dans Sage: %s (type=%d)", code, ctype)
+        return {"success": True, "ct_num": code}
+    except Exception as e:
+        try:
+            log_sync("sage_contact", contact.get("id", 0), code, "write", "sqlite_to_sage",
+                     status="error", error=str(e)[:200])
+        except Exception:
+            pass
+        logger.error("Ecriture contact Sage echouee pour %s: %s", code, e)
+        return {"success": False, "error": str(e)[:200]}
+
+
+def ensure_contact_in_sage(tiers_code):
+    """Retourne le CT_Num Sage pour un code contact local (creation si besoin)."""
+    code = str(tiers_code or "").strip()
+    if not code:
+        return {"success": False, "error": "tiers_code vide"}
+    contact = None
+    with get_sqlite_cursor() as cur:
+        cur.execute("SELECT * FROM contacts WHERE code = ?", (code,))
+        row = cur.fetchone()
+        if row is None:
+            return {"success": False, "error": "contact '{}' inconnu (table contacts)".format(code)}
+        try:
+            contact = {k: row[k] for k in row.keys()}
+        except Exception:
+            contact = dict(row)
+        if contact.get("synced_sage") and (contact.get("sage_ct_num") or ""):
+            return {"success": True, "ct_num": contact["sage_ct_num"]}
+    result = write_contact_to_sage(contact)
+    if result.get("success"):
+        return {"success": True, "ct_num": result["ct_num"]}
+    return result
+
 def _code_taxe(taux):
     t = float(taux or 0)
     if abs(t-18) < 0.01: return 'C18'
@@ -49,7 +151,14 @@ def write_invoice_to_sage(invoice):
     sign = -1 if is_avoir else 1
 
     tiers_col = "DO_Tiers"
-    tiers_val = invoice.get("tiers_code", "")
+    sage_tiers = ensure_contact_in_sage(invoice.get("tiers_code", ""))
+    if not sage_tiers.get("success"):
+        err = sage_tiers.get("error", "tiers non resolu")
+        log_sync("sage_invoice", invoice["id"], numero, "write", "sqlite_to_sage",
+                 status="error", error=err[:200])
+        logger.error("Ecriture Sage annulee pour %s: %s", numero, err)
+        return {"success": False, "error": err[:200]}
+    tiers_val = sage_tiers["ct_num"]
 
     taux_entete = (invoice.get("lignes") or [{}])[0].get("taux_tva", 18)
     code_entete = _code_taxe(taux_entete)

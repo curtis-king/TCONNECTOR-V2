@@ -22,14 +22,7 @@ def _safe_float(val, default=0.0):
 
 **Bloc corrigé** :
 ```python
-def _safe_float(val, default=0.0):
-    """Convert value to float, handling French comma decimals."""
-    if val is None:
-        return default
-    try:
-        return float(str(val).replace(",", "."))
-    except (ValueError, TypeError):
-        return default
+c
 
 
 _DEFAULT_DEVISE_MAP = {"0": "XAF", "3": "XAF", "5": "XAF"}
