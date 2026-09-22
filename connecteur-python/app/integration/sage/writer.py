@@ -20,6 +20,14 @@ def _get_sage_cursor():
 def _get_sage_domaine_type():
     return {"vente_domaine": 0, "vente_type": 6, "avoir_type": 7, "achat_domaine": 1}
 
+def _code_taxe(taux):
+    t = float(taux or 0)
+    if abs(t-18) < 0.01: return 'C18'
+    if abs(t-5)  < 0.01: return 'C05'
+    if abs(t-0)  < 0.01: return 'C00'
+    if abs(t-20) < 0.01: return 'C20'
+    return 'C18' if t>10 else 'C00'
+
 
 def write_invoice_to_sage(invoice):
     cursor_ctx = _get_sage_cursor()
@@ -43,20 +51,24 @@ def write_invoice_to_sage(invoice):
     tiers_col = "DO_Tiers"
     tiers_val = invoice.get("tiers_code", "")
 
+    taux_entete = (invoice.get("lignes") or [{}])[0].get("taux_tva", 18)
+    code_entete = _code_taxe(taux_entete)
+
     try:
         with cursor_ctx as cur:
             sql = """
                 INSERT INTO F_DOCENTETE (
                     DO_Domaine, DO_Type, DO_Piece, DO_Date,
-                    {tiers_col}, DO_Ref, DO_TotalHT, DO_Taxe1,
+                    {tiers_col}, DO_Ref, DO_TotalHT, DO_CodeTaxe1, DO_Taxe1,
                     DO_TotalTTC, DO_NetAPayer, DO_Statut, DO_Valide
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """.format(tiers_col=tiers_col)
 
             cur.execute(sql, (
                 dc["vente_domaine"], doc_type, numero, date_val,
                 tiers_val, invoice.get("reference", ""),
                 sign * invoice.get("montant_ht", 0),
+                code_entete,
                 sign * invoice.get("montant_tva", 0),
                 sign * invoice.get("montant_ttc", 0),
                 sign * invoice.get("montant_ttc", 0),
@@ -69,8 +81,8 @@ def write_invoice_to_sage(invoice):
                     INSERT INTO F_DOCLIGNE (
                         DO_Domaine, DO_Type, DO_Piece, DL_Ligne,
                         DL_Design, DL_Qte, DL_PrixUnitaire, DL_MontantHT,
-                        DL_Taxe1, DL_MontantTTC, CO_No, AR_Ref
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        DL_CodeTaxe1, DL_Taxe1, DL_MontantTTC, CO_No, AR_Ref
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     dc["vente_domaine"], doc_type, numero,
                     ligne.get("numero_ligne", 1),
@@ -78,6 +90,7 @@ def write_invoice_to_sage(invoice):
                     sign * ligne.get("quantite", 1),
                     ligne.get("prix_unitaire", 0),
                     sign * ligne.get("montant_ht", 0),
+                    _code_taxe(ligne.get("taux_tva", 18)),
                     ligne.get("taux_tva", 18),
                     sign * ligne.get("montant_ttc", 0),
                     ligne.get("code_compte", ""),

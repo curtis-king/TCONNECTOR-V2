@@ -1071,6 +1071,8 @@ def fetch_contacts(type_filter=None):
         logger.warning("Table tiers introuvable")
         return []
 
+    tp_cols = _TABLE_COLUMNS.get(t["third_party"].upper(), set())
+
     where = ""
     params = []
     has_type = "CT_TYPE" in tp_cols
@@ -1079,8 +1081,6 @@ def fetch_contacts(type_filter=None):
             where = "WHERE c.CT_Type = 0"
         elif type_filter == "fournisseur":
             where = "WHERE c.CT_Type = 1"
-
-    tp_cols = _TABLE_COLUMNS.get(t["third_party"].upper(), set())
 
     email_select = "ISNULL(c.CT_EMail, '') AS email" if "CT_EMAIL" in tp_cols else "'' AS email"
     phone_select = "ISNULL(c.CT_Telephone, '') AS telephone" if "CT_TELEPHONE" in tp_cols else "'' AS telephone"
