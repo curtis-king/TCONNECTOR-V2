@@ -33,11 +33,12 @@ def write_invoice_to_sage(invoice):
     date_str = invoice.get("date_facture", "")
     try:
         date_val = datetime.strptime(date_str[:10], "%Y-%m-%d")
-        is_avoir = invoice.get("type_doc") == "avoir"
-        doc_type = dc["avoir_type"] if is_avoir else dc["vente_type"]
-        sign = -1 if is_avoir else 1        
     except (ValueError, TypeError):
         date_val = datetime.utcnow()
+
+    is_avoir = invoice.get("type_doc") == "avoir"
+    doc_type = dc["avoir_type"] if is_avoir else dc["vente_type"]
+    sign = -1 if is_avoir else 1
 
     tiers_col = "DO_Tiers"
     tiers_val = invoice.get("tiers_code", "")
@@ -55,8 +56,10 @@ def write_invoice_to_sage(invoice):
             cur.execute(sql, (
                 dc["vente_domaine"], doc_type, numero, date_val,
                 tiers_val, invoice.get("reference", ""),
-                invoice.get("montant_ht", 0), invoice.get("montant_tva", 0),
-                invoice.get("montant_ttc", 0), invoice.get("montant_ttc", 0),
+                sign * invoice.get("montant_ht", 0),
+                sign * invoice.get("montant_tva", 0),
+                sign * invoice.get("montant_ttc", 0),
+                sign * invoice.get("montant_ttc", 0),
                 2, 1
             ))
 
@@ -72,11 +75,11 @@ def write_invoice_to_sage(invoice):
                     dc["vente_domaine"], doc_type, numero,
                     ligne.get("numero_ligne", 1),
                     ligne.get("designation", ""),
-                    ligne.get("quantite", 1),
+                    sign * ligne.get("quantite", 1),
                     ligne.get("prix_unitaire", 0),
-                    ligne.get("montant_ht", 0),
+                    sign * ligne.get("montant_ht", 0),
                     ligne.get("taux_tva", 18),
-                    ligne.get("montant_ttc", 0),
+                    sign * ligne.get("montant_ttc", 0),
                     ligne.get("code_compte", ""),
                     ligne.get("code_article", "")
                 ))

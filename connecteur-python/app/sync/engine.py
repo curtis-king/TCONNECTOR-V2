@@ -560,7 +560,7 @@ def auto_certify_invoices():
             continue
 
         if type_doc == "avoir":
-            ref = inv.get("reference", "")  # HYPOTHESE: DO_Ref porte le numero de la facture d'origine
+            ref = inv.get("reference_invoice_id") or inv.get("reference", "")
             if not ref:
                 try:
                     mark_certification_failed(inv["id"], "Avoir sans reference facture d'origine")
@@ -585,20 +585,6 @@ def auto_certify_invoices():
                 except Exception:
                     pass
                 continue
-
-        to_certify.append(inv)
-
-        if sfec_statut in ("EN_COURS", "ERREUR"):
-            continue
-
-        if numero in sfec_lookup:
-            sfec_matched += 1
-            if sfec_statut not in ("DEJA_CERTIFIE", "CERTIFIE"):
-                try:
-                    _handle_already_certified(inv, sfec_lookup)
-                except Exception:
-                    pass
-            continue
 
         to_certify.append(inv)
 

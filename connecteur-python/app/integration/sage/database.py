@@ -17,6 +17,22 @@ def _safe_float(val, default=0.0):
     except (ValueError, TypeError):
         return default
 
+_DEFAULT_DEVISE_MAP = {"0": "XAF", "3": "XAF", "5": "XAF"}
+
+
+def get_devise_map():
+    cfg = get_db_config()
+    custom = cfg.get("devise_map") or {}
+    m = dict(_DEFAULT_DEVISE_MAP)
+    m.update({str(k): v for k, v in custom.items()})
+    return m
+
+
+def _map_devise(val):
+    m = get_devise_map()
+    return m.get(str(val or "").strip(), m.get("0", "XAF"))
+
+
 logger = logging.getLogger("t-connector.db")
 
 _pool = None
@@ -118,6 +134,7 @@ _DOMAIN_CONFIG = {
     "vente_domain": 0,
     "achat_domain": 1,
     "facture_type": 6,
+    "avoir_type": 7,
 }
 
 _SFEC_COLUMNS = [
@@ -542,7 +559,9 @@ def fetch_sales_invoices(updated_from=None, limit=None):
     if tiers_col and has_third_party and has_third_party_cols and "CT_NUM" in tp_cols:
         tiers_select = "d.{} AS code_tiers".format(tiers_col)
         nom_tiers_select = _tiers_name_expr()
-        niu_select = "ISNULL(c.CT_NIU, '') AS recipient_niu" if "CT_NIU" in tp_cols else "'' AS recipient_niu"
+        niu_select = ("ISNULL(c.CT_NIU, '') AS recipient_niu" if "CT_NIU" in tp_cols else
+                      "ISNULL(c.CT_Identifiant, '') AS recipient_niu" if "CT_IDENTIFIANT" in tp_cols else
+                      "'' AS recipient_niu")
         phone_select = "ISNULL(c.CT_Telephone, '') AS recipient_phone" if "CT_TELEPHONE" in tp_cols else "'' AS recipient_phone"
         email_select = "ISNULL(c.CT_EMail, '') AS recipient_email" if "CT_EMAIL" in tp_cols else "'' AS recipient_email"
         addr_select = "ISNULL(c.CT_Adresse, '') AS recipient_address" if "CT_ADRESSE" in tp_cols else "'' AS recipient_address"
@@ -577,8 +596,7 @@ def fetch_sales_invoices(updated_from=None, limit=None):
     net_select = "ISNULL(d.DO_NetAPayer, {}) AS montant_restant".format(ttc_expr) if "DO_NETAPAYER" in doc_cols else "{} AS montant_restant".format(ttc_expr)
     valide_select = "ISNULL(d.DO_Valide, 0) AS valide" if "DO_VALIDE" in doc_cols else "0 AS valide"
     payment_select = "ISNULL(d.DO_ModeReglement, '') AS payment_method" if "DO_MODEREGLEMENT" in doc_cols else "'' AS payment_method"
-    devise_select = "ISNULL(d.DO_Devise, 'XAF') AS devise" if "DO_DEVISE" in doc_cols else "'XAF' AS devise"
-
+    devise_select = "ISNULL(CAST(d.DO_Devise AS VARCHAR), '0') AS devise" if "DO_DEVISE" in doc_cols else "'0' AS devise"
     params = []
     if updated_from:
         try:
@@ -663,6 +681,7 @@ def fetch_sales_invoices(updated_from=None, limit=None):
             inv["montant_tva"] = round(_safe_float(row[columns.index("montant_tva")]), 2)
             inv["montant_ttc"] = round(_safe_float(row[columns.index("montant_ttc")]), 2)
             inv["montant_restant"] = round(_safe_float(row[columns.index("montant_restant")]), 2)
+            inv["devise"] = _map_devise(inv.get("devise", "0"))
             try:
                 inv["statut_code"] = int(_safe_float(row[columns.index("statut_code")]))
             except (ValueError, TypeError):
@@ -860,7 +879,9 @@ def fetch_purchase_invoices(updated_from=None, limit=None):
     if tiers_col and has_third_party and has_third_party_cols and "CT_NUM" in tp_cols:
         tiers_select = "d.{} AS code_tiers".format(tiers_col)
         nom_tiers_select = _tiers_name_expr()
-        niu_select = "ISNULL(c.CT_NIU, '') AS recipient_niu" if "CT_NIU" in tp_cols else "'' AS recipient_niu"
+        niu_select = ("ISNULL(c.CT_NIU, '') AS recipient_niu" if "CT_NIU" in tp_cols else
+                      "ISNULL(c.CT_Identifiant, '') AS recipient_niu" if "CT_IDENTIFIANT" in tp_cols else
+                      "'' AS recipient_niu")
         phone_select = "ISNULL(c.CT_Telephone, '') AS recipient_phone" if "CT_TELEPHONE" in tp_cols else "'' AS recipient_phone"
         email_select = "ISNULL(c.CT_EMail, '') AS recipient_email" if "CT_EMAIL" in tp_cols else "'' AS recipient_email"
         addr_select = "ISNULL(c.CT_Adresse, '') AS recipient_address" if "CT_ADRESSE" in tp_cols else "'' AS recipient_address"
@@ -891,6 +912,8 @@ def fetch_purchase_invoices(updated_from=None, limit=None):
     ttc_expr = "ISNULL(d.DO_TotalTTC, 0)" if has_ttc else "ISNULL(d.DO_TotalHT, 0) + ISNULL(d.DO_Taxe1, 0) + ISNULL(d.DO_Taxe2, 0) + ISNULL(d.DO_Taxe3, 0)"
     tva_expr = "ISNULL(d.DO_TotalTTC - d.DO_TotalHT, 0)" if has_ttc else "ISNULL(d.DO_Taxe1, 0) + ISNULL(d.DO_Taxe2, 0) + ISNULL(d.DO_Taxe3, 0)"
 
+    payment_select = "ISNULL(d.DO_ModeReglement, '') AS payment_method" if "DO_MODEREGLEMENT" in doc_cols else "'' AS payment_method"
+    devise_select = "ISNULL(CAST(d.DO_Devise AS VARCHAR), '0') AS devise" if "DO_DEVISE" in doc_cols else "'0' AS devise"
     ref_select = "ISNULL(d.DO_Ref, '') AS reference" if "DO_REF" in doc_cols else "'' AS reference"
     net_select = "ISNULL(d.DO_NetAPayer, {}) AS montant_restant".format(ttc_expr) if "DO_NETAPAYER" in doc_cols else "{} AS montant_restant".format(ttc_expr)
 
@@ -917,7 +940,9 @@ def fetch_purchase_invoices(updated_from=None, limit=None):
             {email},
             {addr},
             {classif},
-            d.DO_Type AS type_doc,
+            CASE WHEN d.DO_Type = {at} THEN 'avoir' ELSE 'achat' END AS type_doc,
+            d.DO_Type AS do_type_raw,
+            {payment}, {devise},
             ISNULL(d.DO_TotalHT, 0) AS montant_ht,
             {tva_expr} AS montant_tva,
             {ttc_expr} AS montant_ttc,
@@ -937,7 +962,8 @@ def fetch_purchase_invoices(updated_from=None, limit=None):
         {where}
         ORDER BY d.DO_Date DESC
     """.format(
-        limit=limit_clause, ad=dc["achat_domain"],
+        limit=limit_clause, ad=dc["achat_domain"], at=dc["avoir_type"],
+        payment=payment_select, devise=devise_select,
         ref=ref_select, tiers=tiers_select, nom_tiers=nom_tiers_select,
         niu=niu_select, phone=phone_select, email=email_select, addr=addr_select,
         classif=classif_select,
@@ -958,7 +984,7 @@ def fetch_purchase_invoices(updated_from=None, limit=None):
             inv["montant_tva"] = round(_safe_float(row[columns.index("montant_tva")]), 2)
             inv["montant_ttc"] = round(_safe_float(row[columns.index("montant_ttc")]), 2)
             inv["montant_restant"] = round(_safe_float(row[columns.index("montant_restant")]), 2)
-            inv["lignes"] = fetch_doc_lines(dc["achat_domain"], int(_safe_float(row[columns.index("type_doc")])), inv["numero"])
+            inv["lignes"] = fetch_doc_lines(dc["achat_domain"], int(_safe_float(row[columns.index("do_type_raw")])), inv["numero"])
             invoices.append(inv)
 
         if invoices:
@@ -991,7 +1017,8 @@ def _fetch_purchase_invoices_fallback(dc, t):
             '' AS recipient_email,
             '' AS recipient_address,
             '' AS recipient_type_raw,
-            d.DO_Type AS type_doc,
+            CASE WHEN d.DO_Type = {at} THEN 'avoir' ELSE 'achat' END AS type_doc,
+            d.DO_Type AS do_type_raw,
             ISNULL(d.DO_TotalHT, 0) AS montant_ht,
             {tva_expr} AS montant_tva,
             {ttc_expr} AS montant_ttc,
@@ -1010,7 +1037,7 @@ def _fetch_purchase_invoices_fallback(dc, t):
         FROM {tbl} d
         WHERE d.DO_Domaine = {ad}
         ORDER BY d.DO_Date DESC
-    """.format(tbl=t["documents"], ad=dc["achat_domain"], ttc_expr=ttc_expr, tva_expr=tva_expr)
+    """.format(tbl=t["documents"], ad=dc["achat_domain"], at=dc["avoir_type"], ttc_expr=ttc_expr, tva_expr=tva_expr)
 
     try:
         with get_cursor() as cur:
@@ -1025,7 +1052,7 @@ def _fetch_purchase_invoices_fallback(dc, t):
             inv["montant_tva"] = round(_safe_float(row[columns.index("montant_tva")]), 2)
             inv["montant_ttc"] = round(_safe_float(row[columns.index("montant_ttc")]), 2)
             inv["montant_restant"] = round(_safe_float(row[columns.index("montant_restant")]), 2)
-            inv["lignes"] = fetch_doc_lines(dc["achat_domain"], int(_safe_float(row[columns.index("type_doc")])), inv["numero"])
+            inv["lignes"] = fetch_doc_lines(dc["achat_domain"], int(_safe_float(row[columns.index("do_type_raw")])), inv["numero"])
             invoices.append(inv)
 
         if invoices:
@@ -1057,7 +1084,9 @@ def fetch_contacts(type_filter=None):
 
     email_select = "ISNULL(c.CT_EMail, '') AS email" if "CT_EMAIL" in tp_cols else "'' AS email"
     phone_select = "ISNULL(c.CT_Telephone, '') AS telephone" if "CT_TELEPHONE" in tp_cols else "'' AS telephone"
-    niu_select = "ISNULL(c.CT_NIU, '') AS numero_fiscal" if "CT_NIU" in tp_cols else "'' AS numero_fiscal"
+    niu_select = ("ISNULL(c.CT_NIU, '') AS numero_fiscal" if "CT_NIU" in tp_cols else
+                  "ISNULL(c.CT_Identifiant, '') AS numero_fiscal" if "CT_IDENTIFIANT" in tp_cols else
+                  "'' AS numero_fiscal")
 
     if "CBCREATION" in tp_cols:
         create_select = "ISNULL(TRY_CONVERT(VARCHAR(30), c.cbCreation, 126), '') AS date_creation"
