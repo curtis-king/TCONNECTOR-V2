@@ -29,6 +29,9 @@ th{background:#f5f5f5}
 {{ avoir_banner | safe }}
 <div class="company-info">Numero: {{ invoice_number | safe }}</div>
 <div class="company-info">Date: {{ invoice_date | safe }}</div>
+{% if doc_label == "FACTURE D'AVOIR" %}
+<div class="company-info">Facture d'origine: {{ reference_invoice_id | safe }}</div>
+{% endif %}
 <div class="company-info">Devise: {{ currency | safe }}</div>
 </div>
 </div>

@@ -57,13 +57,19 @@ def index():
         net_cls=net_cls, net_txt=net_txt, retry_html=retry_html
     ))
 
-
 @bp.route("/invoices", methods=["GET"])
 @_login_required
 def invoices_page():
     inv_type = request.args.get("type", "sale")
     cache = get_cache()
-    invoices = cache.get("purchase_invoices" if inv_type == "purchase" else "sales_invoices", [])
+
+    if inv_type == "purchase":
+        invoices = cache.get("purchase_invoices", [])
+    elif inv_type == "avoir":
+        invoices = [i for i in cache.get("sales_invoices", []) if i.get("type_doc") == "avoir"]
+    else:
+        invoices = [i for i in cache.get("sales_invoices", []) if i.get("type_doc", "vente") != "avoir"]
+
     rows = ""
     for inv in invoices[:200]:
         s = inv.get("statut", "")
@@ -75,15 +81,19 @@ def invoices_page():
         val = inv.get("valide", 0)
         val_cls = "badge-ok" if val == 1 else "badge-err"
         val_txt = "Valide" if val == 1 else "Non valide"
-        rows += "<tr><td>{}</td><td>{}</td><td>{}</td><td style='text-align:right'>{:,.2f}</td><td><span class='badge {}'>{}</span></td><td><span class='badge {}'>{}</span></td><td><span class='badge {}'>{}</span></td><td>{}</td></tr>".format(
+        type_badge_cls = "badge-warn" if inv.get("type_doc") == "avoir" else "badge-info"
+        type_badge_txt = "Avoir" if inv.get("type_doc") == "avoir" else "Vente"
+        rows += "<tr><td>{}</td><td>{}</td><td>{}</td><td><span class='badge {}'>{}</span></td><td style='text-align:right'>{:,.2f}</td><td><span class='badge {}'>{}</span></td><td><span class='badge {}'>{}</span></td><td><span class='badge {}'>{}</span></td><td>{}</td></tr>".format(
             _esc(inv.get("numero", "")), _esc(inv.get("date_facture", "")), _esc(inv.get("nom_tiers", "")),
+            type_badge_cls, type_badge_txt,
             inv.get("montant_ttc", 0), sb, _esc(s), val_cls, val_txt, sfb, _esc(sftxt), _esc(cert_num or "-")
         )
     sale_cls = "btn-primary" if inv_type == "sale" else ""
     purchase_cls = "btn-primary" if inv_type == "purchase" else ""
-    empty = '<tr><td colspan="8" style="text-align:center;color:#64748b">Aucune facture</td></tr>' if not rows else ""
+    avoir_cls = "btn-primary" if inv_type == "avoir" else ""
+    empty = '<tr><td colspan="9" style="text-align:center;color:#64748b">Aucune facture</td></tr>' if not rows else ""
     return _page(render_template("dashboard/invoices.html",
-        inv_type=inv_type, sale_cls=sale_cls, purchase_cls=purchase_cls,
+        inv_type=inv_type, sale_cls=sale_cls, purchase_cls=purchase_cls, avoir_cls=avoir_cls,
         rows=rows, empty=empty
     ))
 
@@ -170,8 +180,21 @@ def print_certified(invoice_id):
             )
     inv_type = inv.get("invoice_type", "") or inv.get("invoice_status", "")
     doc_label = "FACTURE D'AVOIR" if inv_type == "creditNote" else "FACTURE"
+    avoir_banner = (
+        '<div style="border:2px solid #b91c1c;color:#b91c1c;padding:8px 12px;'
+        'margin:8px 0;font-weight:bold;text-align:center">FACTURE D\'AVOIR</div>'
+        if inv_type == "creditNote" else ""
+    )
+    total_tax_t = (inv.get("total_tax_t_amount")
+                   if inv.get("total_tax_t_amount") is not None else inv.get("total_tax18", 0))
+    total_tax_r = (inv.get("total_tax_r_amount")
+                   if inv.get("total_tax_r_amount") is not None else inv.get("total_tax5", 0))
     return render_template("dashboard/print.html",
         doc_label=_esc(doc_label),
+        avoir_banner=avoir_banner,
+        seller_legal_form=_esc(company.get("legal_form", "")),
+        seller_tax_regime=_esc(company.get("tax_regime", "")),
+        seller_capital=_esc(company.get("capital", "")),
         invoice_type=_esc(inv_type),
         recipient_type=_esc(inv.get("recipient_type", "")),
         reference_invoice_id=_esc(inv.get("reference_invoice_id", "") or ""),
@@ -193,8 +216,8 @@ def print_certified(invoice_id):
         payment_method=_esc(inv.get("payment_method", "")),
         amount_due=_esc(fmt_money(inv.get("amount_due", "0"))),
         total_ht=_esc(fmt_money(inv.get("total_ht", "0"))),
-        total_tax18=_esc(fmt_money(inv.get("total_tax18", "0"))),
-        total_tax5=_esc(fmt_money(inv.get("total_tax5", "0"))),
+        total_tax18=_esc(fmt_money(total_tax_t)),
+        total_tax5=_esc(fmt_money(total_tax_r)),
         total_ttc=_esc(fmt_money(inv.get("total_ttc", "0"))),
         item_rows=item_rows,
         cert_status=_esc(inv.get("certification_status", "")),

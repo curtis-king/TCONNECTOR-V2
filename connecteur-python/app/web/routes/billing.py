@@ -83,7 +83,7 @@ def api_invoices_list():
     page = max(1, request.args.get("page", 1, type=int))
     limit = max(1, min(request.args.get("limit", 25, type=int), 200))
     res = invoice_engine.list_invoices(
-        type_doc=request.args.get("type") or None,
+        type_doc = request.args.get("type_doc", "") or None,
         statut=request.args.get("statut") or None,
         source=request.args.get("source") or None,
         search=request.args.get("search") or None,

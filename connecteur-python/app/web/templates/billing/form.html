@@ -262,10 +262,15 @@
 <div class="total-row"><span class="total-label">TVA 18%</span><span class="total-value"><span id="total-tva18">0</span> FCFA</span></div>
 <div class="total-row"><span class="total-label">TVA 5%</span><span class="total-value"><span id="total-tva5">0</span> FCFA</span></div>
 <div class="total-row"><span class="total-label">Centime additionnel</span><span class="total-value"><span id="total-cent">0</span> FCFA</span></div>
-        <div class="total-row grand-total">
+        <div class="total-row"><span class="total-label">Exonere TVA</span><span class="total-value"><span id="total-exonere">0</span> FCFA</span></div>
+<div class="total-row grand-total">
           <span class="total-label">TOTAL TTC</span>
           <span class="total-value"><span id="total-ttc">0</span> FCFA</span>
         </div>
+<div class="total-row grand-total">
+  <span class="total-label">NET A PAYER</span>
+  <span class="total-value"><span id="total-net">0</span> FCFA</span>
+</div>
       </div>
     </div>
   </div>
@@ -323,7 +328,7 @@ document.getElementById("is_recipient_taxable").value=(c.is_taxable===0||c.is_ta
 }
 
   function calcTotals(){
-  var thBrut=0,th=0,tva18=0,tva5=0;
+  var thBrut=0,th=0,tva18=0,tva5=0,exonere=0;
   document.querySelectorAll("[id^='l_subtotal_']").forEach(function(el){thBrut+=parseFloat(el.value)||0});
   document.querySelectorAll("[id^='l_ht_']").forEach(function(el){th+=parseFloat(el.value)||0});
   document.querySelectorAll("[id^='line-']").forEach(function(el){
@@ -331,20 +336,22 @@ document.getElementById("is_recipient_taxable").value=(c.is_taxable===0||c.is_ta
     var t=parseFloat(document.querySelector("select[name='l_tva_"+idx+"']").value)||0;
     var ht=parseFloat(document.getElementById("l_ht_"+idx).value)||0;
     var tvaVal=round2(ht*t/100);
-    if(t===5)tva5+=tvaVal;else if(t!==0)tva18+=tvaVal;
+    if(t===5)tva5+=tvaVal;
+    else if(t===0)exonere+=ht;
+    else tva18+=tvaVal;
   });
-  var tt=th+tva18+tva5;
   var cent=round2(tva18*0.05);
-  var tt=th+tva18+tva5+cent;
+  var tt=round2(th+tva18+tva5+cent);
   document.getElementById("total-ht-brut").textContent=round2(thBrut).toLocaleString();
   document.getElementById("total-remises").textContent=round2(thBrut-th).toLocaleString();
   document.getElementById("total-ht").textContent=round2(th).toLocaleString();
+  document.getElementById("total-exonere").textContent=round2(exonere).toLocaleString();
   document.getElementById("total-tva18").textContent=round2(tva18).toLocaleString();
   document.getElementById("total-tva5").textContent=round2(tva5).toLocaleString();
   document.getElementById("total-tva").textContent=round2(tva18+tva5).toLocaleString();
-  document.getElementById("total-ttc").textContent=round2(tt).toLocaleString();
   document.getElementById("total-cent").textContent=cent.toLocaleString();
-document.getElementById("total-ttc").textContent=round2(tt).toLocaleString();
+  document.getElementById("total-ttc").textContent=tt.toLocaleString();
+  document.getElementById("total-net").textContent=tt.toLocaleString();
 }
   function round2(n){return Math.round(n*100)/100}
 

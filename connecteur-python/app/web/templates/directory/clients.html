@@ -28,7 +28,7 @@
     <input type="hidden" id="editId">
     <div class="grid-2">
   <div><label>RCCM</label><input type="text" id="fRccm" placeholder="RCCM-XXXXX"></div>
-  <div><label>Assujetti TVA</label><select id="fTaxable"><option value="1">Oui</option><option value="0">Non</option></select></div>
+ <div><label>Assujetti TVA</label><input type="checkbox" id="fTaxable" checked></div>
 </div>
     <div class="grid-2">
       <div><label>Code</label><input type="text" id="fCode" placeholder="CLI-XXX"></div>
@@ -36,7 +36,7 @@
     </div>
     <label>Nom / Raison Sociale *</label><input type="text" id="fNom" placeholder="Nom complet">
     <div class="grid-2">
-      <div><label>NIU (Identifiant fiscal)</label><input type="text" id="fNiu" placeholder="CG123456789"></div>
+      <div><label>NIU (Identifiant fiscal)</label><input type="text" id="fNiu" placeholder="CG123456789" onblur="checkNiuDuplicate()"></div>
       <div><label>Ville</label><input type="text" id="fVille" placeholder="Pointe-Noire"></div>
     </div>
     <div class="grid-2">
@@ -70,7 +70,7 @@ function showModal(contact) {
   m.style.display = "flex";
   if(contact) {
     document.getElementById("fRccm").value = contact.rccm || "";
-    document.getElementById("fTaxable").value = (contact.is_taxable===0||contact.is_taxable===false)?"0":"1";
+    document.getElementById("fTaxable").checked = !(contact.is_taxable===0||contact.is_taxable===false);
     document.getElementById("modalTitle").textContent = "Editer Contact";
     document.getElementById("editId").value = contact.id;
     document.getElementById("fCode").value = contact.code || "";
@@ -92,10 +92,17 @@ function showModal(contact) {
     document.getElementById("fTel").value = "";
     document.getElementById("fAdresse").value = "";
     document.getElementById("fRccm").value = "";
-    document.getElementById("fTaxable").value = "1";
+    document.getElementById("fTaxable").checked = true;
   }
 }
 function hideModal() { document.getElementById("contactModal").style.display = "none"; }
+
+function checkNiuDuplicate() {
+  var niu = document.getElementById("fNiu").value.trim();
+  var editId = document.getElementById("editId").value;
+  if(!niu) return;
+  var dup = contacts.find(function(c){ return c.niu === niu && String(c.id) !== editId; });
+  if(dup) showToast("ATTENTION: NIU deja utilise par " + dup.nom, "warn");}
 
 function editContact(id) {
   for(var i=0;i<contacts.length;i++){
@@ -116,7 +123,7 @@ function saveContact() {
   var editId = document.getElementById("editId").value;
   var data = {
     rccm: document.getElementById("fRccm").value,
-is_taxable: parseInt(document.getElementById("fTaxable").value, 10),
+is_taxable: document.getElementById("fTaxable").checked ? 1 : 0,
     code: document.getElementById("fCode").value,
     type: document.getElementById("fType").value,
     nom: document.getElementById("fNom").value,
