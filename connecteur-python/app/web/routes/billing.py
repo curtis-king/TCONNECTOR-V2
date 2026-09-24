@@ -205,7 +205,6 @@ def _invoice_form_page(inv):
         """, (current_ref,))
         certified_sales_json = json.dumps(sqlite_db.rows_to_list(cur.fetchall()), ensure_ascii=False)
 
-        certified_sales_json = json.dumps(sqlite_db.rows_to_list(cur.fetchall()), ensure_ascii=False)
     lignes_json = json.dumps(inv.get("lignes", [])) if is_edit else "[]"
     contacts_json = json.dumps(pos_engine.list_contacts(limit=200))
     products_json = json.dumps(pos_engine.list_products(limit=200))
