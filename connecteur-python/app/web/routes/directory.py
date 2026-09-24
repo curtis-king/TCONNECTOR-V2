@@ -22,7 +22,7 @@ bp = Blueprint("directory", __name__)
 
 
 
-@bp.route("/api/contacts")
+@bp.route("/api/contacts/sage")
 @_login_required
 def api_contacts():
     return jsonify(fetch_contacts())
@@ -47,6 +47,8 @@ def api_create_contact():
         result = pos_engine.create_contact(data)
         if not result.get("success"):
             code = 409 if result.get("field") == "niu" else 400
+        else:
+            code = 201
         return jsonify(result), code
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
