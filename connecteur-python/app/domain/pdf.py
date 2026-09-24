@@ -1,3 +1,4 @@
+import base64
 import os
 import logging
 from io import BytesIO
@@ -126,6 +127,38 @@ def _generate_qr_image(data, box_size=4):
         return buf
     except Exception as e:
         logger.warning("Erreur generation QR: %s", e)
+        return None
+
+def _decode_qr_image(data):
+    """Decode un QR SFEC en image affichable (BytesIO PNG), sans le re-encoder.
+
+    Cas 1 (courant) : data-URI 'data:image/png;base64,....' -> decode base64 -> PNG exact du SFEC.
+    Cas 2 : base64 nu (sans prefixe 'data:') -> tentative de decode direct.
+    Sinon : None (l'appelant bascule sur _generate_qr_image en repli texte court).
+    """
+    if not data or not isinstance(data, str):
+        return None
+    s = data.strip()
+    try:
+        if s.startswith("data:"):
+            if "," not in s:
+                return None
+            header, _, b64 = s.partition(",")
+            if "base64" not in header.lower() or not b64:
+                return None
+            raw = base64.b64decode(b64, validate=True)
+        else:
+            # base64 nu ? (doit ressembler a du base64 : longueur % 4 == 0, alphabet valide)
+            if len(s) < 100 or len(s) % 4 != 0:
+                return None
+            raw = base64.b64decode(s, validate=True)
+        if raw[:8] != b"\x89PNG\r\n\x1a\n":
+            return None
+        buf = BytesIO(raw)
+        buf.seek(0)
+        return buf
+    except Exception as e:
+        logger.warning("QR SFEC non decodable en image: %s", e)
         return None
 
 def generate_invoice_pdf(invoice, output_path=None):
@@ -325,7 +358,9 @@ def generate_invoice_pdf(invoice, output_path=None):
         if sfec_sig:
             cert_lines.append("Signature: {}".format(sfec_sig))
 
-        qr_buf = _generate_qr_image(sfec_qr) if sfec_qr else None
+        qr_buf = _decode_qr_image(sfec_qr) if sfec_qr else None
+        if qr_buf is None and sfec_qr:
+            qr_buf = _generate_qr_image(sfec_qr)
         if qr_buf:
             cert_table = Table(
                 [[Paragraph("<br/>".join(cert_lines), styles["SmallLeft"]),

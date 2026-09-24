@@ -262,6 +262,7 @@ def utilisateurs_page():
     role_opts = "".join('<option value="{}">{}</option>'.format(r, user_auth.ROLE_LABELS[r]) for r in user_auth.ROLES)
 
     return _page(render_template("directory/utilisateurs.html",
+        rows=_user_rows(comptes, me.get("user_id")),
         nb=str(len(comptes)),
         activ=str(sum(1 for u in comptes if u["est_actif"])),
         admins=str(sum(1 for u in comptes if u["role"] == "admin" and u["est_actif"])),

@@ -95,7 +95,7 @@
           </div>
           <div>
             <label>Type tiers</label
-            ><select name="tiers_type" onchange="onTiersTypeChange()">
+            ><select name="tiers_type" onchange="onTiersTypeChange(); checkNiuLive();">
               <option value="business" {{ t_bus }}>Entreprise</option>
               <option value="individual" {{ t_ind }}>Particulier</option>
               <option value="government" {{ t_gov }}>Gouvernement</option>
@@ -139,9 +139,11 @@
             ><input
               type="text"
               id="tiers_niu"
+              oninput="checkNiuLive()"
               minlength="16"
               maxlength="17"
               name="tiers_niu"
+              placeholder="Ex. M25000000561080T (16-17 caracteres)"
               value="{{ tiers_niu | safe }}"
             />
             <div
@@ -293,12 +295,14 @@
   var labels={business:"Entreprise",individual:"Particulier",government:"Gouvernement",foreign:"Etranger"};
   info.textContent="Type SFEC: "+((labels[t]||t));
   if(t==="business"||t==="government"){document.getElementById("niu-field").classList.add("niu-required");document.getElementById("niu-label").innerHTML='NIU <span class="niu-star">*</span>';var h=document.getElementById("niu-hint");h.textContent="NIU obligatoire pour la certification SFEC (16-17 caracteres)";h.style.display="block"}
-  else{document.getElementById("niu-field").classList.remove("niu-required");document.getElementById("niu-label").textContent="NIU";document.getElementById("niu-hint").style.display="none"}}
+  else{document.getElementById("niu-field").classList.remove("niu-required");document.getElementById("niu-label").textContent="NIU";var h2=document.getElementById("niu-hint");h2.textContent="NIU optionnel pour ce type de tiers";h2.style.display="block"}}
   function onTypeDocChange(){document.getElementById("ref-invoice-field").style.display=(document.getElementById("type_doc").value==="avoir")?"block":"none"}
   function fillContact(){var sel=document.getElementById("contact-select");var c=contacts.find(function(x){return x.code===sel.value});if(c){document.getElementById("tiers_code").value=c.code;document.getElementById("tiers_nom").value=c.nom;document.getElementById("tiers_niu").value=c.niu||"";document.getElementById("tiers_email").value=c.email||"";document.getElementById("tiers_telephone").value=c.telephone||"";document.getElementById("tiers_adresse").value=c.adresse||"";document.getElementById("recipient_rccm").value=c.rccm||"";
-document.getElementById("is_recipient_taxable").value=(c.is_taxable===0||c.is_taxable===false)?"0":"1";var rt=c.type_raw?String(c.type_raw).toLowerCase():"";if(!rt&&c.type){rt=String(c.type).toLowerCase();if(rt==="client")rt="business";if(rt==="fournisseur")rt="business"}if(rt==="government"||rt==="gouvernement")rt="government";if(rt==="particulier"||rt==="individual"||rt==="individu")rt="individual";if(rt==="etranger"||rt==="foreign")rt="foreign";if(rt)document.querySelector("select[name='tiers_type']").value=rt;onTiersTypeChange()}}
+document.getElementById("is_recipient_taxable").value=(c.is_taxable===0||c.is_taxable===false)?"0":"1";var rt=c.type_raw?String(c.type_raw).toLowerCase():"";if(!rt&&c.type){rt=String(c.type).toLowerCase();if(rt==="client")rt="business";if(rt==="fournisseur")rt="business"}if(rt==="government"||rt==="gouvernement")rt="government";if(rt==="particulier"||rt==="individual"||rt==="individu")rt="individual";if(rt==="etranger"||rt==="foreign")rt="foreign";if(rt)document.querySelector("select[name='tiers_type']").value=rt;onTiersTypeChange() ;checkNiuLive()}}
 
   function initContactSelect(){var cs=document.getElementById("contact-select");cs.innerHTML='<option value="">-- Choisir --</option>';contacts.forEach(function(c){var o=document.createElement("option");o.value=c.code;o.textContent=c.nom+" ("+c.code+")";cs.appendChild(o)})}
+
+  function checkNiuLive(){var el=document.getElementById("tiers_niu");el.value=el.value.toUpperCase().replace(/\s+/g,"");var v=el.value.trim();var t=document.querySelector("select[name='tiers_type']").value;var req=(t==="business"||t==="government");var h=document.getElementById("niu-hint");var ok=/^[A-Z0-9]{16,17}$/.test(v);if(!v){el.style.borderColor="";h.textContent=req?"NIU obligatoire pour la certification SFEC (16-17 caracteres)":"NIU optionnel pour ce type de tiers";h.style.display="block";return}el.style.borderColor=ok?"#16a34a":"#dc2626";h.textContent="NIU : "+v.length+" caractere(s) (attendu 16-17)"+(ok?" ✔":"")+(req?"":" — optionnel");h.style.display="block"}
 
   function validateTiersNiu(){var t=document.querySelector("select[name='tiers_type']").value;var niu=document.getElementById("tiers_niu").value.trim();if(t==="business"||t==="government"){if(!niu){showToast("NIU obligatoire pour la certification SFEC (type: "+t+")","err");document.getElementById("tiers_niu").focus();return false}}return true}
 
@@ -355,7 +359,7 @@ document.getElementById("is_recipient_taxable").value=(c.is_taxable===0||c.is_ta
 }
   function round2(n){return Math.round(n*100)/100}
 
-  function gatherData(){var d={};d.date_facture=document.querySelector("input[name='date_facture']").value;d.date_echeance=document.querySelector("input[name='date_echeance']").value;d.reference=document.querySelector("input[name='reference']").value;d.tiers_code=document.getElementById("tiers_code").value;d.tiers_nom=document.getElementById("tiers_nom").value;d.tiers_niu=document.getElementById("tiers_niu").value;d.tiers_email=document.getElementById("tiers_email").value;d.tiers_telephone=document.getElementById("tiers_telephone").value;d.tiers_adresse=document.getElementById("tiers_adresse").value;d.tiers_type=document.querySelector("select[name='tiers_type']").value;d.statut=document.querySelector("select[name='statut']").value;d.notes=document.querySelector("textarea[name='notes']").value;d.type_doc=document.getElementById("type_doc").value;
+  function gatherData(){var d={};d.date_facture=document.querySelector("input[name='date_facture']").value;d.date_echeance=document.querySelector("input[name='date_echeance']").value;d.reference=document.querySelector("input[name='reference']").value;d.tiers_code=document.getElementById("tiers_code").value;d.tiers_nom=document.getElementById("tiers_nom").value;d.tiers_niu=document.getElementById("tiers_niu").value.trim().toUpperCase().replace(/\s+/g,"");d.tiers_email=document.getElementById("tiers_email").value;d.tiers_telephone=document.getElementById("tiers_telephone").value;d.tiers_adresse=document.getElementById("tiers_adresse").value;d.tiers_type=document.querySelector("select[name='tiers_type']").value;d.statut=document.querySelector("select[name='statut']").value;d.notes=document.querySelector("textarea[name='notes']").value;d.type_doc=document.getElementById("type_doc").value;
 d.payment_method=document.querySelector("select[name='payment_method']").value;
 d.devise=document.querySelector("select[name='devise']").value;
 d.recipient_rccm=document.getElementById("recipient_rccm").value;

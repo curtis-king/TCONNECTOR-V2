@@ -176,7 +176,7 @@ def print_certified(invoice_id):
             fmt_money(item.get("quantity", 0)),
             fmt_money(item.get("unit_price", 0)),
             _esc(item.get("tax_rate", "0")),
-            fmt_money(item.get("net_amount", 0), 2),
+            fmt_money(item.get("net_amount", 0)),
             )
     inv_type = inv.get("invoice_type", "") or inv.get("invoice_status", "")
     doc_label = "FACTURE D'AVOIR" if inv_type == "creditNote" else "FACTURE"
@@ -189,6 +189,10 @@ def print_certified(invoice_id):
                    if inv.get("total_tax_t_amount") is not None else inv.get("total_tax18", 0))
     total_tax_r = (inv.get("total_tax_r_amount")
                    if inv.get("total_tax_r_amount") is not None else inv.get("total_tax5", 0))
+    try:
+        _disc_val = float(str(inv.get("discount_amount", "0")).replace(",", "."))
+    except (ValueError, TypeError):
+        _disc_val = 0
     return render_template("dashboard/print.html",
         doc_label=_esc(doc_label),
         avoir_banner=avoir_banner,
@@ -198,7 +202,7 @@ def print_certified(invoice_id):
         invoice_type=_esc(inv_type),
         recipient_type=_esc(inv.get("recipient_type", "")),
         reference_invoice_id=_esc(inv.get("reference_invoice_id", "") or ""),
-        discount_amount=_esc(fmt_money(inv.get("discount_amount", "0"))),
+        discount_display=_esc(("-" if _disc_val > 0 else "") + fmt_money(inv.get("discount_amount", "0"))),
         total_exempt=_esc(fmt_money(inv.get("total_exempt_amount", "0"))),
         additional_cent_tax=_esc(fmt_money(inv.get("additional_cent_tax", "0"))),
         electronic_stamp_duty=_esc(fmt_money(inv.get("electronic_stamp_duty", "0"))),
