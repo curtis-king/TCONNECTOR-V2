@@ -60,18 +60,19 @@ def vendeurs_page():
     vendeurs = pos_engine.list_vendeurs(active_only=False)
     stats = pos_engine.get_vendeur_stats()
 
-    rows = ""
+    _parts = []
     for v in vendeurs:
         s = "badge-ok" if v.get("est_actif") else "badge-err"
         stxt = "Actif" if v.get("est_actif") else "Inactif"
         vstat = next((x for x in stats if x["id"] == v["id"]), None)
         nb_ventes = vstat["nb_ventes"] if vstat else 0
         ca = vstat["ca_total"] if vstat else 0
-        rows += "<tr><td>{}</td><td>{} {}</td><td>{}</td><td>{}</td><td style='text-align:right'>{}</td><td style='text-align:right'>{:,.0f}</td><td><span class='badge {}'>{}</span></td><td><button class='btn btn-sm' onclick='editVendeur({})'>Modifier</button></td></tr>".format(
+        _parts.append("<tr><td>{}</td><td>{} {}</td><td>{}</td><td>{}</td><td style='text-align:right'>{}</td><td style='text-align:right'>{:,.0f}</td><td><span class='badge {}'>{}</span></td><td><button class='btn btn-sm' onclick='editVendeur({})'>Modifier</button></td></tr>".format(
             _esc(v.get("code", "")), _esc(v.get("prenom", "")), _esc(v.get("nom", "")),
             _esc(v.get("role", "")), _esc(v.get("telephone", "") or v.get("email", "") or "-"),
             nb_ventes, ca, s, _esc(stxt), v["id"]
-        )
+        ))
+    rows = "".join(_parts)
 
     return _page(render_template("directory/vendeurs.html",
         total=len(vendeurs),

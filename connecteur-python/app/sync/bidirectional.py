@@ -21,7 +21,7 @@ def get_sync_stats():
 
 def push_invoice_to_sage(invoice_id):
     with get_cursor() as cur:
-        cur.execute("SELECT * FROM invoices WHERE id = ?", (invoice_id,))
+        cur.execute("SELECT id, numero, date_facture, date_echeance, reference, contact_id, tiers_code, tiers_nom, tiers_niu, tiers_email, tiers_telephone, tiers_adresse, tiers_type, montant_ht, montant_tva, montant_ttc, montant_restant, statut, valide, type_doc, source, sfec_statut, sfec_num_certif, sfec_date_certif, sfec_id, synced_sage, sage_domaine, sage_type, sage_piece, vendeur_id, payment_method, devise, montant_ht_brut, total_tax_t_amount, total_tax_r_amount, total_exempt_amount, discount_amount, total_line_discount_amount, additional_cent_tax, electronic_stamp_duty, is_recipient_taxable, recipient_rccm, reference_invoice_id, payment_date, created_at, updated_at FROM invoices WHERE id = ?", (invoice_id,))
         row = cur.fetchone()
         if not row:
             return {"success": False, "error": "Facture non trouvee"}
@@ -52,7 +52,7 @@ def push_contacts_to_sage():
     (erreur 82019) refuse toute piece dont le tiers n'existe pas en F_COMPTET.
     """
     with get_cursor() as cur:
-        cur.execute("SELECT * FROM contacts WHERE synced_sage = 0 ORDER BY code")
+        cur.execute("SELECT * FROM contacts WHERE synced_sage = 0 ORDER BY code LIMIT 200")
         pending = rows_to_list(cur.fetchall())
 
     if not pending:
@@ -79,10 +79,10 @@ def push_contacts_to_sage():
 def push_to_sage():
     with get_cursor() as cur:
         cur.execute("""
-            SELECT * FROM invoices
+            SELECT id, numero, date_facture, date_echeance, reference, contact_id, tiers_code, tiers_nom, tiers_niu, tiers_email, tiers_telephone, tiers_adresse, tiers_type, montant_ht, montant_tva, montant_ttc, montant_restant, statut, valide, type_doc, source, sfec_statut, sfec_num_certif, sfec_date_certif, sfec_id, synced_sage, sage_domaine, sage_type, sage_piece, vendeur_id, payment_method, devise, montant_ht_brut, total_tax_t_amount, total_tax_r_amount, total_exempt_amount, discount_amount, total_line_discount_amount, additional_cent_tax, electronic_stamp_duty, is_recipient_taxable, recipient_rccm, reference_invoice_id, payment_date, created_at, updated_at FROM invoices
             WHERE source IN ('web', 'pos') AND synced_sage = 0 AND statut != 'brouillon'
               AND (source != 'pos' OR (sfec_num_certif IS NOT NULL AND sfec_num_certif != ''))
-            ORDER BY date_facture ASC
+            ORDER BY date_facture ASC LIMIT 100
         """)
         unsynced = rows_to_list(cur.fetchall())
 
@@ -210,11 +210,11 @@ def certify_pending_pos_invoices():
 
     with get_cursor() as cur:
         cur.execute("""
-            SELECT * FROM invoices
+            SELECT id, numero, date_facture, date_echeance, reference, contact_id, tiers_code, tiers_nom, tiers_niu, tiers_email, tiers_telephone, tiers_adresse, tiers_type, montant_ht, montant_tva, montant_ttc, montant_restant, statut, valide, type_doc, source, sfec_statut, sfec_num_certif, sfec_date_certif, sfec_id, synced_sage, sage_domaine, sage_type, sage_piece, vendeur_id, payment_method, devise, montant_ht_brut, total_tax_t_amount, total_tax_r_amount, total_exempt_amount, discount_amount, total_line_discount_amount, additional_cent_tax, electronic_stamp_duty, is_recipient_taxable, recipient_rccm, reference_invoice_id, payment_date, created_at, updated_at FROM invoices
             WHERE source = 'pos' AND synced_sage = 0
               AND (sfec_num_certif IS NULL OR sfec_num_certif = '' OR LENGTH(sfec_num_certif) > 40)
               AND (sfec_statut NOT IN ('CERTIFIE', 'DEJA_CERTIFIE') OR LENGTH(sfec_num_certif) > 40)
-            ORDER BY date_facture ASC
+            ORDER BY date_facture ASC LIMIT 50
         """)
         pending = rows_to_list(cur.fetchall())
 

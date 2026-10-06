@@ -1440,15 +1440,19 @@ def _merge_article_stock(articles, article_tbl):
                 FROM F_ARTSTOCK
                 GROUP BY AR_Ref
             """)
+            by_ref = {}
+            for art in articles:
+                _k = str(art.get("ref", "")).strip()
+                if _k and _k not in by_ref:
+                    by_ref[_k] = art  # comme break : premiere occurrence gagne
             for row in cur.fetchall():
                 ref = str(row[0]).strip() if row[0] is not None else ""
-                for art in articles:
-                    if str(art.get("ref", "")).strip() == ref:
-                        try:
-                            art["stock"] = _safe_float(row[1])
-                        except (ValueError, TypeError):
-                            art["stock"] = 0.0
-                        break
+                art = by_ref.get(ref)
+                if art is not None:
+                    try:
+                        art["stock"] = _safe_float(row[1])
+                    except (ValueError, TypeError):
+                        art["stock"] = 0.0
     except Exception as e:
         logger.warning("Stock articles F_ARTSTOCK indisponible: %s", e)
 

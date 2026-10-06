@@ -27,37 +27,6 @@ def billing_page():
     stats = invoice_engine.count_invoices()
     bi_stats = sync_bidirectional.get_sync_stats()
 
-    with sqlite_db.get_cursor() as cur:
-        cur.execute("SELECT COUNT(*) c FROM invoices WHERE sfec_statut IN ('CERTIFIE', 'DEJA_CERTIFIE')")
-        stats["certifiees"] = cur.fetchone()["c"]
-        cur.execute("SELECT COUNT(*) c FROM invoices WHERE sfec_statut = 'EN_COURS'")
-        stats["certif_en_cours"] = cur.fetchone()["c"]
-        cur.execute("SELECT COUNT(*) c FROM invoices WHERE sfec_statut = 'ERREUR'")
-        stats["certif_erreur"] = cur.fetchone()["c"]
-        cur.execute("SELECT COUNT(*) c FROM invoices WHERE statut != 'brouillon' AND sfec_statut NOT IN ('CERTIFIE', 'DEJA_CERTIFIE')")
-        stats["non_certifiees"] = cur.fetchone()["c"]
-        cur.execute("""
-            SELECT COUNT(*) c FROM invoices
-            WHERE source IN ('web', 'pos') AND synced_sage = 0 AND statut != 'brouillon'
-              AND (source != 'pos' OR (sfec_num_certif IS NOT NULL AND sfec_num_certif != ''))
-        """)
-        stats["pending_sage"] = cur.fetchone()["c"]
-        cur.execute("SELECT COALESCE(SUM(montant_restant), 0) t, COUNT(*) c FROM invoices WHERE statut != 'brouillon' AND montant_restant > 0")
-        m = cur.fetchone()
-        stats["impayes_total"] = m["t"]
-        stats["impayes_nb"] = m["c"]
-        cur.execute("""
-            SELECT COUNT(*) c, COALESCE(SUM(montant_ht), 0) ht, COALESCE(SUM(montant_tva), 0) tva,
-                   COALESCE(SUM(montant_ttc), 0) ttc
-            FROM invoices
-            WHERE statut != 'brouillon' AND strftime('%Y-%m', substr(date_facture, 1, 10)) = strftime('%Y-%m', 'now')
-        """)
-        m = cur.fetchone()
-        stats["mois_nb"] = m["c"]
-        stats["mois_ht"] = m["ht"]
-        stats["mois_tva"] = m["tva"]
-        stats["mois_ttc"] = m["ttc"]
-
     statut_opts = ('<option value="">Tous</option><option value="brouillon">Brouillon</option>'
                    '<option value="valide">Validee</option><option value="a_comptabiliser">A comptabiliser</option>'
                    '<option value="a_comptabilise">A comptabilise</option>')
