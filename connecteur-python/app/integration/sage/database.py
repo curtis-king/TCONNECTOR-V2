@@ -1,3 +1,4 @@
+import queue
 import re
 import threading
 import pyodbc
@@ -38,7 +39,115 @@ logger = logging.getLogger("t-connector.db")
 _pool = None
 _pool_lock = threading.Lock()
 _db_lock = threading.Lock()
+_pool_queue = None
+_pool_size = 0
 
+def _pool_capacity():
+    try:
+        cfg = get_db_config()
+        lo = int(cfg.get("pool_min", 2) or 2)
+        hi = int(cfg.get("pool_max", 10) or 10)
+    except (ValueError, TypeError):
+        lo, hi = 2, 10
+    lo = max(1, min(lo, 8))
+    hi = max(lo, min(hi, 16))
+    return lo, hi
+
+
+def _connect():
+    cfg = get_db_config()
+    if not cfg.get("server") or not cfg.get("database"):
+        raise ValueError("Configuration base de donnees incomplete")
+    conn = pyodbc.connect(_build_conn_string(cfg),
+                          timeout=cfg.get("connection_timeout_ms", 15000) // 1000,
+                          autocommit=True)
+    try:
+        conn.timeout = max(1, int(cfg.get("request_timeout_ms", 30000) or 30000) // 1000)
+    except Exception:
+        pass
+    return conn
+
+
+def _ensure_pool():
+    global _pool_queue, _pool_size
+    lo, hi = _pool_capacity()
+    with _pool_lock:
+        if _pool_queue is None:
+            _pool_queue = queue.Queue()
+            for _ in range(lo):
+                try:
+                    _pool_queue.put(_connect())
+                    _pool_size += 1
+                except Exception as e:
+                    logger.error("Pool Sage: connexion initiale echouee: %s", e)
+                    break
+            logger.info("Pool Sage initialise: %d connexion(s)", _pool_size)
+    return hi
+
+
+def _healthy(conn):
+    try:
+        conn.execute("SELECT 1")
+        return True
+    except Exception:
+        return False
+
+
+def _checkout(hi):
+    global _pool_size
+    try:
+        conn = _pool_queue.get(block=True, timeout=30)
+    except queue.Empty:
+        conn = None
+    if conn is not None and not _healthy(conn):
+        try:
+            conn.close()
+        except Exception:
+            pass
+        with _pool_lock:
+            
+            _pool_size = max(0, _pool_size - 1)
+        conn = None
+    if conn is None:
+        with _pool_lock:
+            
+            if _pool_size < hi:
+                try:
+                    conn = _connect()
+                    _pool_size += 1
+                except Exception as e:
+                    logger.error("Pool Sage: connexion a la demande echouee: %s", e)
+    if conn is None:
+        try:
+            conn = _pool_queue.get(block=True, timeout=30)
+            if not _healthy(conn):
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                conn = None
+        except queue.Empty:
+            conn = None
+    return conn
+
+
+def _checkin(conn):
+    if conn is None:
+        return
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+    try:
+        _pool_queue.put(conn, block=False)
+    except Exception:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        with _pool_lock:
+            global _pool_size
+            _pool_size = max(0, _pool_size - 1)
 
 def _sanitize_db_val(val):
     if val is None or isinstance(val, (int, float, bool)):
@@ -271,7 +380,7 @@ def get_pool():
 
 
 def close_pool():
-    global _pool
+    global _pool, _pool_queue, _pool_size
     with _pool_lock:
         if _pool is not None:
             try:
@@ -279,26 +388,64 @@ def close_pool():
             except Exception:
                 pass
             _pool = None
-            logger.info("Connexion SQL Server fermee")
+        q, _pool_queue = _pool_queue, None
+        _pool_size = 0
+    while q is not None:
+        try:
+            conn = q.get(block=False)
+        except queue.Empty:
+            break
+        try:
+            conn.close()
+        except Exception:
+            pass
+    logger.info("Connexion SQL Server fermee")
 
 
 @contextmanager
 def get_cursor():
-    with _db_lock:
-        conn = get_pool()
-        cursor = _SafeCursor(conn.cursor())
-        try:
-            yield cursor
-            conn.commit()
-        except Exception:
+    hi = _ensure_pool()
+    conn = _checkout(hi)
+    if conn is None:
+        # Repli : ancien chemin mono-connexion sous verrou
+        with _db_lock:
+            conn = get_pool()
+            raw = conn.cursor()
             try:
-                conn.rollback()
+                raw.arraysize = 1000
             except Exception:
                 pass
-            raise
-        finally:
-            cursor.close()
-
+            cursor = _SafeCursor(raw)
+            try:
+                yield cursor
+                conn.commit()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise
+            finally:
+                cursor.close()
+        return
+    raw = conn.cursor()
+    try:
+        raw.arraysize = 1000
+    except Exception:
+        pass
+    cursor = _SafeCursor(raw)
+    try:
+        yield cursor
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        cursor.close()
+        _checkin(conn)
 
 def ping_database():
     try:
@@ -546,7 +693,7 @@ def fetch_sales_invoices(updated_from=None, limit=None):
             '' AS sfec_date_certif,
             '' AS sfec_statut"""
 
-    limit_clause = "TOP {}".format(limit) if limit else ""
+    limit_clause = "TOP {}".format(limit) if limit else "TOP 1000"
     where = "WHERE d.DO_Domaine = {} AND d.DO_Type IN ({}, {})".format(
         dc["vente_domain"], dc["facture_type"], dc["avoir_type"]
     )
@@ -675,26 +822,35 @@ def fetch_sales_invoices(updated_from=None, limit=None):
             rows = cur.fetchall()
 
         invoices = []
+        idx = {c: i for i, c in enumerate(columns)}
+        _keys = []
+        for _r in rows:
+            try:
+                _dt = int(_safe_float(_r[idx["do_type_raw"]]))
+            except (ValueError, TypeError, KeyError):
+                _dt = dc["facture_type"]
+            _keys.append((_dt, str(_r[idx["numero"]])))
+        _lines_map = fetch_doc_lines_batch(dc["vente_domain"], _keys)
         for row in rows:
             inv = dict(zip(columns, [str(v) if v is not None else "" for v in row]))
-            inv["montant_ht"] = round(_safe_float(row[columns.index("montant_ht")]), 2)
-            inv["montant_tva"] = round(_safe_float(row[columns.index("montant_tva")]), 2)
-            inv["montant_ttc"] = round(_safe_float(row[columns.index("montant_ttc")]), 2)
-            inv["montant_restant"] = round(_safe_float(row[columns.index("montant_restant")]), 2)
+            inv["montant_ht"] = round(_safe_float(row[idx["montant_ht"]]), 2)
+            inv["montant_tva"] = round(_safe_float(row[idx["montant_tva"]]), 2)
+            inv["montant_ttc"] = round(_safe_float(row[idx["montant_ttc"]]), 2)
+            inv["montant_restant"] = round(_safe_float(row[idx["montant_restant"]]), 2)
             inv["devise"] = _map_devise(inv.get("devise", "0"))
             try:
-                inv["statut_code"] = int(_safe_float(row[columns.index("statut_code")]))
+                inv["statut_code"] = int(_safe_float(row[idx["statut_code"]]))
             except (ValueError, TypeError):
                 inv["statut_code"] = 0
             try:
-                inv["valide"] = int(_safe_float(row[columns.index("valide")]))
+                inv["valide"] = int(_safe_float(row[idx["valide"]]))
             except (ValueError, TypeError):
                 inv["valide"] = 0
             try:
-                do_type_raw = int(_safe_float(row[columns.index("do_type_raw")]))
+                do_type_raw = int(_safe_float(row[idx["do_type_raw"]]))
             except (ValueError, TypeError):
                 do_type_raw = dc["facture_type"]
-            inv["lignes"] = fetch_doc_lines(dc["vente_domain"], do_type_raw, inv["numero"])
+            inv["lignes"] = _lines_map.get((do_type_raw, inv["numero"])) or fetch_doc_lines(dc["vente_domain"], do_type_raw, inv["numero"])
             invoices.append(inv)
 
         if invoices:
@@ -758,21 +914,26 @@ def _fetch_sales_invoices_fallback(dc, t):
             rows = cur.fetchall()
 
         invoices = []
+        idx = {c: i for i, c in enumerate(columns)}
+        _keys = []
+        for _r in rows:
+            _keys.append((dc["facture_type"], str(_r[idx["numero"]])))
+        _lines_map = fetch_doc_lines_batch(dc["vente_domain"], _keys)
         for row in rows:
             inv = dict(zip(columns, [str(v) if v is not None else "" for v in row]))
-            inv["montant_ht"] = round(_safe_float(row[columns.index("montant_ht")]), 2)
-            inv["montant_tva"] = round(_safe_float(row[columns.index("montant_tva")]), 2)
-            inv["montant_ttc"] = round(_safe_float(row[columns.index("montant_ttc")]), 2)
-            inv["montant_restant"] = round(_safe_float(row[columns.index("montant_restant")]), 2)
+            inv["montant_ht"] = round(_safe_float(row[idx["montant_ht"]]), 2)
+            inv["montant_tva"] = round(_safe_float(row[idx["montant_tva"]]), 2)
+            inv["montant_ttc"] = round(_safe_float(row[idx["montant_ttc"]]), 2)
+            inv["montant_restant"] = round(_safe_float(row[idx["montant_restant"]]), 2)
             try:
-                inv["statut_code"] = int(_safe_float(row[columns.index("statut_code")]))
+                inv["statut_code"] = int(_safe_float(row[idx["statut_code"]]))
             except (ValueError, TypeError):
                 inv["statut_code"] = 0
             try:
-                inv["valide"] = int(_safe_float(row[columns.index("valide")]))
+                inv["valide"] = int(_safe_float(row[idx["valide"]]))
             except (ValueError, TypeError):
                 inv["valide"] = 0
-            inv["lignes"] = fetch_doc_lines(dc["vente_domain"], dc["facture_type"], inv["numero"])
+            inv["lignes"] = _lines_map.get((dc["facture_type"], inv["numero"])) or fetch_doc_lines(dc["vente_domain"], dc["facture_type"], inv["numero"])
             invoices.append(inv)
 
         if invoices:
@@ -847,6 +1008,78 @@ def fetch_doc_lines(domaine, type_doc, piece):
     except Exception:
         return []
 
+def fetch_doc_lines_batch(domaine, keys, chunk_size=200):
+    """Lignes de N pieces en 1 requete par chunk (anti N+1).
+
+    keys : liste de (do_type, numero). Retour : {(do_type, numero): [lignes]}.
+    Meme SELECT que fetch_doc_lines. Chunks de 200 cles (600 params < limite 2100 pyodbc).
+    """
+    t = get_table_map()
+    if not t["document_lines"] or not keys:
+        return {}
+
+    article_tbl = t.get("article", "")
+    if article_tbl:
+        join_clause = "LEFT JOIN {} a ON a.AR_Ref = l.AR_Ref".format(article_tbl)
+        article_cols = """
+            , ISNULL(a.AR_Design, '') AS article_design
+            , ISNULL(a.FA_CodeFamille, '') AS article_famille
+            , ISNULL(a.AR_Type, 0) AS article_type
+            , ISNULL(a.AR_Nature, 0) AS article_nature
+        """
+    else:
+        join_clause = ""
+        article_cols = """
+            , '' AS article_design
+            , '' AS article_famille
+            , 0 AS article_type
+            , 0 AS article_nature
+        """
+
+    out = {}
+    for i in range(0, len(keys), chunk_size):
+        chunk = keys[i:i + chunk_size]
+        conds = " OR ".join(["(l.DO_Domaine = ? AND l.DO_Type = ? AND l.DO_Piece = ?)"] * len(chunk))
+        params = []
+        for dt, piece in chunk:
+            params.extend([domaine, dt, piece])
+        try:
+            with get_cursor() as cur:
+                cur.execute("""
+                    SELECT
+                        CAST(l.DO_Domaine AS VARCHAR) + '-' + CAST(l.DO_Type AS VARCHAR) + '-' + l.DO_Piece + '-' + CAST(l.DL_Ligne AS VARCHAR) AS id,
+                        l.DL_Ligne AS numero_ligne,
+                        ISNULL(l.DL_Design, '') AS description,
+                        ISNULL(l.DL_Qte, 1) AS quantite,
+                        ISNULL(l.DL_PrixUnitaire, 0) AS prix_unitaire,
+                        ISNULL(l.DL_MontantHT, 0) AS montant_ht,
+                        ISNULL(ROUND(l.DL_MontantHT * l.DL_Taxe1 / 100, 2), 0) AS montant_tva,
+                        ISNULL(l.DL_MontantTTC, 0) AS montant_ttc,
+                        ISNULL(l.DL_Taxe1, 0) AS taux_tva,
+                        ISNULL(CAST(l.CO_No AS NVARCHAR), '') AS code_compte,
+                        ISNULL(l.AR_Ref, '') AS code_produit
+                        {article_cols}
+                        , l.DO_Type AS _dt, l.DO_Piece AS _piece
+                    FROM {tbl} l
+                    {join}
+                    WHERE {conds}
+                    ORDER BY l.DO_Piece, l.DL_Ligne
+                """.format(tbl=t["document_lines"], article_cols=article_cols,
+                           join=join_clause, conds=conds), params)
+                columns = [desc[0] for desc in cur.description]
+                idx = {c: j for j, c in enumerate(columns)}
+                for row in cur.fetchall():
+                    line = dict(zip(columns, [str(v) if v is not None else "" for v in row]))
+                    for key in ("quantite", "prix_unitaire", "montant_ht", "montant_tva", "montant_ttc", "taux_tva"):
+                        if key in line:
+                            try:
+                                line[key] = round(float(str(line[key] or "0").replace(",", ".")), 2)
+                            except (ValueError, TypeError):
+                                line[key] = 0.0 if key != "taux_tva" else 18.0
+                    out.setdefault((int(_safe_float(row[idx["_dt"]])), str(row[idx["_piece"]])), []).append(line)
+        except Exception:
+            continue
+    return out
 
 def fetch_purchase_invoices(updated_from=None, limit=None):
     _refresh_sfec_columns()
@@ -978,13 +1211,22 @@ def fetch_purchase_invoices(updated_from=None, limit=None):
             rows = cur.fetchall()
 
         invoices = []
+        idx = {c: i for i, c in enumerate(columns)}
+        _keys = []
+        for _r in rows:
+            try:
+                _keys.append((int(_safe_float(_r[idx["do_type_raw"]])), str(_r[idx["numero"]])))
+            except (ValueError, TypeError, KeyError):
+                _keys.append((None, None))
+        _lines_map = fetch_doc_lines_batch(dc["achat_domain"], [(a, b) for a, b in _keys if a is not None])
         for row in rows:
             inv = dict(zip(columns, [str(v) if v is not None else "" for v in row]))
-            inv["montant_ht"] = round(_safe_float(row[columns.index("montant_ht")]), 2)
-            inv["montant_tva"] = round(_safe_float(row[columns.index("montant_tva")]), 2)
-            inv["montant_ttc"] = round(_safe_float(row[columns.index("montant_ttc")]), 2)
-            inv["montant_restant"] = round(_safe_float(row[columns.index("montant_restant")]), 2)
-            inv["lignes"] = fetch_doc_lines(dc["achat_domain"], int(_safe_float(row[columns.index("do_type_raw")])), inv["numero"])
+            inv["montant_ht"] = round(_safe_float(row[idx["montant_ht"]]), 2)
+            inv["montant_tva"] = round(_safe_float(row[idx["montant_tva"]]), 2)
+            inv["montant_ttc"] = round(_safe_float(row[idx["montant_ttc"]]), 2)
+            inv["montant_restant"] = round(_safe_float(row[idx["montant_restant"]]), 2)
+            _dt = int(_safe_float(row[idx["do_type_raw"]]))
+            inv["lignes"] = _lines_map.get((_dt, inv["numero"])) or fetch_doc_lines(dc["achat_domain"], _dt, inv["numero"])
             invoices.append(inv)
 
         if invoices:
@@ -1046,13 +1288,22 @@ def _fetch_purchase_invoices_fallback(dc, t):
             rows = cur.fetchall()
 
         invoices = []
+        idx = {c: i for i, c in enumerate(columns)}
+        _keys = []
+        for _r in rows:
+            try:
+                _keys.append((int(_safe_float(_r[idx["do_type_raw"]])), str(_r[idx["numero"]])))
+            except (ValueError, TypeError, KeyError):
+                _keys.append((None, None))
+        _lines_map = fetch_doc_lines_batch(dc["achat_domain"], [(a, b) for a, b in _keys if a is not None])
         for row in rows:
             inv = dict(zip(columns, [str(v) if v is not None else "" for v in row]))
-            inv["montant_ht"] = round(_safe_float(row[columns.index("montant_ht")]), 2)
-            inv["montant_tva"] = round(_safe_float(row[columns.index("montant_tva")]), 2)
-            inv["montant_ttc"] = round(_safe_float(row[columns.index("montant_ttc")]), 2)
-            inv["montant_restant"] = round(_safe_float(row[columns.index("montant_restant")]), 2)
-            inv["lignes"] = fetch_doc_lines(dc["achat_domain"], int(_safe_float(row[columns.index("do_type_raw")])), inv["numero"])
+            inv["montant_ht"] = round(_safe_float(row[idx["montant_ht"]]), 2)
+            inv["montant_tva"] = round(_safe_float(row[idx["montant_tva"]]), 2)
+            inv["montant_ttc"] = round(_safe_float(row[idx["montant_ttc"]]), 2)
+            inv["montant_restant"] = round(_safe_float(row[idx["montant_restant"]]), 2)
+            _dt = int(_safe_float(row[idx["do_type_raw"]]))
+            inv["lignes"] = _lines_map.get((_dt, inv["numero"])) or fetch_doc_lines(dc["achat_domain"], _dt, inv["numero"])
             invoices.append(inv)
 
         if invoices:
@@ -1336,15 +1587,19 @@ def _merge_article_stock(articles, article_tbl):
                 FROM F_ARTSTOCK
                 GROUP BY AR_Ref
             """)
+            by_ref = {}
+            for art in articles:
+                _k = str(art.get("ref", "")).strip()
+                if _k and _k not in by_ref:
+                    by_ref[_k] = art  # comme break : premiere occurrence gagne
             for row in cur.fetchall():
                 ref = str(row[0]).strip() if row[0] is not None else ""
-                for art in articles:
-                    if str(art.get("ref", "")).strip() == ref:
-                        try:
-                            art["stock"] = _safe_float(row[1])
-                        except (ValueError, TypeError):
-                            art["stock"] = 0.0
-                        break
+                art = by_ref.get(ref)
+                if art is not None:
+                    try:
+                        art["stock"] = _safe_float(row[1])
+                    except (ValueError, TypeError):
+                        art["stock"] = 0.0
     except Exception as e:
         logger.warning("Stock articles F_ARTSTOCK indisponible: %s", e)
 

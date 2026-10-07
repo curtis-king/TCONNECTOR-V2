@@ -301,6 +301,33 @@ SCHEMA = """
             CREATE INDEX IF NOT EXISTS idx_vendeurs_code ON vendeurs(code);
             CREATE INDEX IF NOT EXISTS idx_sync_log_table ON sync_log(table_name);
             CREATE INDEX IF NOT EXISTS idx_sync_log_status ON sync_log(status);
+            CREATE INDEX IF NOT EXISTS idx_invoices_type_doc ON invoices(type_doc);
+            CREATE INDEX IF NOT EXISTS idx_invoices_reference_invoice_id ON invoices(reference_invoice_id);
+            CREATE INDEX IF NOT EXISTS idx_invoices_contact_id ON invoices(contact_id);
+            CREATE INDEX IF NOT EXISTS idx_invoices_vendeur_id ON invoices(vendeur_id);
+            CREATE INDEX IF NOT EXISTS idx_invoices_tiers_code ON invoices(tiers_code);
+            CREATE INDEX IF NOT EXISTS idx_invoices_numero_source ON invoices(numero, source);
+            CREATE INDEX IF NOT EXISTS idx_invoices_push_sage ON invoices(synced_sage, source, statut, date_facture);
+            CREATE INDEX IF NOT EXISTS idx_invoices_pos_retry ON invoices(source, synced_sage, sfec_statut, date_facture);
+            CREATE INDEX IF NOT EXISTS idx_invoices_certif_list ON invoices(statut, sfec_statut, date_facture);
+            CREATE INDEX IF NOT EXISTS idx_invoices_list ON invoices(type_doc, statut, source, date_facture);
+            CREATE INDEX IF NOT EXISTS idx_invoices_sfec_num ON invoices(sfec_num_certif);
+            CREATE INDEX IF NOT EXISTS idx_invoice_lines_invoice_ligne ON invoice_lines(invoice_id, numero_ligne);
+            CREATE INDEX IF NOT EXISTS idx_invoice_lines_product ON invoice_lines(product_id);
+            CREATE INDEX IF NOT EXISTS idx_pos_ticket_lines_ticket_ligne ON pos_ticket_lines(ticket_id, numero_ligne);
+            CREATE INDEX IF NOT EXISTS idx_pos_ticket_lines_product ON pos_ticket_lines(product_id);
+            CREATE INDEX IF NOT EXISTS idx_pos_tickets_statut ON pos_tickets(statut);
+            CREATE INDEX IF NOT EXISTS idx_pos_tickets_statut_date ON pos_tickets(statut, date_ticket);
+            CREATE INDEX IF NOT EXISTS idx_pos_tickets_vendeur_statut_date ON pos_tickets(vendeur_id, statut, date_ticket);
+            CREATE INDEX IF NOT EXISTS idx_pos_tickets_invoice ON pos_tickets(invoice_id);
+            CREATE INDEX IF NOT EXISTS idx_pos_tickets_contact ON pos_tickets(contact_id);
+            CREATE INDEX IF NOT EXISTS idx_contacts_synced_code ON contacts(synced_sage, code);
+            CREATE INDEX IF NOT EXISTS idx_contacts_type_actif_nom ON contacts(type, est_actif, nom);
+            CREATE INDEX IF NOT EXISTS idx_products_actif_desig ON products(est_actif, designation);
+            CREATE INDEX IF NOT EXISTS idx_products_famille ON products(famille);
+            CREATE INDEX IF NOT EXISTS idx_products_barcode_actif ON products(barcode, est_actif);
+            CREATE INDEX IF NOT EXISTS idx_products_sage_ar_ref ON products(sage_ar_ref);
+            CREATE INDEX IF NOT EXISTS idx_vendeurs_actif_nom ON vendeurs(est_actif, nom);
                         CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_avoir_unique
                 ON invoices(reference_invoice_id)
                 WHERE type_doc = 'avoir' AND reference_invoice_id <> '';

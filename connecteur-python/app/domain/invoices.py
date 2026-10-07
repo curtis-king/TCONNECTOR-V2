@@ -247,7 +247,7 @@ def list_invoices(type_doc=None, statut=None, source=None, search=None,
 
     with get_cursor() as cur:
         cur.execute(
-            "SELECT * FROM invoices WHERE {} ORDER BY {} {} LIMIT ? OFFSET ?".format(where_sql, sort_by, sort_dir),
+            "SELECT id, numero, date_facture, date_echeance, reference, contact_id, tiers_code, tiers_nom, tiers_niu, tiers_email, tiers_telephone, tiers_adresse, tiers_type, montant_ht, montant_tva, montant_ttc, montant_restant, statut, valide, type_doc, source, sfec_statut, sfec_num_certif, sfec_date_certif, sfec_id, synced_sage, sage_domaine, sage_type, sage_piece, vendeur_id, payment_method, devise, montant_ht_brut, total_tax_t_amount, total_tax_r_amount, total_exempt_amount, discount_amount, total_line_discount_amount, additional_cent_tax, electronic_stamp_duty, is_recipient_taxable, recipient_rccm, reference_invoice_id, payment_date, created_at, updated_at FROM invoices WHERE {} ORDER BY {} {} LIMIT ? OFFSET ?".format(where_sql, sort_by, sort_dir),
             params
         )
         invoices = rows_to_list(cur.fetchall())
@@ -261,42 +261,67 @@ def list_invoices(type_doc=None, statut=None, source=None, search=None,
     return {"invoices": invoices, "total": total, "limit": limit, "offset": offset}
 
 
-def list_invoices_for_sfec():
+def list_invoices_for_sfec(limit=500):
     with get_cursor() as cur:
         cur.execute("""
             SELECT * FROM invoices
             WHERE statut IN ('valide', 'a_comptabiliser')
               AND sfec_statut NOT IN ('CERTIFIE', 'DEJA_CERTIFIE', 'EN_COURS')
               AND sfec_statut != 'ERREUR'
-            ORDER BY date_facture DESC
-        """)
+            ORDER BY date_facture DESC  LIMIT ?
+        """, (limit,))
         return rows_to_list(cur.fetchall())
 
 
 def count_invoices():
     with get_cursor() as cur:
-        stats = {}
-        cur.execute("SELECT COUNT(*) as cnt FROM invoices")
-        stats["total"] = cur.fetchone()["cnt"]
-        cur.execute("SELECT COUNT(*) as cnt FROM invoices WHERE source = 'web'")
-        stats["from_web"] = cur.fetchone()["cnt"]
-        cur.execute("SELECT COUNT(*) as cnt FROM invoices WHERE source = 'sage'")
-        stats["from_sage"] = cur.fetchone()["cnt"]
-        cur.execute("SELECT COUNT(*) as cnt FROM invoices WHERE statut = 'brouillon'")
-        stats["brouillons"] = cur.fetchone()["cnt"]
-        cur.execute("SELECT COUNT(*) as cnt FROM invoices WHERE statut = 'valide'")
-        stats["validees"] = cur.fetchone()["cnt"]
-        cur.execute("SELECT COUNT(*) as cnt FROM invoices WHERE sfec_statut = 'CERTIFIE'")
-        stats["certifiees"] = cur.fetchone()["cnt"]
-        cur.execute("SELECT COUNT(*) as cnt FROM invoices WHERE sfec_statut = 'EN_COURS'")
-        stats["en_cours_certif"] = cur.fetchone()["cnt"]
-        cur.execute("SELECT COUNT(*) as cnt FROM invoices WHERE type_doc = 'avoir'")
-        stats["avoirs"] = cur.fetchone()["cnt"]
-        cur.execute("SELECT COUNT(*) as cnt FROM invoices WHERE type_doc = 'vente'")
-        stats["ventes"] = cur.fetchone()["cnt"]
-        cur.execute("SELECT COALESCE(SUM(montant_ttc), 0) as total FROM invoices WHERE statut != 'brouillon'")
-        stats["ca_total"] = cur.fetchone()["total"]
-    return stats
+        cur.execute("""
+            SELECT 
+                COUNT(*) AS total,
+                
+                -- ASTUCE SQLITE : SUM(condition) remplace SUM(CASE WHEN...)
+                SUM(source = 'web') AS from_web,
+                SUM(source = 'sage') AS from_sage,
+                SUM(statut = 'brouillon') AS brouillons,
+                SUM(statut = 'valide') AS validees,
+                SUM(sfec_statut IN ('CERTIFIE', 'DEJA_CERTIFIE')) AS certifiees,
+                SUM(sfec_statut = 'EN_COURS') AS certif_en_cours,
+                SUM(sfec_statut = 'EN_COURS') AS en_cours_certif,
+                SUM(sfec_statut = 'ERREUR') AS certif_erreur,
+                SUM(statut != 'brouillon' AND sfec_statut NOT IN ('CERTIFIE', 'DEJA_CERTIFIE')) AS non_certifiees,
+                SUM(type_doc = 'avoir') AS avoirs,
+                SUM(type_doc = 'vente') AS ventes,
+                
+                -- Pour les montants, on garde le CASE WHEN (ou on multiplie par la condition)
+                COALESCE(SUM(CASE WHEN statut != 'brouillon' THEN montant_ttc ELSE 0 END), 0) AS ca_total,
+                
+                SUM(source IN ('web', 'pos') AND synced_sage = 0 AND statut != 'brouillon' 
+                    AND (source != 'pos' OR (sfec_num_certif IS NOT NULL AND sfec_num_certif != ''))) AS pending_sage,
+                
+                COALESCE(SUM(CASE WHEN statut != 'brouillon' AND montant_restant > 0 THEN montant_restant ELSE 0 END), 0) AS impayes_total,
+                SUM(statut != 'brouillon' AND montant_restant > 0) AS impayes_nb,
+                
+                SUM(statut != 'brouillon' AND date_facture >= strftime('%Y-%m-01', 'now') 
+                    AND date_facture < strftime('%Y-%m-01', 'now', '+1 month')) AS mois_nb,
+                    
+                COALESCE(SUM(CASE WHEN statut != 'brouillon' AND date_facture >= strftime('%Y-%m-01', 'now') 
+                    AND date_facture < strftime('%Y-%m-01', 'now', '+1 month') THEN montant_ht ELSE 0 END), 0) AS mois_ht,
+                    
+                COALESCE(SUM(CASE WHEN statut != 'brouillon' AND date_facture >= strftime('%Y-%m-01', 'now') 
+                    AND date_facture < strftime('%Y-%m-01', 'now', '+1 month') THEN montant_tva ELSE 0 END), 0) AS mois_tva,
+                    
+                COALESCE(SUM(CASE WHEN statut != 'brouillon' AND date_facture >= strftime('%Y-%m-01', 'now') 
+                    AND date_facture < strftime('%Y-%m-01', 'now', '+1 month') THEN montant_ttc ELSE 0 END), 0) AS mois_ttc
+
+            FROM invoices
+        """)
+        
+        # SQLite renvoie un objet dict-like si tu utilises sqlite3.Row,
+        # dict(r) te permet de tout convertir d'un coup très proprement.
+        r = cur.fetchone()
+        
+        # On s'assure qu'aucune valeur n'est None (remplacé par 0)
+        return {k: (v if v is not None else 0) for k, v in dict(r).items()}
 
 
 def _save_lines(invoice_id, lignes):

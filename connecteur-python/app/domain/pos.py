@@ -413,16 +413,16 @@ def count_tickets():
         stats["ca_total"] = cur.fetchone()["total"]
         cur.execute("""
             SELECT COALESCE(SUM(montant_ttc), 0) as total FROM pos_tickets
-            WHERE statut = 'valide' AND date(date_ticket) = date('now')
+            WHERE statut = 'valide' AND date_ticket >= date('now') AND date_ticket < date('now', '+1 day')
         """)
         stats["ca_jour"] = cur.fetchone()["total"]
-        cur.execute("SELECT COUNT(*) as cnt FROM pos_tickets WHERE statut = 'valide' AND date(date_ticket) = date('now')")
+        cur.execute("SELECT COUNT(*) as cnt FROM pos_tickets WHERE statut = 'valide' AND date_ticket >= date('now') AND date_ticket < date('now', '+1 day')")
         stats["tickets_jour"] = cur.fetchone()["cnt"]
         cur.execute("""
             SELECT v.nom, v.prenom, COUNT(*) as nb_ventes, COALESCE(SUM(t.montant_ttc), 0) as ca
             FROM pos_tickets t
             JOIN vendeurs v ON t.vendeur_id = v.id
-            WHERE t.statut = 'valide' AND date(t.date_ticket) = date('now')
+             WHERE t.statut = 'valide' AND t.date_ticket >= date('now') AND t.date_ticket < date('now', '+1 day')
             GROUP BY t.vendeur_id
         """)
         stats["par_vendeur"] = rows_to_list(cur.fetchall())

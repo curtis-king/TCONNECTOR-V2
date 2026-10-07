@@ -538,6 +538,20 @@ def auto_certify_invoices():
     sfec_matched = 0
     to_account = 0
 
+    # Index O(1) : 1 facture->scan -> dict (construits une seule fois)
+    by_numero = {}
+    avoir_ids_par_ref = {}
+    for _x in invoices_snapshot:
+        _num = _x.get("numero")
+        if _num and _num not in by_numero:
+            by_numero[_num] = _x  # comme next() : premiere occurrence gagne
+        if (_x.get("type_doc") == "avoir"
+                and _x.get("sfec_statut") in ("CERTIFIE", "DEJA_CERTIFIE")):
+            _r = _x.get("reference") or ""
+            if _r:
+                avoir_ids_par_ref.setdefault(_r, []).append(_x.get("id"))
+
+
     for inv in invoices_snapshot:
         if inv.get("statut_code", 0) != 2:
             continue
@@ -567,18 +581,15 @@ def auto_certify_invoices():
                 except Exception:
                     pass
                 continue
-            ref_invoice = next((x for x in invoices_snapshot if x.get("numero") == ref), None)
+            ref_invoice = by_numero.get(ref)
             if not ref_invoice or ref_invoice.get("sfec_statut") not in ("CERTIFIE", "DEJA_CERTIFIE"):
                 try:
                     mark_certification_failed(inv["id"], "Facture d'origine '{}' non certifiee".format(ref))
                 except Exception:
                     pass
                 continue
-            deja_avoir = any(
-                x.get("type_doc") == "avoir" and x.get("reference") == ref and x.get("id") != inv.get("id")
-                and x.get("sfec_statut") in ("CERTIFIE", "DEJA_CERTIFIE")
-                for x in invoices_snapshot
-            )
+            _ids_ref = avoir_ids_par_ref.get(ref, [])
+            deja_avoir = any(_i != inv.get("id") for _i in _ids_ref)
             if deja_avoir:
                 try:
                     mark_certification_failed(inv["id"], "Un avoir deja certifie existe pour '{}'".format(ref))

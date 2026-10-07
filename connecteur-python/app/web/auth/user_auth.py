@@ -133,6 +133,7 @@ def ensure_schema():
                 ip TEXT DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_utilisateurs_email ON utilisateurs(email);
+            CREATE INDEX IF NOT EXISTS idx_utilisateurs_email_lower ON utilisateurs(lower(email));
             CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
         """)
 
