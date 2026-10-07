@@ -1,3 +1,4 @@
+import queue
 import re
 import threading
 import pyodbc
@@ -38,7 +39,115 @@ logger = logging.getLogger("t-connector.db")
 _pool = None
 _pool_lock = threading.Lock()
 _db_lock = threading.Lock()
+_pool_queue = None
+_pool_size = 0
 
+def _pool_capacity():
+    try:
+        cfg = get_db_config()
+        lo = int(cfg.get("pool_min", 2) or 2)
+        hi = int(cfg.get("pool_max", 10) or 10)
+    except (ValueError, TypeError):
+        lo, hi = 2, 10
+    lo = max(1, min(lo, 8))
+    hi = max(lo, min(hi, 16))
+    return lo, hi
+
+
+def _connect():
+    cfg = get_db_config()
+    if not cfg.get("server") or not cfg.get("database"):
+        raise ValueError("Configuration base de donnees incomplete")
+    conn = pyodbc.connect(_build_conn_string(cfg),
+                          timeout=cfg.get("connection_timeout_ms", 15000) // 1000,
+                          autocommit=True)
+    try:
+        conn.timeout = max(1, int(cfg.get("request_timeout_ms", 30000) or 30000) // 1000)
+    except Exception:
+        pass
+    return conn
+
+
+def _ensure_pool():
+    global _pool_queue, _pool_size
+    lo, hi = _pool_capacity()
+    with _pool_lock:
+        if _pool_queue is None:
+            _pool_queue = queue.Queue()
+            for _ in range(lo):
+                try:
+                    _pool_queue.put(_connect())
+                    _pool_size += 1
+                except Exception as e:
+                    logger.error("Pool Sage: connexion initiale echouee: %s", e)
+                    break
+            logger.info("Pool Sage initialise: %d connexion(s)", _pool_size)
+    return hi
+
+
+def _healthy(conn):
+    try:
+        conn.execute("SELECT 1")
+        return True
+    except Exception:
+        return False
+
+
+def _checkout(hi):
+    global _pool_size
+    try:
+        conn = _pool_queue.get(block=True, timeout=30)
+    except queue.Empty:
+        conn = None
+    if conn is not None and not _healthy(conn):
+        try:
+            conn.close()
+        except Exception:
+            pass
+        with _pool_lock:
+            
+            _pool_size = max(0, _pool_size - 1)
+        conn = None
+    if conn is None:
+        with _pool_lock:
+            
+            if _pool_size < hi:
+                try:
+                    conn = _connect()
+                    _pool_size += 1
+                except Exception as e:
+                    logger.error("Pool Sage: connexion a la demande echouee: %s", e)
+    if conn is None:
+        try:
+            conn = _pool_queue.get(block=True, timeout=30)
+            if not _healthy(conn):
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                conn = None
+        except queue.Empty:
+            conn = None
+    return conn
+
+
+def _checkin(conn):
+    if conn is None:
+        return
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+    try:
+        _pool_queue.put(conn, block=False)
+    except Exception:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        with _pool_lock:
+            global _pool_size
+            _pool_size = max(0, _pool_size - 1)
 
 def _sanitize_db_val(val):
     if val is None or isinstance(val, (int, float, bool)):
@@ -271,7 +380,7 @@ def get_pool():
 
 
 def close_pool():
-    global _pool
+    global _pool, _pool_queue, _pool_size
     with _pool_lock:
         if _pool is not None:
             try:
@@ -279,26 +388,64 @@ def close_pool():
             except Exception:
                 pass
             _pool = None
-            logger.info("Connexion SQL Server fermee")
+        q, _pool_queue = _pool_queue, None
+        _pool_size = 0
+    while q is not None:
+        try:
+            conn = q.get(block=False)
+        except queue.Empty:
+            break
+        try:
+            conn.close()
+        except Exception:
+            pass
+    logger.info("Connexion SQL Server fermee")
 
 
 @contextmanager
 def get_cursor():
-    with _db_lock:
-        conn = get_pool()
-        cursor = _SafeCursor(conn.cursor())
-        try:
-            yield cursor
-            conn.commit()
-        except Exception:
+    hi = _ensure_pool()
+    conn = _checkout(hi)
+    if conn is None:
+        # Repli : ancien chemin mono-connexion sous verrou
+        with _db_lock:
+            conn = get_pool()
+            raw = conn.cursor()
             try:
-                conn.rollback()
+                raw.arraysize = 1000
             except Exception:
                 pass
-            raise
-        finally:
-            cursor.close()
-
+            cursor = _SafeCursor(raw)
+            try:
+                yield cursor
+                conn.commit()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise
+            finally:
+                cursor.close()
+        return
+    raw = conn.cursor()
+    try:
+        raw.arraysize = 1000
+    except Exception:
+        pass
+    cursor = _SafeCursor(raw)
+    try:
+        yield cursor
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        cursor.close()
+        _checkin(conn)
 
 def ping_database():
     try:

@@ -1,0 +1,21 @@
+name: Perf Tests
+on: [push, pull_request]
+jobs:
+  perf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: sudo apt-get update && sudo apt-get install -y unixodbc-dev g++
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - run: cp config.example.json config.json
+      - run: pytest tests/perf -m perf -v --json-report --json-report-file=perf.json
+      - name: Upload perf results
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-results
+          path: |
+            tests/perf/perf-results.jsonl
+            perf.json

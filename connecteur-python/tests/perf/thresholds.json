@@ -1,0 +1,1 @@
+{"db": {"max_queries_per_request": 20}, "sync": {"full_sec": 60, "incremental_sec": 15}, "ttfb_ms": {"billing": 500, "certified_print": 800, "pos": 400}}
