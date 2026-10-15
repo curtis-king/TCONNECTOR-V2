@@ -204,7 +204,7 @@ function addToCart(p){
   var exist=null;
   if(p.ref){exist=posCart.filter(function(l){return l.ref&&l.ref===p.ref})[0]}
   if(exist){exist.quantite=round2(exist.quantite+q)}
-  else{posLineIdx++;posCart.push({idx:posLineIdx,ref:p.ref||"",barcode:p.barcode||"",designation:p.designation,prix_unitaire:parseFloat(p.prix_vente)||0,quantite:q,taux_tva:parseFloat(p.tva_code)||18,product_id:p.id||null})}
+  else{posLineIdx++;posCart.push({idx:posLineIdx,ref:p.ref||"",barcode:p.barcode||"",designation:p.designation,prix_unitaire:parseFloat(p.prix_vente)||0,quantite:q,taux_tva:(function(v){v=parseFloat(v);return isNaN(v)?18:v})(p.tva_code),product_id:p.id||null})}
   renderPosCart();
 }
 
