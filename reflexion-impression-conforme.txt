@@ -1,0 +1,185 @@
+REFLEXION — IMPRESSION FACTURE CONFORME SFEC DEPUIS SAGE
+Projet : T-CONNECTOR SFEC (connecteur Sage 100 <-> API SFEC Congo)
+Date : 15/10/2026
+================================================================
+
+1. BESOIN INITIAL
+-----------------
+Quand l'usager imprime une facture depuis Sage, c'est le modele du
+connecteur qui doit s'imprimer (facture conforme : mentions legales,
+bloc SFEC, QR code scannable), sans changer le geste de l'usager.
+
+2. CONSTAT TECHNIQUE (verifie dans le code)
+-------------------------------------------
+- Le connecteur ecrit deja dans F_DOCENTETE : SFEC_NUM_CERTIF,
+  SFEC_SIGNATURE, SFEC_QR_CODE (data-URI base64 PNG), SFEC_DATE_CERTIF,
+  SFEC_STATUT (CERTIFIE / DEJA_CERTIFIE / EN_COURS / ERREUR / A_SURVEILLER).
+  Cf. app/integration/sage/database.py (ensure_sfec_columns) et
+  scripts/sql/add-sfec-columns.sql.
+- Le modele conforme existe deja : app/web/templates/dashboard/print.html
+  (page /certified/<id>/print) + app/domain/pdf.py (generate_invoice_pdf,
+  _decode_qr_image, _generate_qr_image).
+- Sage 100c imprime via ses etats Crystal Reports (.rpt). On ne peut pas
+  "intercepter" le clic Imprimer de l'interieur sans SDK ; on remplace le
+  modele d'etat, ou on contourne par dossier / imprimante virtuelle.
+
+3. SOLUTION DE FOND — ETAT CRYSTAL REPORTS CONFORME
+--------------------------------------------------
+- Remplacer l'etat standard "Facture de vente" par un nouvel etat
+  "FACTURE CONFORME SFEC.rpt" qui lit F_DOCENTETE + F_DOCLIGNE + F_COMPTET.
+- Contenu : en-tete societe (NIU/RCCM/regime/capital), bloc client/paiement,
+  lignes, totaux (HT, TVA 18/5 %, exonere, remise, centime additionnel, TTC,
+  net a payer), bandeau FACTURE D'AVOIR si DO_Type=7, bloc SFEC + QR.
+- Point bloquant : Crystal ne decode pas un VARCHAR(MAX) base64 en image.
+  Passerelle obligatoire : exporteur QR du connecteur qui decode
+  SFEC_QR_CODE -> fichier PNG partage (ex. \\SERVEUR\SAGE_QR\<DO_Piece>.png),
+  etat Crystal charge l'image dynamique via chemin UNC (colonne calculee
+  QR_PATH dans une vue SQL V_SFEC_FACTURE_PRINT).
+- Facture non certifiee : filigrane "NON CERTIFIEE - copie non conforme"
+  au lieu de bloquer l'impression.
+- Livrables : vue SQL v-sfec-facture-print.sql, module qr_exporter.py,
+  fichier .rpt + doc d'import (Gestion commerciale -> Etats).
+
+4. PRINT HIJACKING (complement)
+-------------------------------
+Probleme : le spool Windows (EMF/PCL) ne contient pas le numero de facture
+en metadonnee fiable. Tout hijacking doit resoudre job spool -> DO_Piece.
+- H1 recommande : imprimante virtuelle "SFEC-Conforme" (RedMon/PDFCreator)
+  -> script spool_handler.py (nom job + regex DO_Piece, fallback popup
+  "5 dernieres factures") -> generate_invoice_pdf() -> forward imprimante
+  reelle (SumatraPDF/Ghostscript). Reversible, pas de modif Sage.
+- H2 (V2 seulement) : watcher spool Win32 (FindFirstPrinterChangeNotification,
+  pause/suppression job). Risque de course, compte service, fragile.
+- H3 (UX) : hook fenetre impression Sage -> toast "version conforme ?"
+  -> ouvre /certified/<id>/print.
+- Question critique : relever le nom exact du job spool Sage (pDocument)
+  sur site. Si "FV-XXXX" -> mapping auto fiable ; si generique -> popup.
+
+5. SCENARIO RETENU — WATCH DOSSIER PDF
+--------------------------------------
+Le plus simple et robuste. Usager : Sage -> Imprimer -> Enregistrer en PDF
+dans dossier convenu. Connecteur : surveille, genere la version conforme,
+imprime seul.
+- 3 dossiers separes : IN (surveille) / OUT (conformes) / DONE (originaux
+  archives) + QUARANTAINE. Jamais de boucle.
+- folder_watcher (thread fond, demarre via sync/scheduler.py comme le
+  polling) : on_created -> attend stabilite taille 2 s (fichier verrouille
+  sinon retry) -> hash SHA256 -> deja traite ? SKIP.
+- Identification DO_Piece en cascade : (1) regex nom fichier FV-/FA-/...,
+  (2) extraction texte 1re page PDF (pypdf/PyMuPDF) + requete F_DOCENTETE
+  (montant+date), (3) echec -> QUARANTAINE + reprise dashboard, jamais
+  d'impression au hasard.
+- Lookup Sage + statut SFEC -> generate_invoice_pdf() -> OUT -> impression
+  silencieuse SumatraPDF -print-to "Nom-Imprimante".
+- Dependances : watchdog, pypdf (ou PyMuPDF). Config print_hijack :
+  watch_dir, out_dir, done_dir, quarantine_dir, printer_name,
+  stable_delay_s=2, rescan_interval_s=30, dedup_window_min=10.
+- Fichiers a creer : app/print_hijack/folder_watcher.py, job_mapper.py,
+  auto_printer.py, scripts/sql/add-processed-prints.sql,
+  scripts/windows/install-watch-folder.bat, onglet dashboard print_hijack.
+
+6. TIMING BOUT-EN-BOUT (valeurs reelles du code)
+-----------------------------------------------
+- P0 Validation Sage (T0, geste usager) : DO_Valide=1 + DO_Statut=2
+  "A COMPTABILISER" (config sfec.certify_status). Sans ca, pas de certif.
+- P1 Detection : polling db.polling_interval_ms=30000 -> T0+0..30 s.
+- P2 Certification : parallele max_concurrent=5, timeout 60000 ms,
+  rate-limit 100/min et 2500/jour, retry 4x backoff 2/4/8/16 s,
+  cache lookup SFEC TTL 300 s. En ligne : +1..5 s. Hors-ligne : file
+  _retry_queue dedupliquee, rejouee au retour reseau.
+- P3 Ecriture retour SFEC_* dans F_DOCENTETE : <1 s.
+- P4 Depot PDF par usager : geste manuel.
+- P5 Watch->papier : stabilite 2 s + lookup <1 s + generation PDF 1-2 s +
+  spool 1-3 s = +4..8 s.
+- TOTAL nominal validation -> papier conforme : ~35-45 s (si PDF depose
+  APRES certification). Si PDF depose AVANT : + attente certif (plafonnee
+  15 min, voir §7).
+
+7. CAS "PDF DEPOSE TROP TOT" (politique print_hijack.wait_for_certification=true)
+--------------------------------------------------------------------------------
+- CERTIFIE/DEJA_CERTIFIE -> impression immediate.
+- EN_COURS / vide mais valide=1 -> ATTENTE_CERTIF, reveil a chaque polling
+  30 s, impression des bascule.
+- Timeout 15 min ou ERREUR -> impression avec filigrane rouge "COPIE NON
+  CERTIFIEE" (QR absent), marquee NON_CONFORME, reimprimable en 1 clic.
+- SAISI (jamais valide) -> refus + message "Validez en A COMPTABILISER".
+
+8. ANTI-BOURRAGE IMPRESSION
+---------------------------
+- Worker unique serialise, file FIFO SQLite print_jobs (1 seul
+  SumatraPDF -print-to a la fois vers la meme imprimante).
+- Garde imprimante avant chaque job (win32print : PAPER_JAM / OUT_OF_PAPER /
+  OFFLINE / PAUSED) -> job en EN_ATTENTE, retry 30 s, file bloquee (pas
+  d'empilement), alerte dashboard.
+- Pacing 3 s mini entre jobs + attente fin job spool (EnumJobs) avant suivant.
+- Refus auto si PDF > 50 pages ou > 20 Mo -> QUARANTAINE + manuel.
+- Priorite CERTIFIE > FILIGRANE ; ERREUR jamais auto-imprime.
+
+9. ANTI-REDONDANCE / SYNCHRO
+----------------------------
+- Debounce ecriture : stabilite taille + open exclusif OK, sinon retry 5x.
+- Table processed_pdf_prints (file_hash PK, numero, printed_at, printer,
+  status) : meme fichier redepose = SKIP ; meme numero <10 min = SKIP sauf
+  bouton Reimprimer (avec confirmation).
+- Idempotence crash : hash ecrit EN_COURS avant impression -> OK apres ;
+  les EN_COURS sont rejoues 1x au redemarrage.
+- Logs : print_hijack.log en RotatingFileHandler 5 Mo x3 comme existant.
+
+10. STOCKAGE
+-----------
+- WATCH_IN/ : 24 h puis deplacement auto (declencheurs, original dans Sage).
+- OUT/ (conformes, nom DO_Piece_CONFORME_AAAAMMJJ-HHMMSS.pdf, jamais ecrase)
+  : 30 j. DONE/ (originaux) : 30 j. QUARANTINE/ : 7 j + alerte.
+- tconnector.db : purge jobs OK >90 j + VACUUM hebdo (WAL deja actif).
+- SAGE_QR/*.png (si option Crystal) : ecrase a chaque certif, orphelins >60 j.
+- Garde disque >85 % : watcher en pause + badge STOCKAGE PLEIN + reprise auto.
+  Option archive_to_zip mensuel avant suppression.
+
+11. PROCESSUS USAGER CIBLE
+-------------------------
+1. Saisir + VALIDER facture Sage (-> A COMPTABILISER).
+2. Attendre pastille CERTIFIE (~30-45 s).
+3. Sage -> Imprimer -> Enregistrer PDF -> dossier IN (nom = N° facture).
+4. Rien d'autre : la conforme sort seule. Bourrage -> le connecteur attend
+   et reprend seul, sans perte ni doublon.
+
+12. MULTI-SITES CENTRALISE (serveur central, N sites)
+----------------------------------------------------
+Regle d'or : LE SERVEUR CENTRAL NE DOIT JAMAIS IMPRIMER. Architecture
+hub-and-spoke : central = certification + registre ; chaque site = agent
+local (watch dossier local + imprimante locale). L'agent poll
+GET /print-jobs/next?site_id=SON_SITE (filtre serveur) : meme en bug, le
+site A ne voit jamais les jobs du site B.
+- site_id en cascade : (1) sous-dossier WATCH_IN/<SITE_ID>/ (BRAZZA, POINTE...,
+  racine refusee) ; (2) Sage DO_Souche/DO_Depot via table
+  sites(site_id, libelle, sage_souches, sage_depots, printer_logique) ; conflit
+  dossier vs Sage -> priorite Sage + alerte. (3) POS : migration
+  pos_tickets/invoices += site_id, terminal_id (config caisse).
+- Factures Sage : agent site detecte PDF -> POST /api/print-jobs
+  {site_id, numero, hash} -> central verifie -> agent regenere PDF en local
+  (memes donnees SFEC) -> imprimante logique du site. Seul le JSON traverse
+  le VPN, pas le PDF.
+- POS : impression 100 % locale. Ticket caisse (generate_ticket_pdf,
+  thermique) immediat meme hors-ligne ; facture conforme associee -> file du
+  site -> imprimante A4 du site (pas la thermique). Dossier separe
+  POS_SPOOL/<SITE>/<TERMINAL>/ (24 h).
+- Garde anti-croise : print_jobs(site_id, numero, file_hash, statut, ...,
+  UNIQUE(site_id, file_hash)) + API WHERE site_id=? AND statut='A_IMPRIMER' +
+  auth site_token + dashboard filtre par site.
+- 1 file par site : bourrage a Pointe-Noire ne bloque pas Brazza. Pacing 3 s
+  par site, quotas disque par site (ex. 5 Go).
+- Lots : S1 tables sites/print_jobs + migrations POS ; S2 API centrale
+  (POST /print-jobs, GET /next?site_id=, POST /ack) ; S3 agent site
+  (watch+poll+print+statut) ; S4 circuit POS ; S5 dashboard par site +
+  install-site-agent.bat.
+- Questions ouvertes : nb sites + qualite lien (poll 10 s vs file locale
+  longue) ; souches/depots Sage distincts par site ? ; nb caisses/site et
+  thermiques USB ?
+
+13. EFFORTS ESTIMES
+------------------
+- Etat Crystal + vue SQL + qr_exporter + recette : ~2-3,5 j (dont 1-2 j
+  designer Crystal).
+- Hijack imprimante virtuelle H1 : ~2-2,5 j.
+- Watch dossier (mono-site) : ~1,5-2 j.
+- Multi-sites + POS (S1-S5) : a chiffrer apres reponses (socle = watch dossier).

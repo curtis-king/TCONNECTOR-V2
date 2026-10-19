@@ -119,6 +119,22 @@ def _defaults():
         "pos": {
             "stock_control": True,
         },
+        "print_hijack": {
+            "enabled": False,
+            "watch_dir": "data/WATCH/IN",
+            "out_dir": "data/WATCH/OUT",
+            "done_dir": "data/WATCH/DONE",
+            "quarantine_dir": "data/WATCH/QUARANTINE",
+            "printer_name": "",
+            "sumatra_path": "",
+            "stable_delay_s": 2,
+            "stable_retries": 5,
+            "poll_interval_s": 5,
+            "dedup_window_min": 10,
+            "max_pages": 50,
+            "max_size_mb": 20,
+            "dry_run": False,
+        },
         "log_level": "info",
     }
 

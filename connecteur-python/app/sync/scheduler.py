@@ -47,6 +47,12 @@ def start_all(interval=None):
         )
         sfec_thread.start()
 
+        try:
+            from app.print_hijack import start_print_hijack
+            start_print_hijack()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Watcher PDF non demarre: %s", e)
+
         _started = True
         logger.info("Tâches de fond demarrees")
 
@@ -65,5 +71,10 @@ def stop_all():
         stop_polling()
         stop_bi_sync()
         stop_background_check()
+        try:
+            from app.print_hijack import stop_print_hijack
+            stop_print_hijack()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Arret watcher PDF: %s", e)
         _started = False
         logger.info("Tâches de fond arretees")

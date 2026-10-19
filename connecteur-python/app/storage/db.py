@@ -421,6 +421,27 @@ def _migrate():
                 "Migration: index idx_contacts_niu_unique - echec, verifier les doublons NIU (%s)", e
             )
 
+        # Print hijacking (watch dossier PDF) : registre anti-redondance.
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS processed_pdf_prints (
+                    file_hash TEXT PRIMARY KEY,
+                    numero TEXT DEFAULT '',
+                    src_path TEXT DEFAULT '',
+                    out_path TEXT DEFAULT '',
+                    printer TEXT DEFAULT '',
+                    status TEXT DEFAULT '',
+                    error TEXT DEFAULT '',
+                    printed_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_processed_pdf_prints_numero
+                ON processed_pdf_prints(numero, printed_at)
+            """)
+        except Exception as e:
+            logger.warning("Migration: table processed_pdf_prints - %s", e)
+
         # Migration settings avoirs : anciennes cles erronees -> cles seedees
         for old_key, new_key, default in (
             ("doc_format_avoir", "avoir_format", "AV{:06d}"),

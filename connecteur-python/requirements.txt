@@ -5,3 +5,5 @@ flask>=2.2.0
 reportlab>=4.0
 waitress>=2.0
 qrcode>=8.0
+watchdog>=4.0
+pypdf>=4.0

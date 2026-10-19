@@ -131,11 +131,32 @@ def db_invoice_to_sfec(invoice):
         unit_price = max(_safe_float(line.get("prix_unitaire", 0), 0), 0)
         subtotal = round(unit_price * quantity, 2)
 
-        discount_amount = _safe_float(
-            line.get("discount_amount", line.get("remise_montant", 0)), 0
+        # BUG (Incoherence totaux a l'envoi SFEC) : le net HT d'une ligne Sage
+        # (DL_MontantHT) peut différer de DL_Qte * DL_PrixUnitaire en presence
+        # d'une remise de ligne. Le code ne lisait que les champs
+        # discount_amount/remise_montant (absents des lignes Sage) et
+        # recalculait net=brut -> subtotal brut mais discount=0, d'ou un ecart
+        # "attendu" egal a la remise de ligne. On derive la remise du net reel
+        # fourni (net = brut - remise), ce qui rend la coherence des totaux
+        # exacte : subtotal - total_line_discount + total_tax == total_amount.
+        explicit_discount = (
+            "discount_amount" in line or "remise_montant" in line
         )
+        raw_net = line.get("montant_ht")
+        if explicit_discount or raw_net in (None, ""):
+            discount_amount = round(_safe_float(
+                line.get("discount_amount", line.get("remise_montant", 0)), 0
+            ), 2)
+            net_amount = round(subtotal - discount_amount, 2)
+        else:
+            net_amount = round(_safe_float(raw_net, subtotal), 2)
+            discount_amount = round(subtotal - net_amount, 2)
+            if discount_amount < 0:
+                # net > brut (arrondi ou frais) : on recale le brut sur le net
+                subtotal = net_amount
+                discount_amount = 0.0
+
         discount_type = _safe_str(line.get("discount_type"), "fixed")
-        net_amount = round(subtotal - discount_amount, 2)
 
         rate_num, rate_str = _extract_tax_rate(line.get("taux_tva", "18"))
         tax_amount = _safe_float(line.get("montant_tva", 0), 0)
@@ -188,7 +209,7 @@ def db_invoice_to_sfec(invoice):
         if rate_num == 5:
             total_tax_r += tax_amount
         elif rate_num == 0:
-            total_exempt += subtotal
+            total_exempt += net_amount
         else:
             total_tax_t += tax_amount
 
