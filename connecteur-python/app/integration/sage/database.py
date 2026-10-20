@@ -517,7 +517,7 @@ def discover_tables():
             """)
             existing = {row[0].upper() for row in cur.fetchall()}
 
-        table_map = {"documents": "", "document_lines": "", "third_party": "", "tax_rate": "", "chart_of_accounts": "", "article": ""}
+        table_map = {"documents": "", "document_lines": "", "third_party": "", "tax_rate": "", "chart_of_accounts": "", "article": "", "colonne": ""}
 
         candidates = {
             "documents": ["dbo_F_DOCENTETE", "F_DOCENTETE", "dbo.F_DOCENTETE"],
@@ -526,6 +526,7 @@ def discover_tables():
             "tax_rate": ["dbo_F_TVA", "F_TVA", "dbo.F_TVA", "dbo_P_TVA", "P_TVA", "F_TAXE", "dbo_F_TAXE", "dbo.F_TAXE"],
             "chart_of_accounts": ["dbo_F_COMPTEG", "F_COMPTEG", "dbo.F_COMPTEG"],
             "article": ["dbo_F_ARTICLE", "F_ARTICLE", "dbo.F_ARTICLE"],
+            "colonne": ["dbo_F_COLONNE", "F_COLONNE", "dbo.F_COLONNE"],
         }
 
         like_fallback = {
@@ -535,6 +536,7 @@ def discover_tables():
             "tax_rate": "%TAXE%",
             "chart_of_accounts": "%COMPTEG%",
             "article": "%ARTICLE%",
+            "colonne": "%COLONNE%",
         }
 
         for logical, names in candidates.items():
@@ -564,6 +566,8 @@ def discover_tables():
                 for name in candidates_like:
                     cols = _discover_columns(name)
                     if logical == "third_party" and not (cols & {"CT_TYPE", "CT_INTITULE", "CT_NOM"}):
+                        continue
+                    if logical == "colonne" and "CO_LIBELLE" not in cols:
                         continue
                     table_map[logical] = name
                     found = True
@@ -946,14 +950,24 @@ def _fetch_sales_invoices_fallback(dc, t):
         return []
 
 
-def fetch_doc_lines(domaine, type_doc, piece):
-    t = get_table_map()
-    if not t["document_lines"]:
-        return []
+def _doc_lines_query_parts():
+    """Fragments SELECT/JOIN communs a fetch_doc_lines et fetch_doc_lines_batch.
 
-    article_tbl = t.get("article", "")
-    if article_tbl:
-        join_clause = "LEFT JOIN {} a ON a.AR_Ref = l.AR_Ref".format(article_tbl)
+    Champs d'affichage facture (modele standard Sage) : unite de gestion,
+    nombre de colis (2nde quantite), conditionnement (libelle de la colonne
+    article) et poids de ligne. Toute colonne absente de la base est
+    remplacee par un fallback vide/zero : la lecture des lignes ne doit
+    jamais echouer pour un champ d'affichage.
+    """
+    t = get_table_map()
+    line_tbl = t.get("document_lines", "")
+    line_cols = _TABLE_COLUMNS.get(line_tbl.upper(), set()) if line_tbl else set()
+    art_tbl = t.get("article", "")
+    art_cols = _TABLE_COLUMNS.get(art_tbl.upper(), set()) if art_tbl else set()
+
+    joins = []
+    if art_tbl:
+        joins.append("LEFT JOIN {} a ON a.AR_Ref = l.AR_Ref".format(art_tbl))
         article_cols = """
             , ISNULL(a.AR_Design, '') AS article_design
             , ISNULL(a.FA_CodeFamille, '') AS article_famille
@@ -961,13 +975,82 @@ def fetch_doc_lines(domaine, type_doc, piece):
             , ISNULL(a.AR_Nature, 0) AS article_nature
         """
     else:
-        join_clause = ""
         article_cols = """
             , '' AS article_design
             , '' AS article_famille
             , 0 AS article_type
             , 0 AS article_nature
         """
+
+    extra_cols = ""
+
+    # Unite de gestion de l'article (colonne "Unite" du modele d'impression)
+    if "UT_CODE" in art_cols:
+        extra_cols += ", ISNULL(a.UT_Code, '') AS article_unit"
+    else:
+        extra_cols += ", '' AS article_unit"
+
+    # Nombre de colis/conditionnements (colonne "Nb." du modele) : la 2e
+    # quantite Sage est renseignee si l'article a un 2e conditionnement.
+    qte2 = next((c for c in ("DL_Qte2", "DL_QTE2") if c.upper() in line_cols), None)
+    if qte2:
+        extra_cols += ", ISNULL(l.{}, 0) AS nb_colis".format(qte2)
+    else:
+        extra_cols += ", 0 AS nb_colis"
+
+    # Conditionnement (colonne "Cond." du modele) : libelle de la colonne
+    # article rattachee a la ligne via CO_No ("Fle de 2m", "Colis de 100u"...).
+    cond_tbl = t.get("colonne", "")
+    cond_cols = _TABLE_COLUMNS.get(cond_tbl.upper(), set()) if cond_tbl else set()
+    if cond_tbl and "CO_LIBELLE" in cond_cols and "CO_NO" in line_cols:
+        joins.append("LEFT JOIN {} cond ON cond.CO_No = l.CO_No".format(cond_tbl))
+        extra_cols += ", ISNULL(cond.CO_Libelle, '') AS conditionnement"
+    else:
+        extra_cols += ", '' AS conditionnement"
+
+    # Poids de la ligne (colonne "Pds (Kg)" du modele) : net de ligne, sinon
+    # brut de ligne, sinon poids net article x quantite.
+    poids_col = next(
+        (c for c in ("DL_PdsNet", "DL_PoidsNet", "DL_PdsBrut", "DL_PoidsBrut")
+         if c.upper() in line_cols),
+        None,
+    )
+    if poids_col:
+        extra_cols += ", ISNULL(l.{}, 0) AS poids_kg".format(poids_col)
+    elif art_tbl and "AR_POIDSNET" in art_cols:
+        extra_cols += ", ISNULL(a.AR_PoidsNet, 0) * ISNULL(l.DL_Qte, 0) AS poids_kg"
+    else:
+        extra_cols += ", 0 AS poids_kg"
+
+    return {
+        "join_clause": "\n                ".join(joins),
+        "article_cols": article_cols,
+        "extra_cols": extra_cols,
+    }
+
+
+_LINE_NUMERIC_KEYS = (
+    "quantite", "prix_unitaire", "montant_ht", "montant_tva", "montant_ttc",
+    "taux_tva", "nb_colis", "poids_kg",
+)
+
+
+def _parse_doc_line(row_dict):
+    for key in _LINE_NUMERIC_KEYS:
+        if key in row_dict:
+            try:
+                row_dict[key] = round(float(str(row_dict[key] or "0").replace(",", ".")), 2)
+            except (ValueError, TypeError):
+                row_dict[key] = 0.0 if key != "taux_tva" else 18.0
+    return row_dict
+
+
+def fetch_doc_lines(domaine, type_doc, piece):
+    t = get_table_map()
+    if not t["document_lines"]:
+        return []
+
+    parts = _doc_lines_query_parts()
 
     try:
         with get_cursor() as cur:
@@ -985,25 +1068,21 @@ def fetch_doc_lines(domaine, type_doc, piece):
                     ISNULL(CAST(l.CO_No AS NVARCHAR), '') AS code_compte,
                     ISNULL(l.AR_Ref, '') AS code_produit
                     {article_cols}
+                    {extra_cols}
                 FROM {tbl} l
                 {join}
                 WHERE l.DO_Domaine = ?
                   AND l.DO_Type = ?
                   AND l.DO_Piece = ?
                 ORDER BY l.DL_Ligne
-            """.format(tbl=t["document_lines"], article_cols=article_cols, join=join_clause),
+            """.format(tbl=t["document_lines"], article_cols=parts["article_cols"],
+                       extra_cols=parts["extra_cols"], join=parts["join_clause"]),
                 domaine, type_doc, domaine, type_doc, piece)
             columns = [desc[0] for desc in cur.description]
             result = []
             for row in cur.fetchall():
                 line = dict(zip(columns, [str(v) if v is not None else "" for v in row]))
-                for key in ("quantite", "prix_unitaire", "montant_ht", "montant_tva", "montant_ttc", "taux_tva"):
-                    if key in line:
-                        try:
-                            line[key] = round(float(str(line[key] or "0").replace(",", ".")), 2)
-                        except (ValueError, TypeError):
-                            line[key] = 0.0 if key != "taux_tva" else 18.0
-                result.append(line)
+                result.append(_parse_doc_line(line))
             return result
     except Exception:
         return []
@@ -1018,23 +1097,7 @@ def fetch_doc_lines_batch(domaine, keys, chunk_size=200):
     if not t["document_lines"] or not keys:
         return {}
 
-    article_tbl = t.get("article", "")
-    if article_tbl:
-        join_clause = "LEFT JOIN {} a ON a.AR_Ref = l.AR_Ref".format(article_tbl)
-        article_cols = """
-            , ISNULL(a.AR_Design, '') AS article_design
-            , ISNULL(a.FA_CodeFamille, '') AS article_famille
-            , ISNULL(a.AR_Type, 0) AS article_type
-            , ISNULL(a.AR_Nature, 0) AS article_nature
-        """
-    else:
-        join_clause = ""
-        article_cols = """
-            , '' AS article_design
-            , '' AS article_famille
-            , 0 AS article_type
-            , 0 AS article_nature
-        """
+    parts = _doc_lines_query_parts()
 
     out = {}
     for i in range(0, len(keys), chunk_size):
@@ -1059,23 +1122,20 @@ def fetch_doc_lines_batch(domaine, keys, chunk_size=200):
                         ISNULL(CAST(l.CO_No AS NVARCHAR), '') AS code_compte,
                         ISNULL(l.AR_Ref, '') AS code_produit
                         {article_cols}
+                        {extra_cols}
                         , l.DO_Type AS _dt, l.DO_Piece AS _piece
                     FROM {tbl} l
                     {join}
                     WHERE {conds}
                     ORDER BY l.DO_Piece, l.DL_Ligne
-                """.format(tbl=t["document_lines"], article_cols=article_cols,
-                           join=join_clause, conds=conds), params)
+                """.format(tbl=t["document_lines"], article_cols=parts["article_cols"],
+                           extra_cols=parts["extra_cols"], join=parts["join_clause"],
+                           conds=conds), params)
                 columns = [desc[0] for desc in cur.description]
                 idx = {c: j for j, c in enumerate(columns)}
                 for row in cur.fetchall():
                     line = dict(zip(columns, [str(v) if v is not None else "" for v in row]))
-                    for key in ("quantite", "prix_unitaire", "montant_ht", "montant_tva", "montant_ttc", "taux_tva"):
-                        if key in line:
-                            try:
-                                line[key] = round(float(str(line[key] or "0").replace(",", ".")), 2)
-                            except (ValueError, TypeError):
-                                line[key] = 0.0 if key != "taux_tva" else 18.0
+                    _parse_doc_line(line)
                     out.setdefault((int(_safe_float(row[idx["_dt"]])), str(row[idx["_piece"]])), []).append(line)
         except Exception:
             continue

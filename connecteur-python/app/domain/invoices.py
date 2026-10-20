@@ -344,6 +344,15 @@ def _save_lines(invoice_id, lignes):
             discount_type = ligne.get("discount_type") or "fixed"
             type_article = ligne.get("type_article") or "product"
             classification_code = ligne.get("classification_code") or ""
+            try:
+                nb_colis = float(ligne.get("nb_colis") or 0)
+            except (TypeError, ValueError):
+                nb_colis = 0.0
+            conditionnement = ligne.get("conditionnement") or ""
+            try:
+                poids_kg = float(ligne.get("poids_kg") or 0)
+            except (TypeError, ValueError):
+                poids_kg = 0.0
 
             montant_ht, montant_tva, montant_ttc = calc_line_totals(
                 quantite, prix_unitaire, remise_pct, taux_tva
@@ -356,18 +365,24 @@ def _save_lines(invoice_id, lignes):
                     remise_pct, remise_montant, montant_ht, taux_tva,
                     montant_tva, montant_ttc, code_article, code_compte,
                     famille, unite, product_id, subtotal,
-discount_type,
-type_article,
-classification_code
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    discount_type,
+                    type_article,
+                    classification_code,
+                    nb_colis,
+                    conditionnement,
+                    poids_kg
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 invoice_id, numero_ligne, designation, quantite, prix_unitaire,
                 remise_pct, remise_montant, montant_ht, taux_tva,
                 montant_tva, montant_ttc, code_article, code_compte,
                 famille, unite, product_id, subtotal,
-discount_type,
-type_article,
-classification_code,
+                discount_type,
+                type_article,
+                classification_code,
+                nb_colis,
+                conditionnement,
+                poids_kg,
             ))
 
 

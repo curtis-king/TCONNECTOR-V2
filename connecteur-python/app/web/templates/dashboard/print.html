@@ -1,87 +1,316 @@
-<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
-<title>Facture {{ invoice_number | safe }} - SFEC</title>
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ doc_title }} {{ invoice_number }}</title>
 <style>
-body{font-family:'Segoe UI',sans-serif;padding:40px;color:#000;background:#fff}
-.header{display:flex;justify-content:space-between;margin-bottom:30px;border-bottom:2px solid #333;padding-bottom:20px}
-.company-name{font-size:24px;font-weight:bold}
-.company-info{font-size:12px;color:#666}
-.cert-box{background:#f0f0f0;border:2px solid #333;padding:16px;margin:20px 0;border-radius:4px}
-.cert-box h3{margin-bottom:8px;font-size:14px}
-table{width:100%;border-collapse:collapse;margin:16px 0}
-th,td{border:1px solid #ccc;padding:8px;text-align:left;font-size:13px}
-th{background:#f5f5f5}
-.total-row td{border-top:2px solid #333;font-weight:bold;font-size:14px}
-.qr-section{text-align:center;margin:30px 0;padding:20px;border:1px dashed #999}
-.footer{margin-top:40px;font-size:11px;color:#666;border-top:1px solid #ccc;padding-top:10px}
-@media print{.no-print{display:none!important}}
-</style></head><body>
-<div class="header">
-<div>
-<div class="company-name">{{ seller_name | safe }}</div>
-<div class="company-info">{{ seller_addr | safe }}</div>
-<div class="company-info">NIU: {{ seller_niu | safe }}</div>
-<div class="company-info">RCCM: {{ seller_rccm | safe }}</div>
-<div class="company-info">{{ seller_legal_form | safe }} {{ seller_tax_regime | safe }}</div>
-<div class="company-info">Capital: {{ seller_capital | safe }}</div>
-</div>
-<div style="text-align:right">
-<h2>{{ doc_label }}</h2>
-{{ avoir_banner | safe }}
-<div class="company-info">Numero: {{ invoice_number | safe }}</div>
-<div class="company-info">Date: {{ invoice_date | safe }}</div>
-{% if invoice_type == "creditNote" %}
-<div class="company-info">Facture d'origine: {{ reference_invoice_id | safe }}</div>
-{% endif %}
-<div class="company-info">Devise: {{ currency | safe }}</div>
-</div>
+  @page { size: A4; margin: 8mm 12mm; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #fff; color: #000; }
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 8pt; line-height: 1.25; }
+  .sheet { width: 186mm; min-height: 279mm; margin: 0 auto; padding: 2mm 0 0;
+           display: flex; flex-direction: column; }
+  .grow { flex: 1; }
+
+  /* ---- Barre d'actions (jamais imprimee) ---- */
+  .actions { width: 186mm; margin: 8mm auto 4mm; display: flex; gap: 8px; }
+  .actions button, .actions a {
+    font: inherit; font-size: 9pt; padding: 6px 14px; border-radius: 4px;
+    border: 1px solid #333; background: #1f2937; color: #fff; cursor: pointer; text-decoration: none;
+  }
+  .actions a { background: #fff; color: #1f2937; }
+
+  table { border-collapse: collapse; width: 100%; }
+  td, th { vertical-align: top; padding: 0; }
+
+  /* ---- En-tete ---- */
+  .head-left { width: 82mm; }
+  .head-right { text-align: right; }
+  .logo { max-width: 80mm; max-height: 32mm; display: block; }
+  .co-name { font-size: 11pt; font-weight: bold; }
+  .co-line { font-size: 7.5pt; }
+  .barcode { display: inline-block; height: 13mm; }
+  .barcode svg { height: 13mm; width: auto; }
+  .doc-title { font-size: 20pt; font-weight: bold; line-height: 1.1; margin: 0.5mm 0 1.5mm; }
+  .ident { width: 102mm; margin-left: auto; table-layout: fixed; border-left: 1.6pt solid #000; }
+  .ident th, .ident td { border: 0.6pt solid #000; text-align: center; font-size: 8pt; padding: 0.6mm 1mm; }
+  .ident th { font-weight: normal; }
+  .ident td { font-size: 8.5pt; }
+  .client { margin-top: 2.5mm; font-size: 11pt; font-weight: bold; }
+  .client .lbl { margin-right: 4mm; }
+  .client-sub { font-size: 7.5pt; margin-top: 0.5mm; }
+  .avoir-ref { font-size: 7.5pt; margin-top: 0.5mm; }
+
+  /* ---- Certification / mentions ---- */
+  .cert { margin-top: 3mm; }
+  .cert td { vertical-align: bottom; }
+  .cert .c1 { font-size: 8pt; line-height: 1.5; }
+  .cert .c1 b { font-size: 8pt; }
+  .cert .hash { word-break: break-all; }
+  .cert .c2 { width: 58mm; text-align: center; font-weight: bold; font-size: 8.5pt; vertical-align: top; }
+  .cert .c3 { width: 24mm; text-align: right; }
+  .cert .c3 img { width: 21mm; height: 21mm; image-rendering: pixelated; display: block; margin-left: auto; }
+  .tirage-row td { font-size: 8pt; padding-top: 1mm; vertical-align: bottom; }
+  .tirage-row .op { font-size: 7pt; }
+  .tirage-row .tr { text-align: right; }
+  .tirage-row .page { margin-left: 8mm; }
+
+  /* ---- Tableau des lignes (filets verticaux) ---- */
+  .lines { margin-top: 1.5mm; table-layout: fixed; border: 0.6pt solid #000; }
+  .lines th { border: 0.6pt solid #000; font-weight: normal; font-size: 8pt; text-align: center;
+              padding: 1mm 0.8mm; vertical-align: middle; }
+  .lines td { border-left: 0.6pt solid #000; border-right: 0.6pt solid #000; font-size: 7.5pt;
+              padding: 1.1mm 0.8mm 0.4mm; vertical-align: top; overflow-wrap: break-word; }
+  .lines .num { text-align: right; white-space: nowrap; }
+  .lines tbody tr { page-break-inside: avoid; }
+  .total-poids { text-align: right; font-size: 8pt; margin: 0.8mm 47mm 0 0; }
+
+  /* ---- Bas de facture ---- */
+  .bottom { margin-top: 1.5mm; }
+  .bottom > tbody > tr > td { vertical-align: top; }
+  .b-left { width: 70mm; }
+  .b-gap { width: 3mm; }
+  .taxbox { border: 0.6pt solid #000; table-layout: fixed; }
+  .taxbox th { font-weight: normal; font-size: 8pt; border-bottom: 0.6pt solid #000; padding: 1mm; }
+  .taxbox td { font-size: 8pt; padding: 0.6mm 1mm; text-align: right; }
+  .taxbox td.code { text-align: center; }
+  .taxbox tr.total td { border-top: 0.6pt solid #000; padding: 2mm 1mm; text-align: left; }
+  .taxbox tr.total td.mt { text-align: right; }
+  .tirage2 { margin-top: 2mm; font-size: 8pt; }
+
+  .sumbox { table-layout: fixed; }
+  .sumbox th, .sumbox td { border: 0.6pt solid #000; font-size: 8pt; text-align: center;
+                           padding: 0.5mm 1mm; vertical-align: middle; font-weight: normal; }
+  .sumbox td { text-align: right; padding: 2mm 1mm; }
+  .sumbox td.net { font-weight: bold; font-size: 9.5pt; }
+  .r-text { font-size: 8pt; margin-top: 1.5mm; line-height: 1.4; }
+  .parite td { font-size: 8pt; vertical-align: bottom; }
+  .parite .eur { text-align: right; font-weight: bold; font-size: 9pt; }
+  .cond-title { font-weight: bold; font-size: 8.5pt; margin-top: 1mm; }
+  .cond td { font-size: 8.5pt; padding-top: 0.5mm; }
+
+  /* ---- Signatures ---- */
+  .signs { margin-top: 4mm; table-layout: fixed; }
+  .signs th, .signs td { border: 0.6pt solid #000; }
+  .signs th { font-weight: normal; font-size: 8.5pt; padding: 1.5mm; }
+  .signs td { height: 24mm; }
+
+  /* ---- CGV + bandeau societe ---- */
+  .cgv { margin-top: 4mm; }
+  .cgv p { margin: 0 0 1.5mm 0; font-size: 5.8pt; line-height: 1.3; }
+  .footer { margin-top: 3mm; border-bottom: 1.2pt solid #253364; color: #253364; table-layout: fixed; }
+  .footer td { font-size: 5.3pt; line-height: 1.38; vertical-align: top; }
+  .ft-left { width: 80mm; padding: 0 3mm 2mm 0; }
+  .ft-slogan { font-weight: bold; font-size: 6.3pt; margin-bottom: 1.2mm; white-space: nowrap; }
+  .ft-sites { table-layout: fixed; }
+  .ft-sites > tbody > tr > td { width: 50%; padding-right: 1.5mm; }
+  .ft-name { font-weight: bold; font-size: 6.4pt; padding-left: 3.4mm; margin-bottom: 0.3mm; }
+  .ft-line { padding-left: 3.4mm; text-indent: -3.4mm; overflow-wrap: normal; }
+  .ft-ico { display: inline-block; width: 3.4mm; text-indent: 0; font-size: 5.8pt; }
+  .ft-legal { border-left: 0.9pt solid #ed283a; padding: 1mm 1mm 2mm 3mm; }
+  .ft-legal > div { white-space: nowrap; }
+  .ft-banks { width: auto; }
+  .ft-banks td { padding: 0; }
+  .ft-banks .lbl { width: 11mm; white-space: nowrap; }
+  .ft-logo { width: 22mm; text-align: right; vertical-align: middle !important; padding-bottom: 2mm; }
+  .ft-logo img { max-width: 21mm; max-height: 20mm; }
+
+  @media print {
+    .no-print { display: none !important; }
+    .sheet { width: auto; min-height: 279mm; margin: 0; padding: 0; }
+  }
+</style>
+</head>
+<body>
+
+<div class="actions no-print">
+  <button type="button" onclick="window.print()">Imprimer</button>
+  <a href="/certified">Retour</a>
 </div>
 
-<div style="display:flex;justify-content:space-between;margin-bottom:20px">
-<div style="border:1px solid #ccc;padding:12px;border-radius:4px;flex:1;margin-right:8px">
-<h3 style="font-size:13px;margin-bottom:8px">Client</h3>
-<div><strong>{{ buyer_name | safe }}</strong></div>
-<div class="company-info">NIU: {{ buyer_niu | safe }}</div>
-<div class="company-info">{{ buyer_addr | safe }}</div>
-<div class="company-info">{{ buyer_phone | safe }}</div>
-</div>
-<div style="border:1px solid #ccc;padding:12px;border-radius:4px;flex:1;margin-left:8px">
-<h3 style="font-size:13px;margin-bottom:8px">Paiement</h3>
-<div>Methode: {{ payment_method | safe }}</div>
-<div>Montant du: <strong>{{ amount_due | safe }} {{ currency | safe }}</strong></div>
-</div>
-</div>
+<div class="sheet">
 
-<table>
-<thead><tr><th>Designation</th><th style="text-align:right">Qte</th><th style="text-align:right">Prix unit.</th><th style="text-align:right">TVA</th><th style="text-align:right">Montant HT</th></tr></thead>
-<tbody>{{ item_rows | safe }}
-<tr class="total-row"><td colspan="4">Total HT</td><td style="text-align:right">{{ total_ht | safe }} {{ currency | safe }}</td></tr>
-<tr class="total-row"><td colspan="4">TVA 18%</td><td style="text-align:right">{{ total_tax18 | safe }} {{ currency | safe }}</td></tr>
-<tr class="total-row"><td colspan="4">TVA 5%</td><td style="text-align:right">{{ total_tax5 | safe }} {{ currency | safe }}</td></tr>
-<tr class="total-row"><td colspan="4">Exonere</td><td style="text-align:right">{{ total_exempt | safe }} {{ currency | safe }}</td></tr>
-<tr class="total-row"><td colspan="4">Remise globale</td><td style="text-align:right">-{{ discount_display | safe }} {{ currency | safe }}</td></tr>
-<tr class="total-row"><td colspan="4">Centime additionnel</td><td style="text-align:right">{{ additional_cent_tax | safe }} {{ currency | safe }}</td></tr>
-<tr class="total-row"><td colspan="4">Timbre electronique</td><td style="text-align:right">{{ electronic_stamp_duty | safe }} {{ currency | safe }}</td></tr>
-<tr class="total-row"><td colspan="4"><strong>TOTAL TTC</strong></td><td style="text-align:right"><strong>{{ total_ttc | safe }} {{ currency | safe }}</strong></td></tr>
-<tr class="total-row"><td colspan="4"><strong>Net a payer</strong></td><td style="text-align:right"><strong>{{ amount_due | safe }} {{ currency | safe }}</strong></td></tr>
-</tbody></table>
+  <!-- ================= EN-TETE ================= -->
+  <table>
+    <tr>
+      <td class="head-left">
+        {% if logo_src %}
+        <img class="logo" src="{{ logo_src }}" alt="Logo">
+        {% else %}
+        <div class="co-name">{{ seller_name }}</div>
+        {% for line in seller_lines %}<div class="co-line">{{ line }}</div>{% endfor %}
+        {% endif %}
+      </td>
+      <td class="head-right">
+        {% if barcode_svg %}<div class="barcode">{{ barcode_svg | safe }}</div>{% endif %}
+        <div class="doc-title">{{ doc_title }}</div>
+        <table class="ident">
+          <colgroup><col style="width:31%"><col style="width:20%"><col style="width:24%"><col style="width:25%"></colgroup>
+          <tr><th>Numéro</th><th>Date</th><th>Compte</th><th>Référence</th></tr>
+          <tr><td>{{ invoice_number }}</td><td>{{ invoice_date }}</td><td>{{ compte }}</td><td>{{ reference }}</td></tr>
+        </table>
+        <div class="client"><span class="lbl">Client :</span>{{ buyer_name }}</div>
+        {% if buyer_niu or buyer_addr or buyer_phone %}
+        <div class="client-sub">
+          {%- if buyer_niu %}NIU : {{ buyer_niu }}{% endif %}
+          {%- if buyer_addr %}{% if buyer_niu %} - {% endif %}{{ buyer_addr }}{% endif %}
+          {%- if buyer_phone %}{% if buyer_niu or buyer_addr %} - {% endif %}Tél : {{ buyer_phone }}{% endif %}
+        </div>
+        {% endif %}
+        {% if is_avoir and reference_invoice %}<div class="avoir-ref">Avoir sur facture n° {{ reference_invoice }}</div>{% endif %}
+      </td>
+    </tr>
+  </table>
 
-<div class="cert-box">
-<h3>SFEC - Systeme de Facturation Electronique Certifie</h3>
-<table>
-<tr><td><strong>Statut certification</strong></td><td>{{ cert_status | safe }}</td></tr>
-<tr><td><strong>Signature courte</strong></td><td>{{ short_sig | safe }}</td></tr>
-<tr><td><strong>Signature complete</strong></td><td style="word-break:break-all;font-size:10px">{{ signature | safe }}</td></tr>
-<tr><td><strong>Date de certification</strong></td><td>{{ cert_date | safe }}</td></tr>
-</table>
-</div>
+  <!-- ====== CERTIFICATION SFEC / MENTIONS / QR ====== -->
+  <table class="cert">
+    <tr>
+      <td class="c1">
+        Date certification : &nbsp;<b>{{ cert_date }}</b><br>
+        Numéro certification : <b class="hash">{{ cert_num }}</b>
+      </td>
+      <td class="c2">Prix revisables en fonction<br>des données économiques</td>
+      <td class="c3">{% if qr_src %}<img src="{{ qr_src }}" alt="QR SFEC">{% endif %}</td>
+    </tr>
+  </table>
+  <table class="tirage-row">
+    <tr>
+      <td class="op">{% if operateur %}Opérateur : {{ operateur }}{% endif %}</td>
+      <td class="tr"><u>Date de tirage</u> &nbsp;{{ tirage }}<span class="page">Page : &nbsp;1</span></td>
+    </tr>
+  </table>
 
-<div class="qr-section">
-<h3>QR Code de certification</h3>
-{{ qr_display | safe }}
-</div>
+  <!-- ============ LIGNES ============ -->
+  <table class="lines">
+    <colgroup>
+      <col style="width:8.5%"><col style="width:21.5%"><col style="width:6%"><col style="width:11%">
+      <col style="width:7%"><col style="width:10%"><col style="width:6.5%"><col style="width:7.5%">
+      <col style="width:7%"><col style="width:7%"><col style="width:8%">
+    </colgroup>
+    <thead>
+      <tr>
+        <th>Référence</th><th>Désignation</th><th>Nb.</th><th>Cond.</th><th>Qté</th><th>Unité</th>
+        <th>Pds (Kg)</th><th>P.U. HT</th><th>Rem.</th><th>P.U. Net</th><th>Total HT</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in items_rows %}
+      <tr>
+        <td>{{ row.reference }}</td>
+        <td>{{ row.designation }}</td>
+        <td class="num">{{ row.nb_colis }}</td>
+        <td style="white-space:nowrap">{{ row.conditionnement }}</td>
+        <td class="num">{{ row.quantite }}</td>
+        <td style="white-space:nowrap">{{ row.unite }}</td>
+        <td class="num">{{ row.poids }}</td>
+        <td class="num">{{ row.pu }}</td>
+        <td style="white-space:nowrap">{{ row.remise }}</td>
+        <td class="num">{{ row.pu_net }}</td>
+        <td class="num">{{ row.total }}</td>
+      </tr>
+      {% endfor %}
+      <tr style="height:{{ filler_mm }}mm">{% for _ in range(11) %}<td></td>{% endfor %}</tr>
+    </tbody>
+  </table>
+  {% if total_poids %}<div class="total-poids">{{ total_poids }} <b>Kg</b></div>{% endif %}
 
-<div class="footer no-print">
-<button class="btn btn-primary" onclick="window.print()">Imprimer</button>
-<a href="/certified" style="margin-left:8px;color:#38bdf8">Retour</a>
+  <!-- ============ TAXES / TOTAUX ============ -->
+  <table class="bottom">
+    <tr>
+      <td class="b-left">
+        <table class="taxbox">
+          <colgroup><col style="width:17%"><col style="width:32%"><col style="width:19%"><col style="width:32%"></colgroup>
+          <tr><th>Code</th><th>Base</th><th>Taux</th><th>Montant</th></tr>
+          {% for t in tax_rows %}
+          <tr><td class="code">{{ t.code }}</td><td>{{ t.base }}</td><td>{{ t.taux }}</td><td>{{ t.montant }}</td></tr>
+          {% endfor %}
+          <tr class="total"><td colspan="3">Total taxes</td><td class="mt">{{ total_taxes }}</td></tr>
+        </table>
+        <div class="tirage2"><u>Date de tirage</u> &nbsp;{{ tirage }}</div>
+      </td>
+      <td class="b-gap"></td>
+      <td>
+        <table class="sumbox">
+          <colgroup><col style="width:18%"><col style="width:9%"><col style="width:16%"><col style="width:18%"><col style="width:17%"><col style="width:22%"></colgroup>
+          <tr>
+            <th rowspan="2">Montant HT<br>Brut</th><th colspan="2">Remise</th>
+            <th rowspan="2">Montant HT<br>Net</th><th rowspan="2">Total TVA</th><th rowspan="2">NET A PAYER</th>
+          </tr>
+          <tr><th>(%)</th><th>Valeur</th></tr>
+          <tr>
+            <td>{{ summary.ht_brut }}</td><td>{{ summary.remise_pct }}</td><td>{{ summary.remise }}</td>
+            <td>{{ summary.ht_net }}</td><td>{{ summary.taxes }}</td><td class="net">{{ summary.net }}</td>
+          </tr>
+        </table>
+        <div class="r-text">Arrêté le présent document à la somme de <i>{{ montant_lettres }}</i></div>
+        <div class="r-text" style="margin-top:0.5mm">{{ validity }}</div>
+        <table class="parite">
+          <tr>
+            <td>{{ parity_l1 }}<br>{{ parity_l2 }}</td>
+            <td class="eur" style="width:22%">En Euro</td>
+            <td class="eur" style="width:20%">{{ euro_total }}</td>
+          </tr>
+        </table>
+        <div class="cond-title">Conditions de règlement :</div>
+        <table class="cond">
+          <tr>
+            <td style="width:40%">{{ conditions_txt }}</td>
+            <td style="width:18%">{{ echeance }}</td>
+            <td style="width:18%">{{ payment_mode }}</td>
+            <td>{{ summary.net }}</td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+
+  <!-- ============ SIGNATURES ============ -->
+  <table class="signs">
+    <tr><th>Responsable Commercial</th><th>Caisse</th><th>Client</th><th>Responsable Livraison</th></tr>
+    <tr><td></td><td></td><td></td><td></td></tr>
+  </table>
+
+  <!-- ============ CGV ============ -->
+  <div class="cgv">
+    {% for line in cgv_lines %}<p>{{ line }}</p>{% endfor %}
+  </div>
+
+  <div class="grow"></div>
+
+  <!-- ============ BANDEAU SOCIETE ============ -->
+  {% if footer %}
+  <table class="footer">
+    <tr>
+      <td class="ft-left">
+        {% if footer.slogan %}<div class="ft-slogan">{{ footer.slogan }}</div>{% endif %}
+        <table class="ft-sites">
+          <tr>
+            {% for site in footer.sites %}
+            <td>
+              <div class="ft-name">{{ site.name }}</div>
+              {% for l in site.lines %}<div class="ft-line"><span class="ft-ico">{{ l.icon }}</span>{{ l.text }}</div>{% endfor %}
+            </td>
+            {% endfor %}
+          </tr>
+        </table>
+      </td>
+      <td class="ft-legal">
+        {% for line in footer.legal %}<div>{{ line | safe }}</div>{% endfor %}
+        {% if footer.banks %}
+        <table class="ft-banks">
+          <tr>
+            <td class="lbl"><b>Banques :</b></td>
+            <td>{% for b in footer.banks %}<div>{{ b }}</div>{% endfor %}</td>
+          </tr>
+        </table>
+        {% endif %}
+      </td>
+      {% if footer_logo_src %}<td class="ft-logo"><img src="{{ footer_logo_src }}" alt=""></td>{% endif %}
+    </tr>
+  </table>
+  {% endif %}
+
 </div>
-</body></html>
+</body>
+</html>

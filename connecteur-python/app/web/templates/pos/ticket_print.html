@@ -1,57 +1,117 @@
 <!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
-<title>Ticket {{ numero | safe }}</title>
+<title>Ticket {{ v.numero }}</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'Courier New',monospace;color:#000;background:#fff;max-width:80mm;margin:0 auto;font-size:12px}
-.header{text-align:center;margin-bottom:8px}
-.logo{margin-bottom:6px}
-.company{font-size:15px;font-weight:bold;text-transform:uppercase;letter-spacing:1px}
-.info{font-size:10px;color:#000}
-.rule{border-top:1px dashed #000;margin:6px 0}
-.ticket-info{padding:2px 0}
-.ticket-info div{display:flex;justify-content:space-between;padding:1px 0;font-size:11px}
-table{width:100%;border-collapse:collapse;margin:4px 0}
-th,td{padding:2px 0;font-size:11px;border-bottom:1px dotted #ccc}
-th{text-align:left;font-size:10px;text-transform:uppercase}
-td.r{text-align:right}
-.total{border-top:2px solid #000;font-weight:bold;font-size:15px;padding-top:6px;margin-top:4px}
-.footer{text-align:center;margin-top:10px;font-size:10px}
-.pay-row{display:flex;justify-content:space-between;padding:1px 0;font-size:12px}
-.pay-row.big{font-weight:bold;font-size:14px;margin-top:4px}
-.no-print{margin-top:12px;text-align:center}
-.no-print a,.no-print button{display:inline-block;margin:4px;padding:8px 14px;font-size:12px;text-decoration:none;border:none;border-radius:4px;cursor:pointer;font-family:inherit}
+html,body{height:auto}
+body{font-family:'Courier New',Courier,monospace;color:#000;background:#fff;width:80mm;margin:0 auto;
+     font-size:11px;line-height:1.35;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.ticket{padding:1.5mm 4mm 3mm}  /* 80 mm - 2 x 4 mm = 72 mm imprimables */
+.stars{font-size:10px;letter-spacing:.5px;white-space:nowrap;overflow:hidden}
+.sans{font-family:Arial,Helvetica,sans-serif}
+.company{font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;text-align:center;margin:.5mm 0 1.5mm}
+.logo{text-align:center;margin:1.5mm 0}
+.logo img{max-width:100%;max-height:22mm;filter:grayscale(1)}
+.head-line{font-family:Arial,Helvetica,sans-serif;font-size:9.5px;text-align:center;line-height:1.3}
+.row{display:flex;justify-content:space-between;gap:6px}
+.row .v{text-align:right;white-space:nowrap}
+.row.left .v{text-align:left;flex:1;padding-left:6mm}
+.gap{height:3mm}
+.rule{border:0;border-top:1px solid #000;margin:1.5mm 0}
+.item-name{word-wrap:break-word}
+.item-calc{display:flex;font-size:10.5px;margin-bottom:1mm}
+.item-calc span{white-space:nowrap}
+.item-calc .qte{width:24%;text-align:right}
+.item-calc .op{width:6%;text-align:center}
+.item-calc .pu{width:28%;text-align:right}
+.item-calc .tot{width:36%;text-align:right}
+.grand{font-weight:700;font-size:13px;margin-top:2.5mm}
+.grand .v{font-size:15px}
+.sfec{text-align:center;font-family:Arial,Helvetica,sans-serif;font-size:9px;margin:1mm 0 2mm}
+.sfec .title{font-weight:700}
+.sfec .num{word-break:break-all}
+.sfec img{width:20mm;height:20mm;image-rendering:pixelated;margin-top:1mm}
+.footer{font-family:Arial,Helvetica,sans-serif;text-align:center;margin-top:1mm;font-size:10px;white-space:pre-line}
+.no-print{margin-top:4mm;text-align:center}
+.no-print a,.no-print button{display:inline-block;margin:3px;padding:8px 14px;font-size:12px;text-decoration:none;border:1px solid #000;border-radius:4px;cursor:pointer;font-family:inherit;background:#fff;color:#000}
 @media print{body{width:80mm} .no-print{display:none!important}}
-</style></head><body onload="setTimeout(function(){window.print()},500)">
-<div class="header">
-<div class="logo">{{ logo | safe }}</div>
-<div class="company">{{ company_name | safe }}</div>
-{{ company_meta | safe }}
+</style>
+<!-- Format de page = 80 mm x hauteur reelle du ticket (recalcule avant impression) :
+     pas de marge ni de papier blanc avant/apres sur l'imprimante 80 mm. -->
+<style id="page-size">@page{size:80mm 200mm;margin:0}</style>
+<script>
+function fitTicketPage(){
+  var t = document.querySelector('.ticket');
+  var mm = Math.ceil(t.getBoundingClientRect().height * 25.4 / 96) + 1;
+  document.getElementById('page-size').textContent = '@page{size:80mm ' + mm + 'mm;margin:0}';
+}
+window.addEventListener('beforeprint', fitTicketPage);
+window.addEventListener('load', function(){
+  fitTicketPage();
+  setTimeout(function(){ window.print(); }, 300);
+});
+</script>
+</head><body>
+<div class="ticket">
+  <div class="stars">{{ stars }}</div>
+  {% if logo_src %}
+  <div class="logo"><img src="{{ logo_src }}" alt="{{ v.company_name }}"></div>
+  {% else %}
+  <div class="company">{{ v.company_name }}</div>
+  {% endif %}
+  {% for line in v.header_lines %}<div class="head-line">{{ line }}</div>{% endfor %}
+  <div class="stars" style="margin-top:1mm">{{ stars }}</div>
+
+  <div class="row"><span>Le&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{{ v.date }}</span><span class="v">à {{ v.heure }}</span></div>
+  <div class="gap"></div>
+  <div class="row left"><span>Ticket N°</span><span class="v">{{ v.numero }}</span></div>
+  {% if v.facture and v.facture != v.numero %}<div class="row left"><span>Facture N°</span><span class="v">{{ v.facture }}</span></div>{% endif %}
+
+  <div class="rule"></div>
+
+  {% for l in v.lignes %}
+  <div class="item-name">{{ l.designation }}</div>
+  <div class="item-calc">
+    <span class="qte">{{ l.qte }}</span>
+    <span class="op">x</span>
+    <span class="pu">{{ l.pu }}</span>
+    <span class="op">=</span>
+    <span class="tot">{{ l.total }}</span>
+  </div>
+  {% endfor %}
+
+  <div class="rule"></div>
+
+  <div class="row"><span>Sous-Total</span><span class="v">{{ v.sous_total }}</span></div>
+  <div class="row grand"><span>TOTAL</span><span class="v">{{ v.total }}</span></div>
+  <div class="row"><span>Dont TVA</span><span class="v">{{ v.dont_tva }}</span></div>
+
+  <div class="rule"></div>
+
+  <div class="row"><span>Règlement</span><span class="v">{{ v.paiement }}{% if v.recu %} {{ v.recu }}{% endif %}</span></div>
+  <div class="gap" style="height:1.5mm"></div>
+  <div class="row"><span>Rendu</span><span class="v">{{ v.rendu }}</span></div>
+
+  <div class="rule"></div>
+
+  {% if v.sfec_num %}
+  <div class="sfec">
+    <div class="title">CERTIFIE SFEC</div>
+    <div class="num">N° {{ v.sfec_num }}</div>
+    {% if v.sfec_date %}<div>Date : {{ v.sfec_date }}</div>{% endif %}
+    {% if sfec_qr_src %}<img src="{{ sfec_qr_src }}" alt="QR SFEC">{% endif %}
+  </div>
+  {% elif v.facture and v.sfec_statut == "ERREUR" %}
+  <div class="sfec">SFEC : erreur - certification à réessayer</div>
+  {% elif v.facture %}
+  <div class="sfec">SFEC : certification en attente...</div>
+  {% endif %}
+
+  <div class="footer">{{ v.message }}</div>
 </div>
-<div class="rule"></div>
-<div class="ticket-info">
-<div><span><b>TICKET DE VENTE</b></span><span>{{ date | safe }}</span></div>
-<div><span>N&deg; <b>{{ numero | safe }}</b></span><span>{{ caissier | safe }}</span></div>
-<div><span>Client</span><span>{{ client | safe }}</span></div>
-{{ invoice_html | safe }}
-</div>
-<div class="rule"></div>
-<table>
-<thead><tr><th>Article</th><th class="r" style="text-align:right">Qte</th><th class="r" style="text-align:right">PU</th><th class="r" style="text-align:right">Total</th></tr></thead>
-<tbody>{{ lignes | safe }}</tbody>
-</table>
-<div class="rule"></div>
-<div class="pay-row big"><span>TOTAL TTC</span><span>{{ total }} FCFA</span></div>
-<div class="rule"></div>
-<div class="pay-row"><span>Mode</span><span>{{ paiement | safe }}</span></div>
-<div class="pay-row"><span>Recu</span><span>{{ recu }} FCFA</span></div>
-<div class="pay-row big"><span>Monnaie rendue</span><span>{{ monnaie }} FCFA</span></div>
-{{ sfec | safe }}
-<div class="footer">
-{{ message | safe }}
-</div>
+
 <div class="no-print">
-<button onclick="window.print()">Imprimer</button>
-<a href="/api/pos/ticket/{{ ticket_id }}/pdf" class="no-print" target="_blank">PDF</a>
-<a href="/pos">Retour caisse</a>
+  <button onclick="window.print()">Imprimer</button>
+  <a href="/api/pos/ticket/{{ ticket_id }}/pdf" target="_blank">PDF</a>
+  <a href="/pos">Retour caisse</a>
 </div>
 </body></html>

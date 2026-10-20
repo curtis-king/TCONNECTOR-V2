@@ -8,7 +8,6 @@ wrapping _login_required est reproduit à l'identique.
 
 import functools
 import json
-import os
 from flask import Blueprint, jsonify, render_template, request, send_file, session
 from app.config.manager import get_config, save_config
 from app.domain import invoices as invoice_engine, pdf as pdf_generator, pos as pos_engine
@@ -143,91 +142,15 @@ def pos_print_ticket(ticket_id):
     if not ticket:
         return "<h1>Ticket non trouve</h1>", 404
 
-    company = get_config().get("company", {})
-    lignes_rows = ""
-    for l in ticket.get("lignes", []):
-        lignes_rows += "<tr><td>{}</td><td style='text-align:right'>{}</td><td style='text-align:right'>{:,.0f}</td><td style='text-align:right'>{:,.0f}</td></tr>".format(
-            _esc(l.get("designation", "")), l.get("quantite", 1),
-            l.get("prix_unitaire", 0), l.get("montant_ttc", 0)
-        )
-
-    logo_html = ""
-    logo_path = company.get("logo_file_name", "")
-    if logo_path and os.path.exists(logo_path):
-        logo_html = '<img src="{}" style="max-height:60px">'.format(logo_path)
-    elif company.get("logo_base64"):
-        logo_html = '<img src="data:image/png;base64,{}" style="max-height:60px">'.format(company["logo_base64"])
-
-    def _fmt_cert_date(s):
-        s = (s or "").strip()
-        if not s:
-            return ""
-        return s.replace("T", " ").replace("Z", "").strip()[:19]
-
-    company_meta = ""
-    for line in [
-        company.get("address", ""),
-        "NIU: {}".format(company.get("tax_number", "")) if company.get("tax_number") else "",
-        "RCCM: {}".format(company.get("rc_number", "")) if company.get("rc_number") else "",
-        "Tel: {}".format(company.get("phone", "")) if company.get("phone") else "",
-        company.get("email", ""),
-    ]:
-        if line:
-            company_meta += '<div class="info">{}</div>'.format(_esc(line))
-
-    invoice_html = ""
-    sfec_html = ""
-    invoice_id = ticket.get("invoice_id")
-    if invoice_id:
-        try:
-            from app.domain import invoices as invoice_engine
-            inv = invoice_engine.get_invoice(invoice_id)
-            if inv:
-                invoice_html = "<div><span>Facture</span><span><b>{}</b></span></div>".format(_esc(inv.get("numero", "")))
-                cert_num = inv.get("sfec_num_certif", "") or ""
-                qr = inv.get("sfec_qr_code", "") or ""
-                cert_date = _fmt_cert_date(inv.get("sfec_date_certif", ""))
-                sstatut = inv.get("sfec_statut", "") or ""
-                if cert_num:
-                    cert_short = cert_num if len(cert_num) <= 40 else cert_num[:40]
-                    parts = ['<div class="info" style="font-weight:bold">Certifiee SFEC</div>',
-                             '<div class="info">N certif : {}</div>'.format(_esc(cert_short))]
-                    if cert_date:
-                        parts.append('<div class="info">Date : {}</div>'.format(_esc(cert_date)))
-                    if qr and (qr.startswith("data:") or qr.startswith("http")) and len(qr) < 40000:
-                        parts.append('<div style="text-align:center;margin:2px 0">'
-                                     '<img src="{}" style="width:16mm;height:16mm;image-rendering:pixelated"></div>'.format(qr))
-                    sfec_html = '<div class="rule"></div>' + "".join(parts)
-                elif sstatut == "ERREUR":
-                    sfec_html = ('<div class="rule"></div>'
-                                 '<div class="info" style="font-weight:bold">SFEC : ERREUR - certification a reessayer</div>')
-                else:
-                    sfec_html = ('<div class="rule"></div>'
-                                 '<div class="info" style="font-weight:bold">SFEC : certification en attente...</div>')
-        except Exception:
-            pass
-
-    paiement_label = ticket.get("mode_paiement", "")
-    paiement_map = {"especes": "Especes", "mobile_money": "Mobile Money", "virement": "Virement",
-                    "carte": "Carte", "cheque": "Cheque", "mixte": "Mixte"}
-    paiement_label = paiement_map.get(paiement_label, paiement_label)
+    v = pdf_generator.ticket_view(ticket)
+    qr = v["sfec_qr"]
+    sfec_qr_src = qr if qr.startswith(("data:", "http")) and len(qr) < 40000 else ""
 
     return render_template("pos/ticket_print.html",
-        numero=_esc(ticket.get("numero", "")),
-        logo=logo_html,
-        company_name=_esc(company.get("name", "Mon Entreprise")),
-        company_meta=company_meta,
-        date=_esc(ticket.get("date_ticket", "")),
-        caissier=_esc(ticket.get("caissier", "")),
-        client=_esc(ticket.get("tiers_nom", "")),
-        invoice_html=invoice_html,
-        sfec=sfec_html,
-        lignes=lignes_rows,
-        total="{:,.0f}".format(ticket.get("montant_ttc", 0)),
-        paiement=_esc(paiement_label),
-        recu="{:,.0f}".format(ticket.get("montant_recu", 0)),
-        monnaie="{:,.0f}".format(ticket.get("monnaie_rendue", 0)),
-        message=get_setting("ticket_message", "Merci pour votre achat !"),
+        v=v,
+        stars=pdf_generator.TICKET_STARS,
+        logo_src=pdf_generator.image_data_uri(v["logo_path"]),
+        sfec_qr_src=sfec_qr_src,
         ticket_id=ticket["id"],
     )
 

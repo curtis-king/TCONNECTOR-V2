@@ -218,6 +218,9 @@ SCHEMA = """
                 discount_type TEXT DEFAULT 'fixed',
                 type_article TEXT DEFAULT 'product',
                 classification_code TEXT DEFAULT '',
+                nb_colis REAL DEFAULT 0.0,
+                conditionnement TEXT DEFAULT '',
+                poids_kg REAL DEFAULT 0.0,
                 created_at TEXT DEFAULT (datetime('now')),
                 FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE CASCADE,
                 FOREIGN KEY (product_id) REFERENCES products(id)
@@ -384,6 +387,9 @@ def _migrate():
             ("discount_type", "TEXT DEFAULT 'fixed'"),
             ("type_article", "TEXT DEFAULT 'product'"),
             ("classification_code", "TEXT DEFAULT ''"),
+            ("nb_colis", "REAL DEFAULT 0.0"),
+            ("conditionnement", "TEXT DEFAULT ''"),
+            ("poids_kg", "REAL DEFAULT 0.0"),
         ]),
         ("contacts", [
             ("rccm", "TEXT DEFAULT ''"),

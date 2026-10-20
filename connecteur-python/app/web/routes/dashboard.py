@@ -9,10 +9,35 @@ sécurité ne dépend d'aucun module de routes).
 """
 
 import functools
+
 from app.core.utils import fmt_money
 from flask import Blueprint, jsonify, render_template, request
 from app.config.manager import get_config
+from app.domain import invoices as invoice_engine
 from app.domain import pos as pos_engine
+from app.domain.pdf import (
+    CGV_TEXT,
+    CGR_TEXT,
+    DOC_TITLE_AVOIR,
+    DOC_TITLE_FACTURE,
+    EURO_PARITY,
+    PARITE_EURO_L1,
+    PARITE_EURO_L2,
+    VALIDITE_OFFRE,
+    barcode_svg,
+    company_footer_blocks,
+    company_image_path,
+    fmt_rate,
+    fr_date,
+    fr_date_long,
+    frn_amount,
+    image_data_uri,
+    invoice_footer,
+    invoice_operator,
+    montant_en_lettres,
+    payment_label,
+    tirage_stamp,
+)
 from app.integration.sfec.client import SfecClient
 from app.integration.sfec.endpoints import check_health
 from app.sync.connectivity import get_status
@@ -147,6 +172,77 @@ def certified_page():
                                  last_sfec=(last_sfec or "")[:19].replace("T", " ") or "jamais"))
 
 
+def _print_float(val, default=0.0):
+    """Conversion tolerante des montants/quantites venant de SFEC ou Sage."""
+    if val in (None, ""):
+        return default
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        try:
+            return float(str(val).replace("%", "").replace(",", ".").strip())
+        except (TypeError, ValueError):
+            return default
+
+
+def _print_logo_src(company):
+    """Logo societe en data-URI, pour l'impression navigateur."""
+    raw = (company.get("logo_base64") or "").strip()
+    if raw:
+        return raw if raw.startswith("data:") else "data:image/png;base64," + raw
+    return image_data_uri(company_image_path(company, "logo_file_name"))
+
+
+def _print_sage_lines(numero, type_doc="vente", domaine=None, sage_type=None):
+    """Lignes Sage d'une piece source='sage' absentes de SQLite.
+
+    Les types de document par defaut viennent de la configuration Sage
+    (facture/avoir). Toute erreur (Sage indisponible, table absente) est
+    silencieuse : l'impression doit rester possible sans ces colonnes.
+    """
+    try:
+        from app.integration.sage.database import fetch_doc_lines, get_domain_config
+        cfg = get_domain_config()
+        dom = int(domaine) if domaine not in (None, "") else cfg["vente_domain"]
+        types = []
+        if sage_type not in (None, ""):
+            types.append(int(sage_type))
+        elif type_doc == "avoir":
+            types.extend([cfg["avoir_type"], cfg["facture_type"]])
+        else:
+            types.extend([cfg["facture_type"], cfg["avoir_type"]])
+        for doc_type in types:
+            lignes = fetch_doc_lines(dom, doc_type, numero)
+            if lignes:
+                return lignes
+    except Exception as e:
+        logger.warning("Lignes Sage indisponibles pour %s: %s", numero, e)
+    return []
+
+
+def _print_local_lines(numero, type_doc="vente"):
+    """Facture locale + lignes : SQLite, ou lecture Sage si non stockee.
+
+    L'API SFEC ne renvoie ni la reference article, ni l'unite, ni le
+    conditionnement/colis/poids : ces champs d'affichage viennent du local.
+    """
+    if not numero:
+        return None, []
+    try:
+        local = invoice_engine.get_invoice_by_numero(numero)
+    except Exception as e:
+        logger.warning("Lookup local facture %s impossible: %s", numero, e)
+        local = None
+    if not local:
+        return None, []
+    lignes = local.get("lignes") or []
+    if not lignes and local.get("source") == "sage":
+        lignes = _print_sage_lines(
+            numero, type_doc,
+            local.get("sage_domaine"), local.get("sage_type"))
+    return local, lignes
+
+
 @bp.route("/certified/<invoice_id>/print", methods=["GET"])
 @_login_required
 def print_certified(invoice_id):
@@ -161,74 +257,194 @@ def print_certified(invoice_id):
         return "<h1>Facture non trouvee</h1><p><a href='/certified'>Retour</a></p>", 404
 
     company = get_config().get("company", {})
-    qr_code = inv.get("qr_code") or inv.get("certification_qr_code") or ""
-    is_image = qr_code.startswith("data:")
-    if qr_code:
-        qr_display = '<img src="{}" style="max-width:200px;max-height:200px">'.format(qr_code) if is_image else '<pre style="font-size:10px;word-break:break-all">{}</pre>'.format(qr_code)
-    else:
-        qr_display = '<p style="color:#999">QR Code non disponible</p>'
- 
-    items = inv.get("items") or inv.get("items_json") or []
-    item_rows = ""
-    for item in items:
-        item_rows += "<tr><td>{}</td><td style='text-align:right'>{}</td><td style='text-align:right'>{}</td><td style='text-align:right'>{}</td><td style='text-align:right'>{}</td></tr>".format(
-            _esc(item.get("designation", "")),
-            fmt_money(item.get("quantity", 0)),
-            fmt_money(item.get("unit_price", 0)),
-            _esc(item.get("tax_rate", "0")),
-            fmt_money(item.get("net_amount", 0)),
-            )
+    # Numero imprime = numero vendeur (Sage) ; invoice_number SFEC peut etre
+    # le numero national certifie.
+    numero = (inv.get("seller_invoice_number") or inv.get("invoice_number") or "").strip()
     inv_type = inv.get("invoice_type", "") or inv.get("invoice_status", "")
-    doc_label = "FACTURE D'AVOIR" if inv_type == "creditNote" else "FACTURE"
-    avoir_banner = (
-        '<div style="border:2px solid #b91c1c;color:#b91c1c;padding:8px 12px;'
-        'margin:8px 0;font-weight:bold;text-align:center">FACTURE D\'AVOIR</div>'
-        if inv_type == "creditNote" else ""
-    )
-    total_tax_t = (inv.get("total_tax_t_amount")
-                   if inv.get("total_tax_t_amount") is not None else inv.get("total_tax18", 0))
-    total_tax_r = (inv.get("total_tax_r_amount")
-                   if inv.get("total_tax_r_amount") is not None else inv.get("total_tax5", 0))
-    try:
-        _disc_val = float(str(inv.get("discount_amount", "0")).replace(",", "."))
-    except (ValueError, TypeError):
-        _disc_val = 0
+    is_avoir = inv_type == "creditNote"
+    local, lignes = _print_local_lines(numero, "avoir" if is_avoir else "vente")
+
+    # ---- Lignes : fusion donnees SFEC (montants) + donnees locales (Sage)
+    items = inv.get("items") or []
+    items_rows = []
+    total_poids = 0.0
+    base18 = base5 = base_exempt = 0.0
+    line_discounts = 0.0
+    for i in range(max(len(items), len(lignes))):
+        it = items[i] if i < len(items) else {}
+        lg = lignes[i] if i < len(lignes) else {}
+        qte = _print_float(it.get("quantity") if it.get("quantity") is not None
+                           else lg.get("quantite"), 1.0)
+        pu = _print_float(it.get("unit_price") if it.get("unit_price") is not None
+                          else lg.get("prix_unitaire"), 0.0)
+        taux = _print_float(it.get("tax_rate") if it.get("tax_rate") not in (None, "")
+                            else lg.get("taux_tva"), 18.0)
+        total_ligne = _print_float(it.get("net_amount") if it.get("net_amount") is not None
+                                   else lg.get("montant_ht"), 0.0)
+        brut_ligne = _print_float(it.get("subtotal") if it.get("subtotal") is not None
+                                  else lg.get("subtotal"), 0.0) or qte * pu
+        remise = _print_float(it.get("discount_amount"), None)
+        if remise is None:
+            remise = _print_float(lg.get("remise_montant"), 0.0)
+        remise_pct = _print_float(lg.get("remise_pct"), 0.0)
+        if not remise_pct and brut_ligne and remise:
+            remise_pct = remise / brut_ligne * 100
+        poids = _print_float(lg.get("poids_kg"), 0.0)
+        nb_colis = _print_float(lg.get("nb_colis"), 0.0)
+        pu_net = (total_ligne / qte) if qte else pu
+        designation = it.get("designation") or lg.get("designation") or ""
+
+        items_rows.append({
+            "reference": lg.get("code_article", "") or it.get("article_code", "") or "",
+            "designation": designation,
+            "nb_colis": frn_amount(nb_colis, 2) if nb_colis else "",
+            "conditionnement": lg.get("conditionnement", "") or "",
+            "quantite": frn_amount(qte, 2),
+            "unite": lg.get("unite", "") or "",
+            "poids": frn_amount(poids, 2) if poids else "",
+            "remise": fmt_rate(remise_pct) if remise_pct else "Prix Net",
+            "pu": frn_amount(pu, 2),
+            "pu_net": frn_amount(pu_net, 2),
+            "total": frn_amount(total_ligne, 0),
+        })
+
+        if round(taux) == 18:
+            base18 += total_ligne
+        elif round(taux) == 5:
+            base5 += total_ligne
+        elif round(taux) == 0:
+            base_exempt += total_ligne
+        line_discounts += remise or 0
+        total_poids += poids
+
+    # ---- Totaux facture (SFEC en priorite, local en repli)
+    total_ht = _print_float(inv.get("total_ht"), None)
+    if total_ht is None:
+        total_ht = _print_float((local or {}).get("montant_ht"), 0.0)
+    ht_brut = _print_float((local or {}).get("montant_ht_brut"), 0.0)
+    remise_lignes = _print_float((local or {}).get("total_line_discount_amount"), None)
+    if remise_lignes is None:
+        remise_lignes = line_discounts
+    remise_globale = _print_float((local or {}).get("discount_amount"), None)
+    if remise_globale is None:
+        remise_globale = _print_float(inv.get("discount_amount"), 0.0)
+    remise_totale = (remise_lignes or 0) + (remise_globale or 0)
+    if not ht_brut:
+        ht_brut = total_ht + remise_totale
+    # Sage tronque le pourcentage de remise a une decimale (16,17 -> 16,1)
+    remise_pct_glob = int(remise_totale / ht_brut * 1000) / 10.0 if ht_brut else 0
+
+    tva18 = _print_float(inv.get("total_tax_t_amount", inv.get("total_tax18")), None)
+    if tva18 is None:
+        tva18 = _print_float((local or {}).get("total_tax_t_amount"), 0.0)
+    tva5 = _print_float(inv.get("total_tax_r_amount", inv.get("total_tax5")), None)
+    if tva5 is None:
+        tva5 = _print_float((local or {}).get("total_tax_r_amount"), 0.0)
+    exonere = _print_float(inv.get("total_exempt_amount"), None)
+    if exonere is None:
+        exonere = _print_float((local or {}).get("total_exempt_amount"), 0.0)
+    centime = _print_float(inv.get("additional_cent_tax",
+                                   (local or {}).get("additional_cent_tax")), 0.0)
+    timbre = _print_float(inv.get("electronic_stamp_duty",
+                                  (local or {}).get("electronic_stamp_duty")), 0.0)
+    montant_tva = _print_float(inv.get("montant_tva", (local or {}).get("montant_tva")), None)
+    if montant_tva is None:
+        montant_tva = tva18 + tva5
+    total_ttc = _print_float(inv.get("total_ttc", (local or {}).get("montant_ttc")), 0.0)
+    net_a_payer = _print_float(inv.get("amount_due"), None)
+    if net_a_payer is None:
+        net_a_payer = total_ttc
+
+    if not base18 and not base5 and not base_exempt:
+        base18 = max(total_ht - exonere, 0)
+
+    # ---- Tableau fiscal (codes Sage du modele : 1 / 202 / 203 / exonere)
+    tax_rows = []
+    if tva18 or base18:
+        tax_rows.append({"code": "1", "base": frn_amount(base18), "taux": "18%",
+                         "montant": frn_amount(tva18)})
+    if tva5 or base5:
+        tax_rows.append({"code": "1R", "base": frn_amount(base5), "taux": "5%",
+                         "montant": frn_amount(tva5)})
+    if exonere:
+        tax_rows.append({"code": "0", "base": frn_amount(exonere), "taux": "Exonéré",
+                         "montant": "-"})
+    if centime:
+        taux_c = (centime / total_ht * 100) if total_ht else 0
+        tax_rows.append({"code": "202", "base": frn_amount(total_ht),
+                         "taux": fmt_rate(taux_c),
+                         "montant": frn_amount(centime)})
+    if timbre:
+        taux_t = (timbre / total_ht * 100) if total_ht else 0
+        tax_rows.append({"code": "203", "base": frn_amount(total_ht),
+                         "taux": fmt_rate(taux_t),
+                         "montant": frn_amount(timbre)})
+    if not tax_rows:
+        tax_rows.append({"code": "1", "base": frn_amount(total_ht), "taux": "18%",
+                         "montant": frn_amount(montant_tva)})
+
+    total_taxes = montant_tva + centime + timbre
+    summary = {
+        "ht_brut": frn_amount(ht_brut),
+        "remise_pct": frn_amount(remise_pct_glob, 1),
+        "remise": frn_amount(remise_totale),
+        "ht_net": frn_amount(total_ht),
+        "taxes": frn_amount(total_taxes),
+        "net": frn_amount(net_a_payer),
+    }
+
+    # ---- Certification / QR (image SFEC uniquement)
+    qr_code = inv.get("qr_code") or inv.get("certification_qr_code") or ""
+    qr_src = qr_code if qr_code.startswith("data:") else ""
+
+    seller_lines = company_footer_blocks(company)[0][1:4]
+    footer = invoice_footer(company)
+
+    devise = (inv.get("currency") or (local or {}).get("devise") or "XAF").upper()
+    euro_total = frn_amount(total_ttc / EURO_PARITY) if devise in ("XAF", "XOF") else "-"
+    footer_txt = (company.get("invoice_footer") or "").strip()
+    cgv_lines = [footer_txt] if footer_txt else [CGV_TEXT, CGR_TEXT]
+
     return render_template("dashboard/print.html",
-        doc_label=_esc(doc_label),
-        avoir_banner=avoir_banner,
-        seller_legal_form=_esc(company.get("legal_form", "")),
-        seller_tax_regime=_esc(company.get("tax_regime", "")),
-        seller_capital=_esc(company.get("capital", "")),
-        invoice_type=_esc(inv_type),
-        recipient_type=_esc(inv.get("recipient_type", "")),
-        reference_invoice_id=_esc(inv.get("reference_invoice_id", "") or ""),
-        discount_display=_esc(("-" if _disc_val > 0 else "") + fmt_money(inv.get("discount_amount", "0"))),
-        total_exempt=_esc(fmt_money(inv.get("total_exempt_amount", "0"))),
-        additional_cent_tax=_esc(fmt_money(inv.get("additional_cent_tax", "0"))),
-        electronic_stamp_duty=_esc(fmt_money(inv.get("electronic_stamp_duty", "0"))),
-        invoice_number=_esc(inv.get("invoice_number", "")),
-        invoice_date=_esc((inv.get("invoice_date") or "")[:10]),
-        currency=_esc(inv.get("currency", "XAF")),
-        seller_name=_esc(inv.get("seller_name", company.get("name", ""))),
-        seller_addr=_esc(inv.get("seller_address", company.get("address", ""))),
-        seller_niu=_esc(inv.get("seller_niu", company.get("tax_number", ""))),
-        seller_rccm=_esc(inv.get("seller_rccm", "")),
-        buyer_name=_esc(inv.get("buyer_name", "")),
-        buyer_niu=_esc(inv.get("buyer_niu", "")),
-        buyer_addr=_esc(inv.get("buyer_address", "")),
-        buyer_phone=_esc(inv.get("buyer_phone", "")),
-        payment_method=_esc(inv.get("payment_method", "")),
-        amount_due=_esc(fmt_money(inv.get("amount_due", "0"))),
-        total_ht=_esc(fmt_money(inv.get("total_ht", "0"))),
-        total_tax18=_esc(fmt_money(total_tax_t)),
-        total_tax5=_esc(fmt_money(total_tax_r)),
-        total_ttc=_esc(fmt_money(inv.get("total_ttc", "0"))),
-        item_rows=item_rows,
-        cert_status=_esc(inv.get("certification_status", "")),
-        short_sig=_esc(inv.get("certification_short_signature", "")),
-        signature=_esc(inv.get("certification_signature", "")),
-        cert_date=_esc((inv.get("certification_date") or "")[:19].replace("T", " ")),
-        qr_display=qr_display,
+        doc_title=DOC_TITLE_AVOIR if is_avoir else DOC_TITLE_FACTURE,
+        is_avoir=is_avoir,
+        reference_invoice=inv.get("reference_invoice_id") or (local or {}).get("reference_invoice_id", ""),
+        invoice_number=numero,
+        barcode_svg=barcode_svg(numero),
+        invoice_date=fr_date(inv.get("invoice_date") or (local or {}).get("date_facture", "")),
+        currency=devise,
+        reference=inv.get("reference") or (local or {}).get("reference", "") or "",
+        compte=(local or {}).get("tiers_code", "") or "",
+        logo_src=_print_logo_src(company),
+        seller_name=inv.get("seller_name", company.get("name", "")),
+        seller_lines=seller_lines,
+        buyer_name=inv.get("buyer_name", "") or (local or {}).get("tiers_nom", ""),
+        buyer_niu=inv.get("buyer_niu", "") or (local or {}).get("tiers_niu", ""),
+        buyer_addr=inv.get("buyer_address", "") or (local or {}).get("tiers_adresse", ""),
+        buyer_phone=inv.get("buyer_phone", "") or (local or {}).get("tiers_telephone", ""),
+        cert_num=inv.get("certification_number", "") or inv.get("certification_id", ""),
+        cert_date=fr_date_long(inv.get("certification_date") or ""),
+        qr_src=qr_src,
+        operateur=invoice_operator(local),
+        tirage=tirage_stamp(),
+        items_rows=items_rows,
+        filler_mm=max(3, 60 - 6 * len(items_rows)),
+        total_poids=frn_amount(total_poids, 3) if total_poids else "",
+        tax_rows=tax_rows,
+        total_taxes=frn_amount(total_taxes),
+        summary=summary,
+        montant_lettres=montant_en_lettres(total_ttc),
+        euro_total=euro_total,
+        validity=VALIDITE_OFFRE,
+        parity_l1=PARITE_EURO_L1,
+        parity_l2=PARITE_EURO_L2,
+        conditions_txt=company.get("default_payment_terms", "") or "",
+        echeance=fr_date((local or {}).get("date_echeance", "")),
+        payment_mode=payment_label(inv.get("payment_method")
+                                   or (local or {}).get("payment_method", "")),
+        cgv_lines=cgv_lines,
+        footer=footer,
+        footer_logo_src=image_data_uri(footer["logo_path"]) if footer else "",
     )
 
 

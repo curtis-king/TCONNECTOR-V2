@@ -56,6 +56,24 @@ def candidates_from_pdf(path):
     return candidates_from_text(text[:4000])
 
 
+def _enrich_sage_lines(inv):
+    """Lignes Sage pour une facture source='sage' (non stockees en SQLite)."""
+    if not inv or inv.get("lignes") or inv.get("source") != "sage":
+        return inv
+    try:
+        from app.integration.sage.database import fetch_doc_lines
+        lignes = fetch_doc_lines(
+            int(inv.get("sage_domaine") or 0),
+            int(inv.get("sage_type") or 6),
+            inv.get("numero", ""),
+        )
+        if lignes:
+            inv["lignes"] = lignes
+    except Exception as e:  # noqa: BLE001
+        logger.debug("Lignes Sage indisponibles pour %s: %s", inv.get("numero"), e)
+    return inv
+
+
 def _lookup(candidates):
     for cand in candidates:
         try:
@@ -64,7 +82,7 @@ def _lookup(candidates):
             logger.warning("Lookup facture '%s' impossible: %s", cand, e)
             continue
         if inv:
-            return inv, cand
+            return _enrich_sage_lines(inv), cand
     return None, ""
 
 
