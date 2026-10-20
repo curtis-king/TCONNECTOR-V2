@@ -13,7 +13,7 @@ import pytest
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-EXPECTED_ROUTE_COUNT = 103
+EXPECTED_ROUTE_COUNT = 104
 ACCEPTABLE_STATUS = {200, 301, 302, 401, 403, 404}
 
 # 500 PRÉ-EXISTANTS (constatés le 12/09/2026, avant toute modification).
