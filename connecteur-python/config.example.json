@@ -74,5 +74,24 @@
     "login_password": "CHANGE-THIS",
     "session_max_age_hours": 24
   },
+  "print_hijack": {
+    "enabled": false,
+    "printer_name": "YOUR_PRINTER_NAME",
+    "sumatra_path": "C:/Users/YOUR_USER/AppData/Local/SumatraPDF/SumatraPDF.exe",
+    "watch_dir": "data/WATCH/IN",
+    "out_dir": "data/WATCH/OUT",
+    "done_dir": "data/WATCH/DONE",
+    "quarantine_dir": "data/WATCH/QUARANTINE",
+    "stable_delay_s": 2,
+    "stable_retries": 5,
+    "poll_interval_s": 5,
+    "dedup_window_min": 10,
+    "max_pages": 50,
+    "max_size_mb": 20,
+    "wait_for_certification": true,
+    "certif_timeout_min": 15,
+    "on_uncertified": "watermark",
+    "dry_run": false
+  },
   "log_level": "info"
 }

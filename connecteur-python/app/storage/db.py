@@ -445,6 +445,14 @@ def _migrate():
                 CREATE INDEX IF NOT EXISTS idx_processed_pdf_prints_numero
                 ON processed_pdf_prints(numero, printed_at)
             """)
+            # Colonnes certification (ajout non destructif sur bases existantes).
+            for col in ("sfec_statut", "sfec_num_certif", "first_seen_at"):
+                try:
+                    cur.execute(
+                        "ALTER TABLE processed_pdf_prints ADD COLUMN {} TEXT DEFAULT ''".format(col)
+                    )
+                except Exception:
+                    pass  # colonne deja presente
         except Exception as e:
             logger.warning("Migration: table processed_pdf_prints - %s", e)
 

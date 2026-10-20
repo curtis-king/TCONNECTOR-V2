@@ -140,9 +140,9 @@ def test_contact_doublon_niu_rejete(client, csrf_token):
     r1 = _post(client, "/api/contacts", {
         "code": PREFIX + "C1", "nom": "Contact Test 1", "niu": niu,
     }, csrf_token)
-    # Bug pré-existant de la route : 400 « local variable 'code' ... » au lieu
-    # de 200, MAIS l'INSERT est commité (voir docstring du module).
-    assert r1.status_code in (200, 400), r1.get_json()
+    # La route renvoie desormais 201 CREATED (l'ancien bug 400 a ete corrige) ;
+    # on accepte aussi 200/400 pour rester tolerant selon les versions.
+    assert r1.status_code in (200, 201, 400), r1.get_json()
 
     r2 = _post(client, "/api/contacts", {
         "code": PREFIX + "C2", "nom": "Contact Test 2", "niu": niu,

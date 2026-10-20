@@ -541,7 +541,23 @@ def _invoice_footer_painter(company, width):
     return band_h + 4*mm, paint
 
 
-def generate_invoice_pdf(invoice, output_path=None):
+def _draw_non_conforme_watermark(canv, doc):
+    """Filigrane diagonal pour une copie non certifiee SFEC."""
+    try:
+        canv.saveState()
+        canv.setFillColorRGB(0.85, 0.1, 0.1, alpha=0.18)
+        canv.translate(doc.pagesize[0] / 2.0, doc.pagesize[1] / 2.0)
+        canv.rotate(35)
+        canv.setFont("Helvetica-Bold", 44)
+        canv.drawCentredString(0, 10, "COPIE NON CERTIFIEE")
+        canv.setFont("Helvetica-Bold", 16)
+        canv.drawCentredString(0, -20, "NON CONFORME")
+        canv.restoreState()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Filigrane non conforme impossible: %s", e)
+
+
+def generate_invoice_pdf(invoice, output_path=None, non_conforme=False):
     """Facture A4 au format du modele Sage "Facture cpta".
 
     En-tete logo / code-barres + titre + bandeau Numero-Date-Compte-Reference
@@ -884,8 +900,12 @@ def generate_invoice_pdf(invoice, output_path=None):
     if invoice.get("notes"):
         elements.append(Paragraph("<b>Notes :</b> {}".format(esc(invoice["notes"])), st["cgv"]))
 
-    if footer_paint:
-        doc.build(elements, onFirstPage=footer_paint, onLaterPages=footer_paint)
+    on_page = [f for f in (footer_paint, _draw_non_conforme_watermark if non_conforme else None) if f]
+    if on_page:
+        def _paint_page(canv, d):
+            for paint in on_page:
+                paint(canv, d)
+        doc.build(elements, onFirstPage=_paint_page, onLaterPages=_paint_page)
     else:
         doc.build(elements)
 
