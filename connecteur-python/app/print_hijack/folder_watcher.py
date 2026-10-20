@@ -5,11 +5,22 @@ import queue
 import shutil
 import threading
 import time
+from datetime import datetime
 
 from app.print_hijack import auto_printer, job_mapper
 from app.domain.pdf import generate_invoice_pdf
 
 logger = logging.getLogger("t-connector.print_hijack.watcher")
+
+
+def _age_minutes(first_seen):
+    if not first_seen:
+        return 0.0
+    try:
+        dt = datetime.strptime(first_seen, "%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        return 0.0
+    return max((datetime.utcnow() - dt).total_seconds() / 60.0, 0.0)
 
 
 def _count_pages(path):
@@ -172,24 +183,54 @@ class FolderWatcher:
             logger.warning("Deplacement de %s vers %s impossible: %s", src, dest_dir, e)
             return None
 
+    def _certification_decision(self, invoice, rec):
+        """Retourne (status, non_conforme, raison) selon le statut SFEC."""
+        statut = (invoice.get("sfec_statut") or "").upper()
+        valide = invoice.get("valide", 0) == 1
+
+        if statut in ("CERTIFIE", "DEJA_CERTIFIE"):
+            return "IMPRIME", False, ""
+        if not valide:
+            return "REFUS", False, "Facture non validee (validez en A COMPTABILISER)"
+
+        wait = bool(self.cfg.get("wait_for_certification", True))
+        if wait and statut in ("", "EN_COURS", "A_SURVEILLER"):
+            first_seen = ""
+            if rec is not None:
+                try:
+                    first_seen = rec["first_seen_at"]
+                except (KeyError, IndexError):
+                    first_seen = ""
+            age = _age_minutes(first_seen)
+            timeout = int(self.cfg.get("certif_timeout_min", 15) or 15)
+            if age < timeout:
+                return "ATTENTE_CERTIF", False, ""
+            return ("NON_CONFORME", True,
+                    "Timeout certification ({} min, statut={})".format(timeout, statut or "vide"))
+
+        if str(self.cfg.get("on_uncertified", "watermark")).lower() == "quarantine":
+            return "QUARANTINE", False, "Non certifie (statut={})".format(statut or "vide")
+        return "NON_CONFORME", True, "Non certifie (statut={})".format(statut or "vide")
+
     def _process(self, path):
+        name = os.path.basename(path)
         if not os.path.exists(path):
             return
         if not self._wait_stable(path):
-            logger.warning("Fichier non stabilise (verrouille ?) - retry au prochain scan: %s", path)
+            logger.warning("[WATCH] Fichier non stabilise (verrouille ?) - retry: %s", name)
             return
 
         size_mb = os.path.getsize(path) / (1024 * 1024)
         if size_mb > self.cfg["max_size_mb"]:
-            logger.warning("PDF trop volumineux (%.1f Mo > %d Mo) -> QUARANTAINE: %s",
-                           size_mb, self.cfg["max_size_mb"], path)
+            logger.warning("[WATCH] PDF trop volumineux (%.1f Mo > %d Mo) -> QUARANTINE: %s",
+                           size_mb, self.cfg["max_size_mb"], name)
             self._move(path, self.quarantine_dir)
             return
 
         pages = _count_pages(path)
         if pages is not None and pages > self.cfg["max_pages"]:
-            logger.warning("PDF trop de pages (%d > %d) -> QUARANTAINE: %s",
-                           pages, self.cfg["max_pages"], path)
+            logger.warning("[WATCH] PDF trop de pages (%d > %d) -> QUARANTINE: %s",
+                           pages, self.cfg["max_pages"], name)
             self._move(path, self.quarantine_dir)
             return
 
@@ -198,55 +239,87 @@ class FolderWatcher:
             return
 
         rec = auto_printer.get_print_record(file_hash)
-        if rec and rec["status"] in ("IMPRIME", "EN_COURS"):
-            logger.info("Fichier deja traite (hash %s, statut %s) - SKIP: %s",
-                        file_hash[:12], rec["status"], os.path.basename(path))
+        if rec and rec["status"] == "IMPRIME":
+            logger.info("[WATCH] Deja imprime (hash %s) - SKIP -> DONE: %s",
+                        file_hash[:12], name)
             self._move(path, self.done_dir)
             return
+        if rec and rec["status"] == "EN_COURS":
+            logger.warning("[WATCH] Impression interrompue (EN_COURS) - nouvelle tentative: %s", name)
+        elif rec is None:
+            logger.info("[WATCH] Nouveau PDF detecte: %s", name)
 
         invoice, reason = job_mapper.map_pdf_to_invoice(path)
         if not invoice:
-            logger.warning("Facture non identifiee (%s) -> QUARANTAINE: %s", reason, path)
+            logger.warning("[WATCH] Facture non identifiee (%s) -> QUARANTINE: %s", reason, name)
             auto_printer.record_print(file_hash, "", path, "", self.cfg["printer_name"],
-                                      "QUARANTAINE", reason)
+                                      "QUARANTINE", reason)
             self._move(path, self.quarantine_dir)
             return
 
         numero = invoice.get("numero", "")
+        sfec_statut = (invoice.get("sfec_statut") or "").upper()
+        sfec_num = invoice.get("sfec_num_certif") or ""
+        logger.info("[WATCH] Facture identifiee: %s (statut SFEC=%s)",
+                    numero, sfec_statut or "vide")
+
         if auto_printer.numero_printed_recently(numero, self.cfg["dedup_window_min"]):
-            logger.info("Facture %s imprimee recemment (< %d min) - SKIP: %s",
-                        numero, self.cfg["dedup_window_min"], os.path.basename(path))
+            logger.info("[WATCH] Facture %s imprimee recemment (< %d min) - SKIP_DEDUP: %s",
+                        numero, self.cfg["dedup_window_min"], name)
             auto_printer.record_print(file_hash, numero, path, "", self.cfg["printer_name"],
-                                      "SKIP_DEDUP", "doublon fenetre dedup")
+                                      "SKIP_DEDUP", "doublon fenetre dedup",
+                                      sfec_statut, sfec_num)
             self._move(path, self.done_dir)
             return
 
-        auto_printer.record_print(file_hash, numero, path, "", self.cfg["printer_name"],
-                                  "EN_COURS", "")
+        status, non_conforme, reason = self._certification_decision(invoice, rec)
 
-        out_name = "{}_CONFORME_{}.pdf".format(numero or "DOC",
-                                               auto_printer.timestamp_tag())
-        out_path = os.path.join(self.out_dir, out_name)
-        result = generate_invoice_pdf(invoice, out_path)
-        if not result or not os.path.exists(out_path):
-            logger.error("Generation du PDF conforme echouee pour %s", numero)
-            auto_printer.record_print(file_hash, numero, path, out_path,
-                                      self.cfg["printer_name"], "ERREUR",
-                                      "generation PDF conforme echouee")
+        if status == "ATTENTE_CERTIF":
+            auto_printer.record_print(file_hash, numero, path, "", self.cfg["printer_name"],
+                                      "ATTENTE_CERTIF", "statut SFEC=" + (sfec_statut or "vide"),
+                                      sfec_statut, sfec_num)
+            logger.info("[WATCH] Certif en attente (statut=%s) - fichier conserve dans IN: %s",
+                        sfec_statut or "vide", name)
+            return
+
+        if status in ("REFUS", "QUARANTINE"):
+            logger.error("[WATCH] ETAT=%s numero=%s: %s -> QUARANTINE", status, numero, reason)
+            auto_printer.record_print(file_hash, numero, path, "", self.cfg["printer_name"],
+                                      status, reason, sfec_statut, sfec_num)
             self._move(path, self.quarantine_dir)
             return
 
+        auto_printer.record_print(file_hash, numero, path, "", self.cfg["printer_name"],
+                                  "EN_COURS", "", sfec_statut, sfec_num)
+
+        tag = "CONFORME" if status == "IMPRIME" else "NON_CONFORME"
+        out_name = "{}_{}_{}.pdf".format(numero or "DOC", tag, auto_printer.timestamp_tag())
+        out_path = os.path.join(self.out_dir, out_name)
+        logger.info("[WATCH] Generation du PDF %s -> %s", tag, out_name)
+        result = generate_invoice_pdf(invoice, out_path, non_conforme=non_conforme)
+        if not result or not os.path.exists(out_path):
+            logger.error("[WATCH] ETAT=ERREUR generation PDF echouee pour %s", numero)
+            auto_printer.record_print(file_hash, numero, path, out_path,
+                                      self.cfg["printer_name"], "ERREUR",
+                                      "generation PDF echouee", sfec_statut, sfec_num)
+            self._move(path, self.quarantine_dir)
+            return
+
+        logger.info("[WATCH] Impression en cours sur '%s'...", self.cfg["printer_name"])
         ok, err = auto_printer.print_pdf(
             out_path, self.cfg["printer_name"], self.cfg["sumatra_path"],
             dry_run=self.cfg["dry_run"])
         if not ok:
-            logger.error("Impression echouee pour %s: %s (original conserve pour retry)", numero, err)
+            logger.error("[WATCH] ETAT=ERREUR_IMPRESSION numero=%s: %s (original conserve)",
+                         numero, err)
             auto_printer.record_print(file_hash, numero, path, out_path,
-                                      self.cfg["printer_name"], "ERREUR_IMPRESSION", err)
+                                      self.cfg["printer_name"], "ERREUR_IMPRESSION", err,
+                                      sfec_statut, sfec_num)
             return
 
         auto_printer.record_print(file_hash, numero, path, out_path,
-                                  self.cfg["printer_name"], "IMPRIME", "")
+                                  self.cfg["printer_name"], status, "",
+                                  sfec_statut, sfec_num)
         self._move(path, self.done_dir)
-        logger.info("Facture %s : conforme generee (%s) et imprimee sur '%s'",
-                    numero, out_name, self.cfg["printer_name"] or "(dry_run)")
+        logger.info("[WATCH] ETAT=%s numero=%s out=%s imprimante='%s'",
+                    status, numero, out_name, self.cfg["printer_name"] or "(dry_run)")

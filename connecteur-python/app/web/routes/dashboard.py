@@ -8,7 +8,11 @@ un import direct de app.web.auth.security (aucun import circulaire : la
 sécurité ne dépend d'aucun module de routes).
 """
 
+import calendar
 import functools
+import os
+import time
+
 from app.core.utils import fmt_money
 from flask import Blueprint, jsonify, render_template, request
 from app.config.manager import get_config
@@ -274,6 +278,65 @@ def sales_page():
         count=result.get("total", 0), rows=ticket_rows,
         vendeur_opts=vendeur_options
     ))
+
+
+@bp.route("/print", methods=["GET"])
+@_login_required
+def impressions_page():
+    from app.print_hijack.auto_printer import list_print_records
+
+    def _local(ts):
+        if not ts:
+            return "-"
+        try:
+            epoch = calendar.timegm(time.strptime(ts, "%Y-%m-%d %H:%M:%S"))
+            return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(epoch))
+        except (ValueError, TypeError):
+            return ts
+
+    badge = {
+        "IMPRIME": ("badge-ok", "Imprime"),
+        "EN_COURS": ("badge-warn", "En cours"),
+        "ATTENTE_CERTIF": ("badge-warn", "Attente certif"),
+        "NON_CONFORME": ("badge-warn", "Non conforme"),
+        "SKIP_DEDUP": ("badge-info", "Doublon"),
+        "QUARANTINE": ("badge-err", "Quarantaine"),
+        "REFUS": ("badge-err", "Refuse"),
+        "ERREUR": ("badge-err", "Erreur"),
+        "ERREUR_IMPRESSION": ("badge-err", "Erreur impression"),
+    }
+    sfec_badge = {
+        "CERTIFIE": ("badge-ok", "Certifie"),
+        "DEJA_CERTIFIE": ("badge-ok", "Deja certifie"),
+        "EN_COURS": ("badge-warn", "En cours"),
+        "ERREUR": ("badge-err", "Erreur"),
+        "A_SURVEILLER": ("badge-info", "A surveiller"),
+    }
+
+    records = list_print_records(limit=200)
+    rows = ""
+    for r in records:
+        st = (r["status"] or "").upper()
+        cls, txt = badge.get(st, ("badge-info", st or "-"))
+        ss = (r["sfec_statut"] or "").upper()
+        scls, stxt = sfec_badge.get(ss, ("badge-info", ss or "-"))
+        out_path = r["out_path"] or ""
+        out_name = os.path.basename(out_path) if out_path else "-"
+        err = (r["error"] or "").strip()
+        out_cell = "<span title='{}'>{}</span>".format(_esc(out_path), _esc(out_name)) if out_path else "-"
+        rows += ("<tr><td>{}</td><td>{}</td>"
+                 "<td><span class='badge {}'>{}</span></td>"
+                 "<td><span class='badge {}'>{}</span></td>"
+                 "<td>{}</td><td>{}</td><td>{}</td></tr>").format(
+            _esc(_local(r["printed_at"])), _esc(r["numero"] or "-"),
+            cls, _esc(txt), scls, _esc(stxt),
+            _esc(r["sfec_num_certif"] or "-"), _esc(r["printer"] or "-"),
+            out_cell if not err else out_cell + " <span class='badge badge-err' title='{}'>!</span>".format(_esc(err)),
+        )
+    empty = ('<tr><td colspan="7" style="text-align:center;color:#64748b">'
+             'Aucune impression</td></tr>') if not rows else ""
+    return _page(render_template("dashboard/impressions.html",
+                                 count=len(records), rows=rows, empty=empty))
 
 
 @bp.route("/health", methods=["GET"])

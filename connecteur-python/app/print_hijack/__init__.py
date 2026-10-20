@@ -23,6 +23,7 @@ _lock = threading.Lock()
 
 
 def _setup_file_log():
+    logger.setLevel(logging.INFO)
     if getattr(logger, "_tc_configured", False):
         return
     try:
@@ -62,6 +63,9 @@ def get_print_hijack_config():
         "dedup_window_min": int(cfg.get("dedup_window_min", 10) or 10),
         "max_pages": int(cfg.get("max_pages", 50) or 50),
         "max_size_mb": int(cfg.get("max_size_mb", 20) or 20),
+        "wait_for_certification": bool(cfg.get("wait_for_certification", True)),
+        "certif_timeout_min": int(cfg.get("certif_timeout_min", 15) or 15),
+        "on_uncertified": str(cfg.get("on_uncertified", "watermark") or "watermark"),
         "dry_run": bool(cfg.get("dry_run", False)),
     }
 
@@ -80,8 +84,11 @@ def start_print_hijack():
         from app.print_hijack.folder_watcher import FolderWatcher
         _watcher = FolderWatcher(cfg)
         _watcher.start()
-        logger.info("Watcher PDF demarre (IN=%s, imprimante='%s', dry_run=%s)",
-                    cfg["watch_dir"], cfg["printer_name"], cfg["dry_run"])
+        logger.info("[WATCH] Surveillance active: IN=%s, imprimante='%s', wait_certif=%s, "
+                    "timeout=%d min, dedup=%d min, dry_run=%s",
+                    cfg["watch_dir"], cfg["printer_name"],
+                    cfg["wait_for_certification"], cfg["certif_timeout_min"],
+                    cfg["dedup_window_min"], cfg["dry_run"])
         return _watcher
 
 
@@ -94,6 +101,7 @@ def stop_print_hijack():
             except Exception as e:  # noqa: BLE001
                 logger.warning("Arret watcher PDF: %s", e)
             _watcher = None
+            logger.info("[WATCH] Watcher arrete")
 
 
 def get_watcher():

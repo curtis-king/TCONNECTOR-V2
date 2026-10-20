@@ -161,7 +161,23 @@ def _decode_qr_image(data):
         logger.warning("QR SFEC non decodable en image: %s", e)
         return None
 
-def generate_invoice_pdf(invoice, output_path=None):
+def _draw_non_conforme_watermark(canv, doc):
+    """Filigrane diagonal pour une copie non certifiee SFEC."""
+    try:
+        canv.saveState()
+        canv.setFillColorRGB(0.85, 0.1, 0.1, alpha=0.18)
+        canv.translate(doc.pagesize[0] / 2.0, doc.pagesize[1] / 2.0)
+        canv.rotate(35)
+        canv.setFont("Helvetica-Bold", 44)
+        canv.drawCentredString(0, 10, "COPIE NON CERTIFIEE")
+        canv.setFont("Helvetica-Bold", 16)
+        canv.drawCentredString(0, -20, "NON CONFORME")
+        canv.restoreState()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Filigrane non conforme impossible: %s", e)
+
+
+def generate_invoice_pdf(invoice, output_path=None, non_conforme=False):
     if not HAS_REPORTLAB:
         logger.error("reportlab non disponible")
         return None
@@ -380,7 +396,11 @@ def generate_invoice_pdf(invoice, output_path=None):
         elements.append(Spacer(1, 2*mm))
         elements.append(Paragraph(footer_text, styles["SubTitle"]))
 
-    doc.build(elements)
+    if non_conforme:
+        doc.build(elements, onFirstPage=_draw_non_conforme_watermark,
+                  onLaterPages=_draw_non_conforme_watermark)
+    else:
+        doc.build(elements)
 
     if output_path:
         return output_path

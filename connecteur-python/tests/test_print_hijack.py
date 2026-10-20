@@ -42,7 +42,9 @@ def test_candidates_from_text():
 def test_config_resolution_defaults():
     cfg = get_print_hijack_config()
     assert set(("watch_dir", "out_dir", "done_dir", "quarantine_dir",
-                "printer_name", "dry_run")).issubset(cfg.keys())
+                "printer_name", "dry_run",
+                "wait_for_certification", "certif_timeout_min",
+                "on_uncertified")).issubset(cfg.keys())
 
 
 def test_print_pdf_dry_run():
@@ -91,6 +93,8 @@ def test_watcher_end_to_end_dry_run(tmp_path):
         "printer_name": "Imprimante-Test", "sumatra_path": "",
         "stable_delay_s": 0.5, "stable_retries": 3, "poll_interval_s": 1,
         "dedup_window_min": 0, "max_pages": 50, "max_size_mb": 20,
+        "wait_for_certification": True, "certif_timeout_min": 15,
+        "on_uncertified": "watermark",
         "dry_run": True,
     }
     for d in (watch, out, done, quarantine):
@@ -99,6 +103,12 @@ def test_watcher_end_to_end_dry_run(tmp_path):
     src_pdf = os.path.join(os.path.dirname(__file__), "..", "test_invoice.pdf")
     src_pdf = os.path.abspath(src_pdf)
     assert os.path.exists(src_pdf), src_pdf
+
+    # Isole le run : purge l'éventuelle trace du même fichier (dédup par hash),
+    # sinon le watcher le considère déjà imprimé et ne génère rien.
+    src_hash = auto_printer.compute_sha256(src_pdf)
+    with get_cursor() as cur:
+        cur.execute("DELETE FROM processed_pdf_prints WHERE file_hash = ?", (src_hash,))
 
     watcher = FolderWatcher(cfg)
     watcher.start()
@@ -121,3 +131,82 @@ def test_watcher_end_to_end_dry_run(tmp_path):
         assert any(done.glob("*.pdf")), "original non archive dans DONE"
     finally:
         watcher.stop()
+
+
+# ── Certification (politique sfec_statut) ────────────────────────────────────
+def _watcher_for_cert(tmp_path, **overrides):
+    from app.print_hijack.folder_watcher import FolderWatcher
+
+    base = {
+        "enabled": True,
+        "watch_dir": str(tmp_path / "IN"), "out_dir": str(tmp_path / "OUT"),
+        "done_dir": str(tmp_path / "DONE"), "quarantine_dir": str(tmp_path / "Q"),
+        "printer_name": "", "sumatra_path": "",
+        "stable_delay_s": 0.5, "stable_retries": 1, "poll_interval_s": 1,
+        "dedup_window_min": 0, "max_pages": 50, "max_size_mb": 20,
+        "wait_for_certification": True, "certif_timeout_min": 15,
+        "on_uncertified": "watermark", "dry_run": True,
+    }
+    base.update(overrides)
+    for key in ("watch_dir", "out_dir", "done_dir", "quarantine_dir"):
+        os.makedirs(base[key], exist_ok=True)
+    return FolderWatcher(base)
+
+
+def test_certification_decision_matrix(tmp_path):
+    w = _watcher_for_cert(tmp_path)
+
+    # Certifiee -> impression immediate (meme si valide=0)
+    assert w._certification_decision({"sfec_statut": "CERTIFIE", "valide": 0}, None)[0] == "IMPRIME"
+    assert w._certification_decision({"sfec_statut": "DEJA_CERTIFIE", "valide": 0}, None)[0] == "IMPRIME"
+
+    # Non validee -> refus
+    assert w._certification_decision({"sfec_statut": "", "valide": 0}, None)[0] == "REFUS"
+
+    # En attente (EN_COURS / vide) mais validee -> ATTENTE_CERTIF
+    assert w._certification_decision({"sfec_statut": "", "valide": 1}, None)[0] == "ATTENTE_CERTIF"
+    assert w._certification_decision({"sfec_statut": "EN_COURS", "valide": 1}, None)[0] == "ATTENTE_CERTIF"
+
+    # Timeout depasse -> NON CONFORME (avec filigrane)
+    rec = {"first_seen_at": "2000-01-01 00:00:00"}
+    status, non_conforme, _ = w._certification_decision({"sfec_statut": "", "valide": 1}, rec)
+    assert status == "NON_CONFORME" and non_conforme is True
+
+
+def test_certification_decision_quarantine_policy(tmp_path):
+    w = _watcher_for_cert(tmp_path, on_uncertified="quarantine")
+    status, non_conforme, _ = w._certification_decision({"sfec_statut": "ERREUR", "valide": 1}, None)
+    assert status == "QUARANTINE" and non_conforme is False
+
+
+def test_record_and_list_print_records(tmp_path):
+    f = tmp_path / "doc.pdf"
+    f.write_bytes(b"%PDF-1.4 test")
+    h = auto_printer.compute_sha256(str(f))
+    auto_printer.record_print(h, "FA00099", str(f), "out.pdf", "Imp-T", "IMPRIME",
+                              sfec_statut="CERTIFIE", sfec_num_certif="CERT123")
+    rows = [r for r in auto_printer.list_print_records(limit=500) if r["file_hash"] == h]
+    assert rows, "ligne non enregistree"
+    assert rows[0]["status"] == "IMPRIME"
+    assert rows[0]["sfec_statut"] == "CERTIFIE"
+    assert rows[0]["sfec_num_certif"] == "CERT123"
+
+
+def test_generate_invoice_pdf_non_conforme(tmp_path):
+    from app.domain.invoices import get_invoice_by_numero
+    from app.domain.pdf import generate_invoice_pdf
+
+    inv = get_invoice_by_numero("FA00010") or get_invoice_by_numero("FA000001")
+    if not inv:
+        pytest.skip("Aucune facture de reference en base")
+    out = str(tmp_path / "nc.pdf")
+    res = generate_invoice_pdf(inv, out, non_conforme=True)
+    assert res and os.path.exists(out) and os.path.getsize(out) > 0
+
+
+def test_impressions_page_authenticated(client):
+    resp = client.get("/print")
+    assert resp.status_code == 200, resp.status_code
+    body = resp.get_data(as_text=True)
+    assert "Impressions" in body
+    assert "Etat impression" in body
