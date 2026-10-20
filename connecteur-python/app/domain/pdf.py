@@ -579,7 +579,29 @@ def _draw_non_conforme_watermark(canv, doc):
         logger.warning("Filigrane non conforme impossible: %s", e)
 
 
-def generate_invoice_pdf(invoice, output_path=None, non_conforme=False):
+def _copy_mention_painter(mention):
+    """Mention "Original" / "Duplicata" en diagonale, en contour gris, entre
+    le logo et le code-barres (comme sur la facture Sage d'origine)."""
+    def paint(canv, doc):
+        try:
+            canv.saveState()
+            canv.translate(101*mm, doc.pagesize[1] - 20*mm)
+            canv.rotate(50)
+            text = canv.beginText()
+            text.setTextRenderMode(1)  # contour seul
+            text.setFont("Helvetica", 26)
+            canv.setStrokeColor(colors.Color(0.55, 0.55, 0.55))
+            canv.setLineWidth(0.6)
+            text.setTextOrigin(-canv.stringWidth(mention, "Helvetica", 26) / 2.0, 0)
+            text.textOut(mention)
+            canv.drawText(text)
+            canv.restoreState()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Mention %s impossible: %s", mention, e)
+    return paint
+
+
+def generate_invoice_pdf(invoice, output_path=None, non_conforme=False, mention=""):
     """Facture A4 au format du modele Sage "Facture cpta".
 
     En-tete logo / code-barres + titre + bandeau Numero-Date-Compte-Reference
@@ -587,6 +609,8 @@ def generate_invoice_pdf(invoice, output_path=None, non_conforme=False):
     fiscal (codes 1/202/203) + recapitulatif NET A PAYER ; montant en
     lettres, parite euro, conditions de reglement ; cases de signature ;
     CGV ; bandeau societe en pied de page.
+
+    mention : "Original" ou "Duplicata" (voir app.domain.print_copies).
     """
     if not HAS_REPORTLAB:
         logger.error("reportlab non disponible")
@@ -612,7 +636,7 @@ def generate_invoice_pdf(invoice, output_path=None, non_conforme=False):
     # ---- En-tete : logo (gauche) / code-barres, titre, bandeau, client (droite)
     left_cell = []
     logo_path = company_image_path(company, "logo_file_name")
-    logo = _fit_image(logo_path, 80*mm, 32*mm) if logo_path else None
+    logo = _fit_image(logo_path, 70*mm, 30*mm) if logo_path else None
     if logo is not None:
         logo.hAlign = "LEFT"
         left_cell.append(logo)
@@ -922,7 +946,9 @@ def generate_invoice_pdf(invoice, output_path=None, non_conforme=False):
     if invoice.get("notes"):
         elements.append(Paragraph("<b>Notes :</b> {}".format(esc(invoice["notes"])), st["cgv"]))
 
-    on_page = [f for f in (footer_paint, _draw_non_conforme_watermark if non_conforme else None) if f]
+    on_page = [f for f in (footer_paint,
+                           _draw_non_conforme_watermark if non_conforme else None,
+                           _copy_mention_painter(mention) if mention else None) if f]
     if on_page:
         def _paint_page(canv, d):
             for paint in on_page:

@@ -314,9 +314,16 @@ def api_invoice_pdf(invoice_id):
         return jsonify({"error": "reportlab non installe - pip install reportlab"}), 500
 
     try:
-        pdf_bytes = pdf_generator.generate_invoice_pdf(inv)
+        # Facture certifiee : 1er exemplaire "Original", les suivants "Duplicata"
+        mention = ""
+        if inv.get("sfec_num_certif"):
+            from app.domain import print_copies
+            mention = print_copies.next_mention(inv.get("numero", ""))
+        pdf_bytes = pdf_generator.generate_invoice_pdf(inv, mention=mention)
         if not pdf_bytes:
             return jsonify({"error": "Erreur generation PDF"}), 500
+        if mention:
+            print_copies.register_print(inv.get("numero", ""), "pdf")
 
         from flask import send_file
         buf = __import__("io").BytesIO(pdf_bytes)
