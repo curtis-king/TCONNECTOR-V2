@@ -18,6 +18,7 @@ from flask import Blueprint, jsonify, render_template, request
 from app.config.manager import get_config
 from app.domain import invoices as invoice_engine
 from app.domain import pos as pos_engine
+from app.domain import print_copies
 from app.domain.pdf import (
     CGV_TEXT,
     CGR_TEXT,
@@ -46,7 +47,7 @@ from app.integration.sfec.endpoints import check_health
 from app.sync.connectivity import get_status
 from app.sync.engine import get_cache, get_metrics, get_retry_queue
 from app.web.common import _esc, _page
-from app.web.auth.security import _login_required, logger
+from app.web.auth.security import _get_csrf_token, _login_required, logger
 
 
 bp = Blueprint('dashboard', __name__)
@@ -244,6 +245,17 @@ def _print_local_lines(numero, type_doc="vente"):
             numero, type_doc,
             local.get("sage_domaine"), local.get("sage_type"))
     return local, lignes
+
+
+@bp.route("/api/invoices/print-log", methods=["POST"])
+@_login_required
+def api_invoice_print_log():
+    """Enregistre une impression navigateur ; renvoie la mention de la suivante."""
+    numero = ((request.get_json(silent=True) or {}).get("numero") or "").strip()
+    if not numero:
+        return jsonify({"error": "numero manquant"}), 400
+    printed = print_copies.register_print(numero, "navigateur")
+    return jsonify({"printed": printed, "next": print_copies.next_mention(numero)})
 
 
 @bp.route("/certified/<invoice_id>/print", methods=["GET"])
@@ -446,6 +458,8 @@ def print_certified(invoice_id):
         payment_mode=payment_label(inv.get("payment_method")
                                    or (local or {}).get("payment_method", "")),
         cgv_lines=cgv_lines,
+        mention=print_copies.next_mention(numero),
+        csrf_token=_get_csrf_token(),
         footer=footer,
         footer_logo_src=image_data_uri(footer["logo_path"]) if footer else "",
     )

@@ -315,11 +315,20 @@ def barcode_svg(value):
     return svg[start:] if start >= 0 else ""
 
 
-def company_image_path(company, key):
-    """Chemin d'une image de la config societe (logo, bandeau de pied), si present.
+# Logos livres avec l'application (suivis par Git) : app/web/static/branding/
+BRANDING_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web", "static", "branding")
+_DEFAULT_IMAGES = {
+    "logo_file_name": "logo.png",   # logo d'en-tete (facture + ticket)
+    "footer_logo": "yeshi.png",     # logo du groupe dans le bandeau de bas de facture
+}
 
-    Un chemin relatif (ex. "data/branding/logo.png") part du dossier de
-    l'application, pour fonctionner aussi en version .exe.
+
+def company_image_path(company, key):
+    """Chemin d'une image societe (logo d'en-tete, logo du bandeau de pied).
+
+    Le chemin de config.json est prioritaire (relatif = depuis le dossier de
+    l'application) ; sinon on prend le fichier par defaut de BRANDING_DIR.
     """
     path = (company.get(key) or "").strip()
     if path and not os.path.isabs(path):
@@ -329,7 +338,10 @@ def company_image_path(company, key):
             os.path.join(base_dir(), "app", "web", "static", os.path.basename(path)),
         ]
         path = next((c for c in candidates if os.path.exists(c)), candidates[0])
-    return path if path and os.path.exists(path) else ""
+    if path and os.path.exists(path):
+        return path
+    default = os.path.join(BRANDING_DIR, _DEFAULT_IMAGES.get(key, ""))
+    return default if _DEFAULT_IMAGES.get(key) and os.path.exists(default) else ""
 
 
 def image_data_uri(path):
@@ -442,34 +454,44 @@ def _footer_markup(text):
     return "".join("<b>{}</b>".format(p) if i % 2 else p for i, p in enumerate(parts))
 
 
+# Texte du bandeau de bas de facture (fixe, repris de la facture d'origine).
+# '**...**' = gras.
+FOOTER_SLOGAN = "DONNONS AUX HOMMES DES SOLUTIONS POUR BÂTIR L'AVENIR"
+FOOTER_SITES = (
+    {"name": "Pointe noire",
+     "phone": "(+242) 05 057 69 57",
+     "email": "commercial-cng@bernabeafrique.com",
+     "address": "Avenue Marien Ngouabi KM4, BP 1105",
+     "website": "www.bernabeafrique.com"},
+    {"name": "Brazzaville",
+     "phone": "(+242) 05 695 39 94 / 05 539 60 46",
+     "email": "ali.ibrahim@alucongo.com",
+     "address": "2 TER.AV. de la BASE, BATIGNOLLES 12, Avenue de l'OUA"},
+)
+FOOTER_LEGAL = (
+    "**Alucongo bernabe**, S.A. avec conseil d'administration au capital de : 670 560 000 XAF",
+    "**-NIU :** M21000000170449Z",
+    "**RCCM :** CG-PNR-01-1959-B14-00008   **Régime d'imposition :** Réel normal / UGE PNR",
+)
+FOOTER_BANKS = (
+    "Banque Postale : 30019 01000 10819 350005 - Clé 81",
+    "BGFI Bank : 30008 03200 41003 469011 - Clé 90",
+    "BCI : 30013 02000 37107 019111 - Clé 68",
+)
+
+
 def _footer_site(site):
     lines = [{"icon": icon, "text": str(site[key])} for key, icon in _FOOTER_ICONS if site.get(key)]
     return {"name": site.get("name", ""), "lines": lines}
 
 
 def invoice_footer(company):
-    """Bandeau societe du bas de facture (modele : slogan, sites, mentions, logo groupe).
-
-    Config societe : footer_slogan, footer_sites [{name, phone, email, address,
-    website}], footer_legal [lignes, '**gras**'], footer_banks [lignes],
-    footer_logo (chemin). Sans sites ni mentions : champs societe standards.
-    """
-    sites = [_footer_site(s) for s in company.get("footer_sites") or []]
-    legal = [_footer_markup(l) for l in company.get("footer_legal") or []]
-    if not sites and not legal:
-        addr = ", ".join(p for p in (company.get("address", ""), company.get("city", "")) if p)
-        site = _footer_site({"name": company.get("name", ""), "phone": company.get("phone", ""),
-                             "email": company.get("email", ""), "address": addr,
-                             "website": company.get("website", "")})
-        sites = [site] if site["lines"] else []
-        legal = [_xml_escape(l) for l in company_footer_blocks(company)[1]]
-    if not sites and not legal:
-        return None
+    """Bandeau societe du bas de facture : texte fixe (FOOTER_*) + logo du groupe."""
     return {
-        "slogan": company.get("footer_slogan", "") or "",
-        "sites": sites,
-        "legal": legal,
-        "banks": [str(b) for b in company.get("footer_banks") or []],
+        "slogan": FOOTER_SLOGAN,
+        "sites": [_footer_site(s) for s in FOOTER_SITES],
+        "legal": [_footer_markup(l) for l in FOOTER_LEGAL],
+        "banks": list(FOOTER_BANKS),
         "logo_path": company_image_path(company, "footer_logo"),
     }
 
@@ -607,7 +629,29 @@ class _PageShim:
         self.leftMargin = 12*mm
 
 
-def generate_invoice_pdf(invoice, output_path=None, non_conforme=False):
+def _copy_mention_painter(mention):
+    """Mention "Original" / "Duplicata" en diagonale, en contour gris, entre
+    le logo et le code-barres (comme sur la facture Sage d'origine)."""
+    def paint(canv, doc):
+        try:
+            canv.saveState()
+            canv.translate(101*mm, doc.pagesize[1] - 20*mm)
+            canv.rotate(50)
+            text = canv.beginText()
+            text.setTextRenderMode(1)  # contour seul
+            text.setFont("Helvetica", 26)
+            canv.setStrokeColor(colors.Color(0.55, 0.55, 0.55))
+            canv.setLineWidth(0.6)
+            text.setTextOrigin(-canv.stringWidth(mention, "Helvetica", 26) / 2.0, 0)
+            text.textOut(mention)
+            canv.drawText(text)
+            canv.restoreState()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Mention %s impossible: %s", mention, e)
+    return paint
+
+
+def generate_invoice_pdf(invoice, output_path=None, non_conforme=False, mention=""):
     """Facture A4 au format du modele Sage "Facture cpta".
 
     En-tete logo / code-barres + titre + bandeau Numero-Date-Compte-Reference
@@ -615,6 +659,8 @@ def generate_invoice_pdf(invoice, output_path=None, non_conforme=False):
     fiscal (codes 1/202/203) + recapitulatif NET A PAYER ; montant en
     lettres, parite euro, conditions de reglement ; cases de signature ;
     CGV ; bandeau societe en pied de page.
+
+    mention : "Original" ou "Duplicata" (voir app.domain.print_copies).
     """
     if not HAS_REPORTLAB:
         logger.error("reportlab non disponible")
@@ -640,7 +686,7 @@ def generate_invoice_pdf(invoice, output_path=None, non_conforme=False):
     # ---- En-tete : logo (gauche) / code-barres, titre, bandeau, client (droite)
     left_cell = []
     logo_path = company_image_path(company, "logo_file_name")
-    logo = _fit_image(logo_path, 80*mm, 32*mm) if logo_path else None
+    logo = _fit_image(logo_path, 70*mm, 30*mm) if logo_path else None
     if logo is not None:
         logo.hAlign = "LEFT"
         left_cell.append(logo)
@@ -950,7 +996,9 @@ def generate_invoice_pdf(invoice, output_path=None, non_conforme=False):
     if invoice.get("notes"):
         elements.append(Paragraph("<b>Notes :</b> {}".format(esc(invoice["notes"])), st["cgv"]))
 
-    on_page = [f for f in (footer_paint, _draw_non_conforme_watermark if non_conforme else None) if f]
+    on_page = [f for f in (footer_paint,
+                           _draw_non_conforme_watermark if non_conforme else None,
+                           _copy_mention_painter(mention) if mention else None) if f]
     if HAS_REPORTLAB:
         canvas_cls = _make_numbered_canvas(on_page, footer_h)
         doc.build(elements, canvasmaker=canvas_cls)

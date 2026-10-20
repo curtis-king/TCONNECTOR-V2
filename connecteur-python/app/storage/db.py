@@ -331,6 +331,15 @@ SCHEMA = """
             CREATE INDEX IF NOT EXISTS idx_products_barcode_actif ON products(barcode, est_actif);
             CREATE INDEX IF NOT EXISTS idx_products_sage_ar_ref ON products(sage_ar_ref);
             CREATE INDEX IF NOT EXISTS idx_vendeurs_actif_nom ON vendeurs(est_actif, nom);
+
+            CREATE TABLE IF NOT EXISTS invoice_print_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                numero TEXT NOT NULL,
+                canal TEXT DEFAULT '',
+                mention TEXT DEFAULT '',
+                printed_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_invoice_print_log_numero ON invoice_print_log(numero);
                         CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_avoir_unique
                 ON invoices(reference_invoice_id)
                 WHERE type_doc = 'avoir' AND reference_invoice_id <> '';

@@ -8,6 +8,7 @@ import time
 from datetime import datetime
 
 from app.print_hijack import auto_printer, job_mapper, sites as sites_mod
+from app.domain import print_copies
 from app.domain.pdf import generate_invoice_pdf
 
 logger = logging.getLogger("t-connector.print_hijack.watcher")
@@ -342,7 +343,9 @@ class FolderWatcher:
         out_name = "{}_{}_{}.pdf".format(numero or "DOC", tag, auto_printer.timestamp_tag())
         out_path = os.path.join(self.out_dir, out_name)
         logger.info("[WATCH] Generation du PDF %s -> %s", tag, out_name)
-        result = generate_invoice_pdf(invoice, out_path, non_conforme=non_conforme)
+        # Facture certifiee : 1re impression "Original", les suivantes "Duplicata"
+        mention = "" if non_conforme else print_copies.next_mention(numero)
+        result = generate_invoice_pdf(invoice, out_path, non_conforme=non_conforme, mention=mention)
         if not result or not os.path.exists(out_path):
             logger.error("[WATCH] ETAT=ERREUR generation PDF echouee pour %s", numero)
             auto_printer.record_print(file_hash, numero, path, out_path,
@@ -367,6 +370,8 @@ class FolderWatcher:
         auto_printer.record_print(file_hash, numero, path, out_path,
                                   printer, status, "",
                                   sfec_statut, sfec_num)
+        if mention and not self.cfg["dry_run"]:
+            print_copies.register_print(numero, "auto")
         self._move(path, self.done_dir)
         logger.info("[WATCH] ETAT=%s numero=%s out=%s imprimante='%s'",
                     status, numero, out_name, printer or "(dry_run)")
