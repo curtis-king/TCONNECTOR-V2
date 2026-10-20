@@ -22,6 +22,7 @@ try:
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, HRFlowable
     from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
+    from reportlab.pdfgen import canvas as _rl_canvas
     HAS_REPORTLAB = True
 except ImportError:
     HAS_REPORTLAB = False
@@ -323,7 +324,11 @@ def company_image_path(company, key):
     path = (company.get(key) or "").strip()
     if path and not os.path.isabs(path):
         from app.core.paths import base_dir
-        path = os.path.join(base_dir(), path)
+        candidates = [
+            os.path.join(base_dir(), path),
+            os.path.join(base_dir(), "app", "web", "static", os.path.basename(path)),
+        ]
+        path = next((c for c in candidates if os.path.exists(c)), candidates[0])
     return path if path and os.path.exists(path) else ""
 
 
@@ -557,6 +562,51 @@ def _draw_non_conforme_watermark(canv, doc):
         logger.warning("Filigrane non conforme impossible: %s", e)
 
 
+def _make_numbered_canvas(paints, footer_h):
+    """Canvas reportlab qui tamponne "Page x/N" et rejoue les peintures par page."""
+    class _NumberedCanvas(_rl_canvas.Canvas):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._tc_states = []
+
+        def showPage(self):
+            self._tc_states.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self):
+            total = len(self._tc_states)
+            for idx, state in enumerate(self._tc_states, 1):
+                self.__dict__.update(state)
+                shim = _PageShim(self._pagesize)
+                for paint in paints:
+                    try:
+                        paint(self, shim)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("Peinture page %d impossible: %s", idx, e)
+                try:
+                    self.saveState()
+                    self.setFont("Helvetica", 7)
+                    self.setFillColorRGB(0.15, 0.2, 0.3)
+                    self.drawRightString(
+                        self._pagesize[0] - 12*mm - 6,
+                        7*mm + footer_h + 1.5*mm,
+                        "Page {} / {}".format(idx, total))
+                    self.restoreState()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Pagination impossible: %s", e)
+                super().showPage()
+            super().save()
+
+    return _NumberedCanvas
+
+
+class _PageShim:
+    """Mimique l'objet doc de reportlab pour les peintures on-page."""
+    def __init__(self, pagesize):
+        self.pagesize = pagesize
+        self.leftMargin = 12*mm
+
+
 def generate_invoice_pdf(invoice, output_path=None, non_conforme=False):
     """Facture A4 au format du modele Sage "Facture cpta".
 
@@ -673,7 +723,7 @@ def generate_invoice_pdf(invoice, output_path=None, non_conforme=False):
     operateur = invoice_operator(invoice)
     tirage = Table([[
         Paragraph("Opérateur : {}".format(esc(operateur)) if operateur else "", st["small"]),
-        Paragraph("<u>Date de tirage</u> &nbsp;{} &nbsp;&nbsp;&nbsp;&nbsp; Page : &nbsp;1".format(tirage_stamp()),
+        Paragraph("<u>Date de tirage</u> &nbsp;{}".format(tirage_stamp()),
                   st["txt_r"]),
     ]], colWidths=[W / 2.0, W / 2.0])
     tirage.setStyle(TableStyle([
@@ -901,11 +951,9 @@ def generate_invoice_pdf(invoice, output_path=None, non_conforme=False):
         elements.append(Paragraph("<b>Notes :</b> {}".format(esc(invoice["notes"])), st["cgv"]))
 
     on_page = [f for f in (footer_paint, _draw_non_conforme_watermark if non_conforme else None) if f]
-    if on_page:
-        def _paint_page(canv, d):
-            for paint in on_page:
-                paint(canv, d)
-        doc.build(elements, onFirstPage=_paint_page, onLaterPages=_paint_page)
+    if HAS_REPORTLAB:
+        canvas_cls = _make_numbered_canvas(on_page, footer_h)
+        doc.build(elements, canvasmaker=canvas_cls)
     else:
         doc.build(elements)
 

@@ -47,7 +47,9 @@ function fitTicketPage(){
 window.addEventListener('beforeprint', fitTicketPage);
 window.addEventListener('load', function(){
   fitTicketPage();
+  {% if auto_print == "true" %}
   setTimeout(function(){ window.print(); }, 300);
+  {% endif %}
 });
 </script>
 </head><body>

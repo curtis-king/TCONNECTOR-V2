@@ -338,7 +338,14 @@ function validerTicket(){
       clearCart();
       document.getElementById("pos-recu").value=0;
       document.getElementById("pos-client").selectedIndex=0;
-      setTimeout(function(){location.href="/pos/ticket/"+d.id+"/print"},1400);
+      /* Impression silencieuse sur l'imprimante 80 mm du site actif */
+      api("POST","/api/pos/ticket/"+d.id+"/print-silent",{}).then(function(pr){
+        if(pr.success){
+          showToast("Ticket "+d.numero+" imprime sur '"+(pr.printer||"?")+"'","ok");
+        }else{
+          showToast("Impression: "+(pr.error||"echec")+" - apercu dispo dans Historique","warn");
+        }
+      }).catch(function(){showToast("Impression: service indisponible","warn")});
     }else{
       btn.disabled=false;btn.textContent="Valider & imprimer";
       showToast("Erreur : "+d.error,"err");

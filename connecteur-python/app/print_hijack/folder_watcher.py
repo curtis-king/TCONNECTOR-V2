@@ -7,7 +7,7 @@ import threading
 import time
 from datetime import datetime
 
-from app.print_hijack import auto_printer, job_mapper
+from app.print_hijack import auto_printer, job_mapper, sites as sites_mod
 from app.domain.pdf import generate_invoice_pdf
 
 logger = logging.getLogger("t-connector.print_hijack.watcher")
@@ -212,13 +212,44 @@ class FolderWatcher:
             return "QUARANTINE", False, "Non certifie (statut={})".format(statut or "vide")
         return "NON_CONFORME", True, "Non certifie (statut={})".format(statut or "vide")
 
+    def _resolve_target_printer(self):
+        """Retourne (imprimante, site, raison_ko)."""
+        site, reason = sites_mod.resolve_active_site()
+        if site is None:
+            if "aucun site configure" in reason:
+                # Mode legacy : aucune config site -> imprimante globale unique.
+                return self.cfg["printer_name"], None, ""
+            return "", None, reason
+        printer = sites_mod.site_printer(site, "a4")
+        if not printer:
+            return "", site, "site '{}' sans imprimante A4".format(site.get("name"))
+        return printer, site, ""
+
     def _process(self, path):
         name = os.path.basename(path)
         if not os.path.exists(path):
             return
+
+        if sites_mod.is_paused():
+            logger.warning("[WATCH] Impression en PAUSE (kill-switch) - fichier conserve: %s", name)
+            return
+
         if not self._wait_stable(path):
             logger.warning("[WATCH] Fichier non stabilise (verrouille ?) - retry: %s", name)
             return
+
+        printer, site, ko_reason = self._resolve_target_printer()
+        if ko_reason:
+            file_hash = auto_printer.compute_sha256(path) or ""
+            logger.error("[WATCH] Site actif introuvable (%s) -> QUARANTINE: %s", ko_reason, name)
+            if file_hash:
+                auto_printer.record_print(file_hash, "", path, "", "",
+                                          "QUARANTINE", "site: " + ko_reason)
+            self._move(path, self.quarantine_dir)
+            return
+        if site is not None:
+            logger.info("[WATCH] Site actif: %s (imprimante A4='%s')",
+                        site.get("name"), printer)
 
         size_mb = os.path.getsize(path) / (1024 * 1024)
         if size_mb > self.cfg["max_size_mb"]:
@@ -252,7 +283,7 @@ class FolderWatcher:
         invoice, reason = job_mapper.map_pdf_to_invoice(path)
         if not invoice:
             logger.warning("[WATCH] Facture non identifiee (%s) -> QUARANTINE: %s", reason, name)
-            auto_printer.record_print(file_hash, "", path, "", self.cfg["printer_name"],
+            auto_printer.record_print(file_hash, "", path, "", printer,
                                       "QUARANTINE", reason)
             self._move(path, self.quarantine_dir)
             return
@@ -266,7 +297,7 @@ class FolderWatcher:
         if auto_printer.numero_printed_recently(numero, self.cfg["dedup_window_min"]):
             logger.info("[WATCH] Facture %s imprimee recemment (< %d min) - SKIP_DEDUP: %s",
                         numero, self.cfg["dedup_window_min"], name)
-            auto_printer.record_print(file_hash, numero, path, "", self.cfg["printer_name"],
+            auto_printer.record_print(file_hash, numero, path, "", printer,
                                       "SKIP_DEDUP", "doublon fenetre dedup",
                                       sfec_statut, sfec_num)
             self._move(path, self.done_dir)
@@ -275,7 +306,7 @@ class FolderWatcher:
         status, non_conforme, reason = self._certification_decision(invoice, rec)
 
         if status == "ATTENTE_CERTIF":
-            auto_printer.record_print(file_hash, numero, path, "", self.cfg["printer_name"],
+            auto_printer.record_print(file_hash, numero, path, "", printer,
                                       "ATTENTE_CERTIF", "statut SFEC=" + (sfec_statut or "vide"),
                                       sfec_statut, sfec_num)
             logger.info("[WATCH] Certif en attente (statut=%s) - fichier conserve dans IN: %s",
@@ -284,12 +315,27 @@ class FolderWatcher:
 
         if status in ("REFUS", "QUARANTINE"):
             logger.error("[WATCH] ETAT=%s numero=%s: %s -> QUARANTINE", status, numero, reason)
-            auto_printer.record_print(file_hash, numero, path, "", self.cfg["printer_name"],
+            auto_printer.record_print(file_hash, numero, path, "", printer,
                                       status, reason, sfec_statut, sfec_num)
             self._move(path, self.quarantine_dir)
             return
 
-        auto_printer.record_print(file_hash, numero, path, "", self.cfg["printer_name"],
+        # Garde-fou multi-sites : l'imprimante du site doit etre connectee.
+        # Sinon on n'imprime JAMAIS ailleurs : fichier conserve + alerte.
+        # (Uniquement en mode site + hors dry_run : le legacy laisse
+        # print_pdf gerer l'absence d'imprimante comme avant.)
+        dry_run = self.cfg["dry_run"] or sites_mod.is_dry_run()
+        if site is not None and printer and not dry_run and not sites_mod.printer_connected(printer):
+            logger.error("[WATCH] Imprimante du site '%s' absente/disconnectee "
+                         "(site=%s) - impression bloquee, fichier conserve: %s",
+                         printer, (site or {}).get("name"), name)
+            auto_printer.record_print(file_hash, numero, path, "", printer,
+                                      "IMPRIMANTE_ABSENTE",
+                                      "imprimante '{}' introuvable sur la machine".format(printer),
+                                      sfec_statut, sfec_num)
+            return
+
+        auto_printer.record_print(file_hash, numero, path, "", printer,
                                   "EN_COURS", "", sfec_statut, sfec_num)
 
         tag = "CONFORME" if status == "IMPRIME" else "NON_CONFORME"
@@ -300,26 +346,27 @@ class FolderWatcher:
         if not result or not os.path.exists(out_path):
             logger.error("[WATCH] ETAT=ERREUR generation PDF echouee pour %s", numero)
             auto_printer.record_print(file_hash, numero, path, out_path,
-                                      self.cfg["printer_name"], "ERREUR",
+                                      printer, "ERREUR",
                                       "generation PDF echouee", sfec_statut, sfec_num)
             self._move(path, self.quarantine_dir)
             return
 
-        logger.info("[WATCH] Impression en cours sur '%s'...", self.cfg["printer_name"])
+        dry_run = self.cfg["dry_run"] or sites_mod.is_dry_run()
+        logger.info("[WATCH] Impression en cours sur '%s'... (dry_run=%s)", printer, dry_run)
         ok, err = auto_printer.print_pdf(
-            out_path, self.cfg["printer_name"], self.cfg["sumatra_path"],
-            dry_run=self.cfg["dry_run"])
+            out_path, printer, self.cfg["sumatra_path"],
+            dry_run=dry_run)
         if not ok:
             logger.error("[WATCH] ETAT=ERREUR_IMPRESSION numero=%s: %s (original conserve)",
                          numero, err)
             auto_printer.record_print(file_hash, numero, path, out_path,
-                                      self.cfg["printer_name"], "ERREUR_IMPRESSION", err,
+                                      printer, "ERREUR_IMPRESSION", err,
                                       sfec_statut, sfec_num)
             return
 
         auto_printer.record_print(file_hash, numero, path, out_path,
-                                  self.cfg["printer_name"], status, "",
+                                  printer, status, "",
                                   sfec_statut, sfec_num)
         self._move(path, self.done_dir)
         logger.info("[WATCH] ETAT=%s numero=%s out=%s imprimante='%s'",
-                    status, numero, out_name, self.cfg["printer_name"] or "(dry_run)")
+                    status, numero, out_name, printer or "(dry_run)")

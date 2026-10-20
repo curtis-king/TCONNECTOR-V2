@@ -64,6 +64,12 @@ def main():
     logger.info("T-CONNECTOR SFEC - Demarrage")
     logger.info("=" * 60)
 
+    try:
+        from app.core.bootstrap import ensure_runtime_dependencies
+        ensure_runtime_dependencies()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Bootstrap dependances: %s", e)
+
     _init_sqlite_and_seed(logger)
 
     logger.info("Verification de la connectivite internet...")

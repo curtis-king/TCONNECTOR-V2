@@ -8,12 +8,16 @@ wrapping _login_required est reproduit à l'identique.
 
 import functools
 import json
+import logging
+import os
 from flask import Blueprint, jsonify, render_template, request, send_file, session
 from app.config.manager import get_config, save_config
 from app.domain import invoices as invoice_engine, pdf as pdf_generator, pos as pos_engine
 from app.storage import db as sqlite_db
 from app.web.common import _esc, _page
 from app.web.auth.security import _login_required
+
+logger = logging.getLogger("t-connector.web.pos")
 
 bp = Blueprint("pos", __name__)
 
@@ -146,13 +150,74 @@ def pos_print_ticket(ticket_id):
     qr = v["sfec_qr"]
     sfec_qr_src = qr if qr.startswith(("data:", "http")) and len(qr) < 40000 else ""
 
+    auto = request.args.get("auto") == "1"
     return render_template("pos/ticket_print.html",
         v=v,
         stars=pdf_generator.TICKET_STARS,
         logo_src=pdf_generator.image_data_uri(v["logo_path"]),
         sfec_qr_src=sfec_qr_src,
         ticket_id=ticket["id"],
+        auto_print="true" if auto else "false",
     )
+
+
+@bp.route("/api/pos/ticket/<int:ticket_id>/print-silent", methods=["POST"])
+@_login_required
+def api_ticket_print_silent(ticket_id):
+    """Impression silencieuse du ticket 80 mm sur l'imprimante du site actif."""
+    ticket = pos_engine.get_ticket(ticket_id)
+    if not ticket:
+        return jsonify({"success": False, "error": "Ticket non trouve"}), 404
+
+    if not pdf_generator.HAS_REPORTLAB:
+        return jsonify({"success": False, "error": "reportlab non installe"}), 500
+
+    from app.print_hijack import auto_printer, sites as sites_mod
+
+    site, reason = sites_mod.resolve_active_site()
+    printer = sites_mod.site_printer(site, "ticket") if site else ""
+    if not printer:
+        # Repli legacy : imprimante A4 config si aucun site ne matche pas de ticket.
+        if site is None and "aucun site configure" in reason:
+            printer = ""
+        if not printer:
+            return jsonify({
+                "success": False,
+                "error": "Aucune imprimante ticket (80 mm) definie pour le site actif ({})".format(reason),
+            }), 409
+
+    if not sites_mod.printer_connected(printer):
+        return jsonify({
+            "success": False,
+            "error": "Imprimante ticket '{}' absente/disconnectee".format(printer),
+        }), 409
+
+    if sites_mod.is_paused():
+        return jsonify({"success": False, "error": "Impressions en PAUSE (kill-switch)"}), 409
+
+    try:
+        pdf_bytes = pdf_generator.generate_ticket_pdf(ticket)
+        if not pdf_bytes:
+            return jsonify({"success": False, "error": "Generation PDF echouee"}), 500
+
+        import tempfile
+        out_dir = os.path.join(tempfile.gettempdir(), "tconnector", "pos")
+        os.makedirs(out_dir, exist_ok=True)
+        numero = (ticket.get("numero") or "ticket").replace("/", "-")
+        out_path = os.path.join(out_dir, "{}_{}.pdf".format(numero, auto_printer.timestamp_tag()))
+        with open(out_path, "wb") as f:
+            f.write(pdf_bytes)
+
+        dry_run = sites_mod.is_dry_run()
+        ok, err = auto_printer.print_pdf(out_path, printer, "", dry_run=dry_run)
+        if not ok:
+            return jsonify({"success": False, "error": err or "impression echouee"}), 500
+
+        logger.info("Ticket %s imprime sur '%s' (dry_run=%s)", numero, printer, dry_run)
+        return jsonify({"success": True, "printer": printer, "dry_run": dry_run})
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Impression ticket %s impossible: %s", ticket_id, e)
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @bp.route("/api/pos/config", methods=["GET", "POST"])

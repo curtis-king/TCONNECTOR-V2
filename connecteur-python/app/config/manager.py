@@ -127,6 +127,8 @@ def _defaults():
             "quarantine_dir": "data/WATCH/QUARANTINE",
             "printer_name": "",
             "sumatra_path": "",
+            "sumatra_min_version": "3.5.2",
+            "auto_install_sumatra": True,
             "stable_delay_s": 2,
             "stable_retries": 5,
             "poll_interval_s": 5,

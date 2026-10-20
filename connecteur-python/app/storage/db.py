@@ -507,7 +507,9 @@ def _seed_default_settings():
         "ticket_message": "Merci pour votre achat !",
         "avoir_prefix": "AV",
         "avoir_format": "AV{:06d}",
-        "avoir_next_number": "1"
+        "avoir_next_number": "1",
+        "cent_tax_rate": "5",
+        "stamp_duty_rate": "0"
 
     }
     with get_cursor() as cur:
@@ -653,8 +655,17 @@ def recalc_invoice_totals(invoice_id):
         """, (invoice_id,))
         row = cur.fetchone()
         if row:
-            additional_cent_tax = round(row["tva_t"] * 0.05, 2)
-            montant_ttc = round(row["total_ttc"] + additional_cent_tax, 2)
+            try:
+                cent_rate = float(get_setting("cent_tax_rate", "5") or 5)
+            except (TypeError, ValueError):
+                cent_rate = 5.0
+            try:
+                stamp_rate = float(get_setting("stamp_duty_rate", "0") or 0)
+            except (TypeError, ValueError):
+                stamp_rate = 0.0
+            additional_cent_tax = round(row["tva_t"] * cent_rate / 100.0, 2)
+            stamp_duty = round(row["total_ttc"] * stamp_rate / 100.0, 2) if stamp_rate else 0.0
+            montant_ttc = round(row["total_ttc"] + additional_cent_tax + stamp_duty, 2)
             cur.execute("""
                 UPDATE invoices SET
                     montant_ht = ?, montant_tva = ?, montant_ttc = ?,
@@ -665,6 +676,7 @@ def recalc_invoice_totals(invoice_id):
                     total_tax_r_amount = ?,
                     total_exempt_amount = ?,
                     additional_cent_tax = ?,
+                    electronic_stamp_duty = ?,
                     updated_at = datetime('now')
                 WHERE id = ?
             """, (
@@ -676,6 +688,7 @@ def recalc_invoice_totals(invoice_id):
                 row["tva_r"],
                 row["exonere"],
                 additional_cent_tax,
+                stamp_duty,
                 invoice_id
             ))
 

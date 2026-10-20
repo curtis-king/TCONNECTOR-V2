@@ -6,15 +6,22 @@ import subprocess
 import time
 from datetime import datetime
 
+from app.core.paths import data_dir
 from app.storage.db import get_cursor
 
 logger = logging.getLogger("t-connector.print_hijack.printer")
 
-_SUMATRA_CANDIDATES = [
-    r"C:\Program Files\SumatraPDF\SumatraPDF.exe",
-    r"C:\Program Files (x86)\SumatraPDF\SumatraPDF.exe",
-    os.path.join(os.environ.get("LOCALAPPDATA", ""), "SumatraPDF", "SumatraPDF.exe"),
-]
+
+def _sumatra_candidates():
+    return [
+        os.path.join(data_dir(), "bin", "SumatraPDF", "SumatraPDF.exe"),
+        r"C:\Program Files\SumatraPDF\SumatraPDF.exe",
+        r"C:\Program Files (x86)\SumatraPDF\SumatraPDF.exe",
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "SumatraPDF", "SumatraPDF.exe"),
+    ]
+
+
+_SUMATRA_CANDIDATES = _sumatra_candidates()
 
 
 def compute_sha256(path, chunk=65536):
@@ -80,8 +87,8 @@ def print_pdf(pdf_path, printer_name, sumatra_path, dry_run=False, timeout_s=60)
         err = (proc.stderr or b"").decode("utf-8", "replace").strip()
         out = (proc.stdout or b"").decode("utf-8", "replace").strip()
         return False, "SumatraPDF code {}: {} {}".format(proc.returncode, err, out).strip()
-    # SumatraPDF -print-to rend la main avant la fin du spool : petite marge.
-    time.sleep(1.0)
+    # SumatraPDF -print-to rend la main apres remise au spooler : marge minimale.
+    time.sleep(0.2)
     return True, ""
 
 

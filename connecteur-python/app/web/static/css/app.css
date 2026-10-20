@@ -5,6 +5,7 @@ body{font-family:'Segoe UI',Tahoma,sans-serif;background:#f1f5f9;color:#1e293b;m
 .sidebar-top{display:flex;align-items:center;justify-content:space-between;padding:18px 16px 14px;border-bottom:1px solid #eef2f7}
 .sidebar-logo{display:flex;align-items:center;gap:10px;text-decoration:none}
 .sidebar-logo .icon{width:34px;height:34px;flex-shrink:0;border-radius:10px;background:linear-gradient(135deg,#4f46e5,#7c3aed);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:14px;box-shadow:0 4px 10px rgba(79,70,229,0.3)}
+.sidebar-logo .logo-img{width:auto;height:34px;max-width:120px;flex-shrink:0;object-fit:contain}
 .sidebar-logo span{font-size:15px;font-weight:700;color:#1e293b;letter-spacing:-0.3px;white-space:nowrap;transition:opacity 0.2s}
 .sidebar-toggle{width:32px;height:32px;flex-shrink:0;border:none;border-radius:8px;background:#f1f5f9;color:#64748b;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all 0.18s}
 .sidebar-toggle:hover{background:#e2e8f0;color:#1e293b}
@@ -12,6 +13,7 @@ body{font-family:'Segoe UI',Tahoma,sans-serif;background:#f1f5f9;color:#1e293b;m
 .sidebar-nav{list-style:none;padding:8px 0;margin:0;flex:1;overflow-y:auto}
 .sidebar.collapsed .sidebar-logo span,
 .sidebar.collapsed .sidebar-logo .icon,
+.sidebar.collapsed .sidebar-logo .logo-img,
 .sidebar.collapsed .sidebar-nav .nav-label,
 .sidebar.collapsed .sidebar-nav li a .label,
 .sidebar.collapsed .sidebar-foot .net-indicator span:not(.net-dot){display:none}

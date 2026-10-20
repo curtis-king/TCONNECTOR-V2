@@ -246,6 +246,24 @@ def read_invoices_from_sage():
                 for col in sfec_fields
             )
 
+            # Jointure tiers (F_COMPTET) : nom/NIU/adresse/tel pour completer
+            # le bloc client de la facture (tiers_* injectes en SQLite).
+            cur.execute("""
+                SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_NAME = 'F_COMPTET' AND COLUMN_NAME IN
+                    ('CT_Num','CT_Intitule','CT_NIU','CT_Identifiant','CT_Telephone',
+                     'CT_Adresse','CT_Ville','CT_Pays','CT_CodePostal','CT_EMail')
+            """)
+            ct_cols = {row[0] for row in cur.fetchall()}
+
+            def _ct(expr_col, fallback="''"):
+                # expr_col: nom de colonne F_COMPTET attendu
+                if expr_col.upper() in ct_cols:
+                    return f"ISNULL(c.{expr_col}, '')"
+                return fallback
+
+            join_tiers = "LEFT JOIN F_COMPTET c ON d.DO_Tiers = c.CT_Num" if "CT_Num" in ct_cols else ""
+
             # I2 : DO_Type IN (6,7) pour lire aussi les avoirs.
             # I1 : DO_Ref n'est JAMAIS utilisé comme lien avoir->facture,
             # c'est une référence externe (n° commande). reference_invoice_id
@@ -261,11 +279,22 @@ def read_invoices_from_sage():
                     '' AS reference_invoice_id,
                     ISNULL(TRY_CONVERT(VARCHAR(10), d.DO_Date, 120), '') AS date_facture,
                     ISNULL(d.DO_Tiers, '') AS tiers_code,
+                    {_ct('CT_Intitule')} AS tiers_nom,
+                    CASE
+                        WHEN {_ct('CT_NIU')} <> '' THEN {_ct('CT_NIU')}
+                        ELSE {_ct('CT_Identifiant')}
+                    END AS tiers_niu,
+                    {_ct('CT_Adresse')} AS tiers_adresse,
+                    {_ct('CT_Telephone')} AS tiers_telephone,
+                    {_ct('CT_EMail')} AS tiers_email,
+                    {_ct('CT_Ville')} AS tiers_ville,
+                    {_ct('CT_Pays')} AS tiers_pays,
                     ISNULL(d.DO_Ref, '') AS reference,
                     ISNULL(d.DO_TotalHT, 0) AS montant_ht,
                     ISNULL(d.DO_TotalTTC, 0) AS montant_ttc,
                     ISNULL(d.DO_NetAPayer, 0) AS montant_restant,
                     d.DO_Statut AS statut_code,
+                    ISNULL(d.DO_Valide, 0) AS valide,
                     CASE
                         WHEN d.DO_Statut = 0 THEN 'SAISI'
                         WHEN d.DO_Statut = 2 THEN 'A COMPTABILISER'
@@ -274,6 +303,7 @@ def read_invoices_from_sage():
                     END AS statut,
                     {sfec_select}
                 FROM F_DOCENTETE d
+                {join_tiers}
                 WHERE d.DO_Domaine = 0 AND d.DO_Type IN (6, 7)
                 ORDER BY d.DO_Date DESC
             """
@@ -305,6 +335,10 @@ def read_invoices_from_sage():
                     inv["sage_type"] = int(float(str(inv["sage_type"])))
                 except (ValueError, TypeError):
                     inv["sage_type"] = 0
+                try:
+                    inv["valide"] = 1 if int(float(str(inv.get("valide", 0) or 0))) == 1 else 0
+                except (ValueError, TypeError):
+                    inv["valide"] = 0
                 invoices.append(inv)
 
             logger.info(
@@ -330,6 +364,12 @@ def sync_sage_invoice_to_sqlite(sage_inv):
             cur.execute("""
                 UPDATE invoices SET
                     tiers_code = ?, montant_ht = ?, montant_ttc = ?, montant_restant = ?,
+                    tiers_nom = CASE WHEN ? <> '' THEN ? ELSE tiers_nom END,
+                    tiers_niu = CASE WHEN ? <> '' THEN ? ELSE tiers_niu END,
+                    tiers_adresse = CASE WHEN ? <> '' THEN ? ELSE tiers_adresse END,
+                    tiers_telephone = CASE WHEN ? <> '' THEN ? ELSE tiers_telephone END,
+                    tiers_email = CASE WHEN ? <> '' THEN ? ELSE tiers_email END,
+                    valide = ?,
                     sfec_statut = ?, sfec_num_certif = ?, sfec_signature = ?, sfec_qr_code = ?,
                     updated_at = datetime('now')
                 WHERE id = ?
@@ -338,6 +378,12 @@ def sync_sage_invoice_to_sqlite(sage_inv):
                 sage_inv.get("montant_ht", 0),
                 sage_inv.get("montant_ttc", 0),
                 sage_inv.get("montant_restant", 0),
+                sage_inv.get("tiers_nom", ""), sage_inv.get("tiers_nom", ""),
+                sage_inv.get("tiers_niu", ""), sage_inv.get("tiers_niu", ""),
+                sage_inv.get("tiers_adresse", ""), sage_inv.get("tiers_adresse", ""),
+                sage_inv.get("tiers_telephone", ""), sage_inv.get("tiers_telephone", ""),
+                sage_inv.get("tiers_email", ""), sage_inv.get("tiers_email", ""),
+                1 if sage_inv.get("valide") else 0,
                 sage_inv.get("sfec_statut", ""),
                 sage_inv.get("sfec_num_certif", ""),
                 sage_inv.get("sfec_signature", ""),
@@ -356,16 +402,21 @@ def sync_sage_invoice_to_sqlite(sage_inv):
             cur.execute("""
                 INSERT INTO invoices (
                     numero, date_facture, tiers_code, reference,
+                    tiers_nom, tiers_niu, tiers_adresse, tiers_telephone, tiers_email,
                     montant_ht, montant_ttc, montant_restant,
-                    statut, source, sfec_statut, sfec_num_certif,
+                    statut, valide, source, sfec_statut, sfec_num_certif,
                     sfec_signature, sfec_qr_code, synced_sage,
                     sage_domaine, sage_type, sage_piece
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sage', ?, ?, ?, ?, 1, 0, 6, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sage', ?, ?, ?, ?, 1, 0, 6, ?)
             """, (
                 numero, sage_inv.get("date_facture", ""),
                 sage_inv.get("tiers_code", ""), sage_inv.get("reference", ""),
+                sage_inv.get("tiers_nom", ""), sage_inv.get("tiers_niu", ""),
+                sage_inv.get("tiers_adresse", ""), sage_inv.get("tiers_telephone", ""),
+                sage_inv.get("tiers_email", ""),
                 sage_inv.get("montant_ht", 0), sage_inv.get("montant_ttc", 0),
                 sage_inv.get("montant_restant", 0), statut,
+                1 if sage_inv.get("valide") else 0,
                 sage_inv.get("sfec_statut", ""), sage_inv.get("sfec_num_certif", ""),
                 sage_inv.get("sfec_signature", ""), sage_inv.get("sfec_qr_code", ""),
                 numero

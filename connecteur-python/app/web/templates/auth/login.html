@@ -30,6 +30,7 @@ body::after{
   display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:13px;
   box-shadow:0 4px 12px rgba(79,70,229,.3);
 }
+.brand-row img{height:32px;width:auto;max-width:140px;object-fit:contain}
 .brand-row span{font-size:14px;font-weight:700;color:#1e293b;letter-spacing:.2px}
 .card{
   width:100%;
@@ -37,12 +38,10 @@ body::after{
   padding:40px 36px;box-shadow:0 1px 2px rgba(15,23,42,.04),0 30px 60px -30px rgba(15,23,42,.28);
 }
 .logo{
-  width:56px;height:56px;border-radius:15px;margin:0 auto 18px;
-  background:linear-gradient(135deg,#4f46e5,#7c3aed);
+  width:auto;height:56px;max-width:220px;border-radius:0;margin:0 auto 18px;
   display:flex;align-items:center;justify-content:center;
-  box-shadow:0 10px 26px -6px rgba(79,70,229,.4);
 }
-.logo svg{width:30px;height:30px}
+.logo img{max-width:100%;max-height:56px;object-fit:contain}
 h1{
   text-align:center;font-weight:800;color:#0f172a;font-size:22px;
   margin-bottom:4px;letter-spacing:-0.5px;
@@ -103,14 +102,12 @@ h1{
 </style></head><body>
 <div class="auth-wrap">
 <div class="brand-row">
-  <div class="ico">TC</div>
+  <img src="/static/logo_yeshigroup_blue.png" alt="T-CONNECTOR">
   <span>T-CONNECTOR SFEC</span>
 </div>
 <div class="card">
   <div class="logo">
-    <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-    </svg>
+    <img src="/static/logo.png" alt="T-CONNECTOR">
   </div>
   <h1>Bon retour</h1>
   <p class="sub">Connectez-vous a votre espace T-CONNECTOR</p>
