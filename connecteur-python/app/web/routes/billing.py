@@ -7,14 +7,13 @@ wrapping _login_required est reproduit à l'identique.
 """
 
 import functools
-import json
 from flask import Blueprint, jsonify, render_template, request, send_file
 from app.domain import invoices as invoice_engine, pdf as pdf_generator, pos as pos_engine
 from app.storage import db as sqlite_db
 from app.sync import bidirectional as sync_bidirectional
 from app.web.auth import user_auth
 from app.web.auth.security import _current_identity, _login_required
-from app.web.common import _esc, _page
+from app.web.common import _csv_response, _esc, _page
 
 bp = Blueprint("billing", __name__)
 
@@ -47,8 +46,10 @@ def billing_page():
         stats["impayes_total"] = m["t"]
         stats["impayes_nb"] = m["c"]
         cur.execute("""
-            SELECT COUNT(*) c, COALESCE(SUM(montant_ht), 0) ht, COALESCE(SUM(montant_tva), 0) tva,
-                   COALESCE(SUM(montant_ttc), 0) ttc
+            SELECT COUNT(*) c,
+                   COALESCE(SUM(CASE WHEN type_doc = 'avoir' THEN -montant_ht ELSE montant_ht END), 0) ht,
+                   COALESCE(SUM(CASE WHEN type_doc = 'avoir' THEN -montant_tva ELSE montant_tva END), 0) tva,
+                   COALESCE(SUM(CASE WHEN type_doc = 'avoir' THEN -montant_ttc ELSE montant_ttc END), 0) ttc
             FROM invoices
             WHERE statut != 'brouillon' AND strftime('%Y-%m', substr(date_facture, 1, 10)) = strftime('%Y-%m', 'now')
         """)
@@ -95,8 +96,41 @@ def api_invoices_list():
     )
     total = res.get("total", 0)
     pages = max(1, (total + limit - 1) // limit)
+    filters = {
+        "type_doc": request.args.get("type_doc", "") or None,
+        "statut": request.args.get("statut") or None,
+        "source": request.args.get("source") or None,
+        "search": request.args.get("search") or None,
+        "date_from": request.args.get("date_from") or None,
+        "date_to": request.args.get("date_to") or None,
+    }
+    stats = invoice_engine.filtered_invoices_stats(**filters)
     return jsonify({"invoices": res.get("invoices", []), "total": total,
-                    "page": page, "pages": pages, "limit": limit})
+                    "page": page, "pages": pages, "limit": limit,
+                    "stats": stats})
+
+
+@bp.route("/api/invoices/export", methods=["GET"])
+@_login_required
+def api_invoices_export():
+    """Export CSV (max 5000 lignes) appliquant les memes filtres que la liste."""
+    res = invoice_engine.list_invoices(
+        type_doc=request.args.get("type_doc", "") or None,
+        statut=request.args.get("statut") or None,
+        source=request.args.get("source") or None,
+        search=request.args.get("search") or None,
+        date_from=request.args.get("date_from") or None,
+        date_to=request.args.get("date_to") or None,
+        limit=5000, offset=0)
+    rows = [
+        [r.get(k, "") for k in ("numero", "type_doc", "date_facture", "tiers_nom",
+                                "statut", "sfec_statut", "montant_ttc",
+                                "montant_restant", "devise")]
+        for r in res.get("invoices", [])
+    ]
+    header = ["numero", "type", "date", "client", "statut", "statut SFEC",
+              "montant TTC", "reste a payer", "devise"]
+    return _csv_response("factures.csv", header, rows)
 
 
 @bp.route("/billing/invoice/new")
@@ -130,7 +164,13 @@ def invoice_detail_page(invoice_id):
             _esc(inv.get("reference_invoice_id", "") or "-"))    
     if ss:
         sfb = "badge-ok" if ss in ("CERTIFIE", "DEJA_CERTIFIE") else "badge-err" if ss == "ERREUR" else "badge-warn"
-        sfec_html = '<tr><td>SFEC</td><td><span class="badge {}">{}</span></td></tr><tr><td>N Certif</td><td>{}</td></tr>'.format(sfb, _esc(ss), _esc(inv.get("sfec_num_certif", "")[:30] or "-"))
+        sfec_html = '<tr><td>SFEC</td><td><span class="badge {}">{}</span></td></tr><tr><td>N Certif</td><td>{}</td></tr>'.format(
+            sfb, _esc(ss), _esc((inv.get("sfec_num_certif") or "")[:30] or "-"))
+    statut = (inv.get("statut") or "").lower()
+    statut_class = "badge-ok" if statut in ("valide", "a_comptabilise", "comptabilise") else (
+        "badge-err" if statut in ("annule", "annulee") else "badge-warn")
+    locked = invoice_engine.is_invoice_locked(inv)
+    can_certify = (not locked) and statut not in ("", "brouillon", "draft")
     return _page(render_template("billing/detail.html",
         montant_ht_brut=inv.get("montant_ht_brut") or 0,
         montant_restant=inv.get("montant_restant") or 0,
@@ -148,6 +188,9 @@ def invoice_detail_page(invoice_id):
         tiers_nom=_esc(inv.get("tiers_nom", "") or "N/A"),
         tiers_code=_esc(inv.get("tiers_code", "") or ""),
         statut=_esc(inv.get("statut", "")),
+        statut_class=statut_class,
+        locked=locked,
+        can_certify=can_certify,
         source=_esc(inv.get("source", "web")),
         sfec_html=sfec_html,
         notes=_esc(inv.get("notes", "") or "-"),
@@ -164,6 +207,10 @@ def invoice_edit_page(invoice_id):
     inv = invoice_engine.get_invoice(invoice_id)
     if not inv:
         return "<h1>Facture non trouvee</h1><p><a href='/billing'>Retour</a></p>", 404
+    if invoice_engine.is_invoice_locked(inv):
+        return ("<h1>Facture immuable</h1><p>Cette facture est certifiee SFEC ou deja "
+                "synchronisee avec Sage et ne peut plus etre modifiee.</p>"
+                "<p><a href='/billing/invoice/{}'>Retour</a></p>".format(invoice_id)), 403
     return _invoice_form_page(inv)
 
 
@@ -188,6 +235,8 @@ def _invoice_form_page(inv):
     devise = inv.get("devise", "XAF") if is_edit else "XAF"
     reference_invoice_id = inv.get("reference_invoice_id", "") if is_edit else ""
     recipient_rccm = inv.get("recipient_rccm", "") if is_edit else ""
+    is_recipient_taxable = inv.get("is_recipient_taxable", 1) if is_edit else 1
+    is_recipient_taxable = 1 if is_recipient_taxable is None else int(bool(is_recipient_taxable))
 
     # Cibles possibles d'un avoir : ventes certifiées non déjà avoirées
     current_ref = reference_invoice_id if is_edit and reference_invoice_id else ""
@@ -203,17 +252,17 @@ def _invoice_form_page(inv):
               ) OR i.numero = ?)
             ORDER BY i.date_facture DESC LIMIT 200
         """, (current_ref,))
-        certified_sales_json = json.dumps(sqlite_db.rows_to_list(cur.fetchall()), ensure_ascii=False)
+        certified_sales = sqlite_db.rows_to_list(cur.fetchall())
 
-    lignes_json = json.dumps(inv.get("lignes", [])) if is_edit else "[]"
-    contacts_json = json.dumps(pos_engine.list_contacts(limit=200))
-    products_json = json.dumps(pos_engine.list_products(limit=200))
-    tax_rates_json = json.dumps(pos_engine.list_tax_rates())
+    lignes = inv.get("lignes", []) if is_edit else []
+    contacts = pos_engine.list_contacts(limit=200)
+    products = pos_engine.list_products(limit=200)
+    tax_rates = pos_engine.list_tax_rates()
 
     return _page(render_template("billing/form.html",
         type_doc=type_doc, payment_method=payment_method, devise=devise,
         reference_invoice_id=reference_invoice_id, recipient_rccm=recipient_rccm,
-        certified_sales_json=certified_sales_json,
+        certified_sales=certified_sales,
         d_vente="selected" if type_doc == "vente" else "",
         d_avoir="selected" if type_doc == "avoir" else "",
         title=title, numero=_esc(numero), date_facture=_esc(date_facture), date_echeance=_esc(date_echeance),
@@ -223,30 +272,51 @@ def _invoice_form_page(inv):
         s_brouillon="selected" if statut == "brouillon" else "",
         s_valide="selected" if statut == "valide" else "",
         s_acompt="selected" if statut == "a_comptabiliser" else "",
+        s_acomptise="selected" if statut == "a_comptabilise" else "",
+        s_comptabilise="selected" if statut == "comptabilise" else "",
+        p_bank="selected" if payment_method == "bank_transfer" else "",
+        p_cash="selected" if payment_method == "cash" else "",
+        p_card="selected" if payment_method == "card" else "",
+        p_mobile="selected" if payment_method == "mobile_money" else "",
+        p_cheque="selected" if payment_method == "cheque" else "",
+        dev_xaf="selected" if devise == "XAF" else "",
+        dev_usd="selected" if devise == "USD" else "",
+        dev_eur="selected" if devise == "EUR" else "",
+        tax_yes="selected" if is_recipient_taxable else "",
+        tax_no="" if is_recipient_taxable else "selected",
         t_bus="selected" if tiers_type == "business" else "",
         t_ind="selected" if tiers_type == "individual" else "",
         t_gov="selected" if tiers_type == "government" else "",
         t_for="selected" if tiers_type == "foreign" else "",
         readonly="readonly" if is_edit else "",
-        contacts_json=contacts_json, products_json=products_json, tax_rates_json=tax_rates_json,
-        lignes_json=lignes_json, is_edit_js="true" if is_edit else "false",
+        contacts=contacts, products=products, tax_rates=tax_rates,
+        is_recipient_taxable=is_recipient_taxable,
+        lignes=lignes, is_edit_js="true" if is_edit else "false",
         inv_id_js=inv["id"] if is_edit else "null",
         btn_text="Modifier" if is_edit else "Enregistrer"
     ) + "\n")
+
+
+def _bounded_int_arg(name, default, low, high):
+    try:
+        value = int(request.args.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(low, min(value, high))
 
 
 @bp.route("/api/invoices", methods=["GET"])
 @_login_required
 def api_list_invoices():
     result = invoice_engine.list_invoices(
-        type_doc=request.args.get("type"),
+        type_doc=request.args.get("type_doc") or request.args.get("type"),
         statut=request.args.get("statut"),
         source=request.args.get("source"),
         search=request.args.get("search"),
         date_from=request.args.get("date_from"),
         date_to=request.args.get("date_to"),
-        limit=min(int(request.args.get("limit", 200)), 500),
-        offset=int(request.args.get("offset", 0))
+        limit=_bounded_int_arg("limit", 200, 1, 500),
+        offset=_bounded_int_arg("offset", 0, 0, 1000000),
     )
     return jsonify(result)
 
@@ -264,7 +334,8 @@ def api_create_invoice():
         msg = str(e)
         low = msg.lower()
         code = 422 if ("avoir" in low or "reference_invoice_id" in low
-                       or "certifi" in low) else 400
+                       or "certifi" in low or "ligne" in low
+                       or "quantite" in low or "tva" in low) else 400
         return jsonify({"success": False, "error": msg}), code
 
 
@@ -292,7 +363,8 @@ def api_update_invoice(invoice_id):
         msg = str(e)
         low = msg.lower()
         code = 422 if ("avoir" in low or "reference_invoice_id" in low
-                       or "certifi" in low) else 400
+                       or "certifi" in low or "ligne" in low
+                       or "quantite" in low or "tva" in low) else 400
         return jsonify({"success": False, "error": msg}), code
 
 

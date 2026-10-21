@@ -1,4 +1,7 @@
+import hashlib
 import logging
+import math
+import re
 import sqlite3
 from datetime import datetime
 from app.storage.db import (
@@ -19,6 +22,152 @@ _MODE_PAIEMENT_TO_SFEC = {
 def _map_payment_method(mode_paiement):
     return _MODE_PAIEMENT_TO_SFEC.get((mode_paiement or "").strip().lower(), "bank_transfer")
 
+
+_ALLOWED_TVA = (0.0, 5.0, 18.0)
+_MODES_PAIEMENT = {"especes", "carte", "cheque", "virement", "mobile_money"}
+_TIERS_BUSINESS = {"business", "entreprise", "government", "gouvernement"}
+
+
+def _as_float(value, field, default=None):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValueError("{} invalide".format(field))
+    if not math.isfinite(number):
+        raise ValueError("{} invalide".format(field))
+    return number
+
+
+def _validate_ticket_lines(lignes):
+    """Normalise et valide les lignes avant toute ecriture.
+
+    Regles conservatrices : quantites > 0, prix >= 0, TVA 0/5/18,
+    remises bornees. Retourne (lignes_normalisees, total_ttc, erreur).
+    """
+    if not isinstance(lignes, list) or not lignes:
+        return [], 0.0, "Aucune ligne dans le ticket"
+    clean = []
+    total_ttc = 0.0
+    for index, ligne in enumerate(lignes, start=1):
+        if not isinstance(ligne, dict):
+            return [], 0.0, "Ligne {} invalide".format(index)
+        designation = str(ligne.get("designation", "") or "").strip()
+        if not designation:
+            return [], 0.0, "Ligne {} : designation obligatoire".format(index)
+        try:
+            quantite = _as_float(ligne.get("quantite", 1), "quantite")
+            prix = _as_float(ligne.get("prix_unitaire", 0), "prix unitaire")
+            taux = _as_float(ligne.get("taux_tva", 18), "taux TVA")
+            remise_pct = _as_float(ligne.get("remise_pct", 0) or 0, "remise %")
+            remise_montant = _as_float(ligne.get("remise_montant", 0) or 0, "remise montant")
+        except ValueError as exc:
+            return [], 0.0, "Ligne {} : {}".format(index, exc)
+        if quantite <= 0:
+            return [], 0.0, "Ligne {} : la quantite doit etre strictement positive".format(index)
+        if prix < 0:
+            return [], 0.0, "Ligne {} : le prix unitaire ne peut pas etre negatif".format(index)
+        if taux not in _ALLOWED_TVA:
+            return [], 0.0, "Ligne {} : taux de TVA non supporte ({})".format(index, taux)
+        if remise_pct < 0 or remise_pct > 100:
+            return [], 0.0, "Ligne {} : remise % hors bornes (0-100)".format(index)
+        subtotal = round(quantite * prix, 2)
+        if remise_montant < 0 or remise_montant > subtotal:
+            return [], 0.0, "Ligne {} : remise montant hors bornes".format(index)
+        product_id = ligne.get("product_id")
+        if product_id in ("", None):
+            product_id = None
+        else:
+            try:
+                product_id = int(product_id)
+            except (TypeError, ValueError):
+                return [], 0.0, "Ligne {} : article invalide".format(index)
+        net_ht, montant_tva, montant_ttc, _ = calc_line_ticket_totals(
+            quantite, prix, remise_pct, remise_montant, taux)
+        total_ttc += montant_ttc
+        item = dict(ligne)
+        item.update({
+            "numero_ligne": index,
+            "designation": designation,
+            "quantite": quantite,
+            "prix_unitaire": prix,
+            "taux_tva": taux,
+            "remise_pct": remise_pct,
+            "remise_montant": remise_montant,
+            "product_id": product_id,
+            "montant_ht": net_ht,
+            "montant_tva": montant_tva,
+            "montant_ttc": montant_ttc,
+        })
+        clean.append(item)
+    return clean, round(total_ttc, 2), ""
+
+
+def _normalise_tiers_type(raw, default="individual"):
+    value = str(raw or "").strip().lower()
+    if value in ("business", "entreprise", "societe", "company"):
+        return "business"
+    if value in ("government", "gouvernement", "public"):
+        return "government"
+    if value in ("foreign", "etranger", "étranger"):
+        return "foreign"
+    if value in ("individual", "particulier", "individu", "personne"):
+        return "individual"
+    if value in ("client", "fournisseur", "supplier", "customer"):
+        return "business"
+    return default
+
+
+def _resolve_ticket_tiers(data):
+    """Hydrate les champs fiscaux depuis le contact en base (source fiable)."""
+    contact_id = data.get("contact_id")
+    code = str(data.get("tiers_code", "") or "").strip()
+    contact = None
+    with get_cursor() as cur:
+        if contact_id:
+            try:
+                cur.execute("SELECT * FROM contacts WHERE id = ?", (int(contact_id),))
+            except (TypeError, ValueError):
+                cur.execute("SELECT * FROM contacts WHERE code = ?", (code,))
+            contact = cur.fetchone()
+        elif code and code != "CLI-CPT":
+            cur.execute("SELECT * FROM contacts WHERE code = ?", (code,))
+            contact = cur.fetchone()
+
+    if contact:
+        contact = row_to_dict(contact)
+        tiers_type = _normalise_tiers_type(
+            contact.get("type_raw"), _normalise_tiers_type(contact.get("type")))
+        return {
+            "contact_id": contact["id"],
+            "tiers_code": contact.get("code", ""),
+            "tiers_nom": contact.get("nom", "") or "Client comptoir",
+            "tiers_niu": (contact.get("niu", "") or "").strip().upper(),
+            "recipient_rccm": (contact.get("rccm", "") or "").strip(),
+            "tiers_email": contact.get("email", "") or "",
+            "tiers_telephone": contact.get("telephone", "") or "",
+            "tiers_adresse": contact.get("adresse", "") or "",
+            "tiers_type": tiers_type,
+            "is_recipient_taxable": 1 if contact.get("is_taxable", 1) else 0,
+        }, ""
+
+    if contact_id:
+        return None, "Contact introuvable"
+
+    tiers_type = _normalise_tiers_type(data.get("tiers_type"), "individual")
+    return {
+        "contact_id": None,
+        "tiers_code": code,
+        "tiers_nom": str(data.get("tiers_nom", "") or "Client comptoir").strip(),
+        "tiers_niu": str(data.get("tiers_niu", "") or "").strip().upper(),
+        "recipient_rccm": str(data.get("tiers_rccm", "") or "").strip(),
+        "tiers_email": data.get("tiers_email", "") or "",
+        "tiers_telephone": data.get("tiers_telephone", "") or "",
+        "tiers_adresse": data.get("tiers_adresse", "") or "",
+        "tiers_type": tiers_type,
+        "is_recipient_taxable": 1 if data.get("is_recipient_taxable", 1) else 0,
+    }, ""
+
+
 logger = logging.getLogger("t-connector.pos")
 
 
@@ -30,63 +179,130 @@ def stock_control_enabled():
 
 
 def create_ticket(data):
-    numero = data.get("numero") or generate_ticket_number()
-    date_ticket = data.get("date_ticket") or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    contact_id = data.get("contact_id")
-    tiers_nom = data.get("tiers_nom", "Client comptoir")
-    mode_paiement = data.get("mode_paiement", "especes")
-    montant_recu = float(data.get("montant_recu", 0))
-    vendeur_id = data.get("vendeur_id")
-    notes = data.get("notes", "")
-    caissier = data.get("caissier", "") or ""
-    remise_globale_pct = float(data.get("remise_globale_pct", 0) or 0)
-    remise_globale_montant = float(data.get("remise_globale_montant", 0) or 0)
+    if not isinstance(data, dict):
+        return {"success": False, "error": "Donnees ticket invalides"}
 
-    lignes = data.get("lignes", [])
-    if not lignes:
-        return {"success": False, "error": "Aucune ligne dans le ticket"}
+    lignes, total_preview, err = _validate_ticket_lines(data.get("lignes"))
+    if err:
+        return {"success": False, "error": err}
+
+    mode_paiement = str(data.get("mode_paiement", "especes") or "especes").strip().lower()
+    if mode_paiement not in _MODES_PAIEMENT:
+        return {"success": False, "error": "Mode de paiement invalide"}
+    try:
+        montant_recu = _as_float(data.get("montant_recu", 0) or 0, "montant recu")
+        remise_globale_pct = _as_float(data.get("remise_globale_pct", 0) or 0, "remise globale %")
+        remise_globale_montant = _as_float(data.get("remise_globale_montant", 0) or 0, "remise globale")
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
+    if montant_recu < 0:
+        return {"success": False, "error": "Le montant recu ne peut pas etre negatif"}
+    if remise_globale_pct < 0 or remise_globale_pct > 100:
+        return {"success": False, "error": "Remise globale % hors bornes (0-100)"}
+    if remise_globale_montant < 0 or remise_globale_montant > total_preview:
+        return {"success": False, "error": "Remise globale hors bornes"}
+    remise_prevue = round(total_preview * remise_globale_pct / 100 + remise_globale_montant, 2)
+    total_apres_remise = max(round(total_preview - remise_prevue, 2), 0.0)
+    if mode_paiement == "especes" and montant_recu + 0.001 < total_apres_remise:
+        return {"success": False, "error": "Montant recu insuffisant pour un paiement en especes"}
+
+    tiers, tiers_err = _resolve_ticket_tiers(data)
+    if tiers_err:
+        return {"success": False, "error": tiers_err}
+    if tiers["tiers_type"] in ("business", "government"):
+        niu = tiers.get("tiers_niu", "")
+        if not niu:
+            return {"success": False,
+                    "error": "NIU obligatoire pour un client entreprise/gouvernement"}
+        if not (16 <= len(niu) <= 17) or not niu.isalnum():
+            return {"success": False,
+                    "error": "NIU invalide (16 a 17 caracteres alphanumeriques attendus)"}
+
+    data = dict(data)
+    data.update(tiers)
+    data["lignes"] = lignes
+    data["mode_paiement"] = mode_paiement
+    data["montant_recu"] = montant_recu
+    data["remise_globale_pct"] = remise_globale_pct
+    data["remise_globale_montant"] = remise_globale_montant
 
     stock_check = check_stock_available(lignes)
     if not stock_check["ok"]:
         manque = stock_check["manque"]
         detail = ", ".join(
-            "{} (stock {}{}, demande {})".format(m["designation"], m.get("stock", 0), "", m["qte"])
+            "{} (stock {}, demande {})".format(m["designation"], m.get("stock", 0), m["qte"])
             for m in manque
         )
         return {"success": False, "error": "Stock insuffisant: " + detail}
 
-    with get_cursor() as cur:
-        cur.execute("""
-            INSERT INTO pos_tickets (
-                numero, date_ticket, contact_id, tiers_nom,
-                mode_paiement, vendeur_id, notes, caissier,
-                remise_globale_pct, remise_globale_montant
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (numero, date_ticket, contact_id, tiers_nom, mode_paiement,
-              vendeur_id, notes, caissier, remise_globale_pct, remise_globale_montant))
-        ticket_id = cur.lastrowid
+    try:
+        numero = data.get("numero") or generate_ticket_number()
+        date_ticket = data.get("date_ticket") or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        vendeur_id = data.get("vendeur_id")
+        if vendeur_id in ("", None):
+            vendeur_id = None
+        else:
+            vendeur_id = int(vendeur_id)
+        with get_cursor() as cur:
+            cur.execute("""
+                INSERT INTO pos_tickets (
+                    numero, date_ticket, contact_id, tiers_nom,
+                    mode_paiement, vendeur_id, notes, caissier,
+                    remise_globale_pct, remise_globale_montant
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (numero, date_ticket, data["contact_id"], data["tiers_nom"],
+                  mode_paiement, vendeur_id, data.get("notes", ""),
+                  data.get("caissier", "") or "", remise_globale_pct,
+                  remise_globale_montant))
+            ticket_id = cur.lastrowid
 
-    _save_ticket_lines(ticket_id, lignes)
-    totals = recalc_ticket_totals(ticket_id)
-    montant_ttc = totals["montant_ttc"]
+        _save_ticket_lines(ticket_id, lignes)
+        totals = recalc_ticket_totals(ticket_id)
+        montant_ttc = totals["montant_ttc"]
 
-    monnaie_rendue = max(montant_recu - montant_ttc, 0)
-    with get_cursor() as cur:
-        cur.execute("""
-            UPDATE pos_tickets SET montant_recu = ?, monnaie_rendue = ? WHERE id = ?
-        """, (montant_recu, monnaie_rendue, ticket_id))
+        monnaie_rendue = max(montant_recu - montant_ttc, 0)
+        with get_cursor() as cur:
+            cur.execute("""
+                UPDATE pos_tickets SET montant_recu = ?, monnaie_rendue = ? WHERE id = ?
+            """, (montant_recu, monnaie_rendue, ticket_id))
 
-    _decrement_stock(lignes)
+        decremented = []
+        _decrement_stock(lignes, decremented)
 
-    invoice_result = _create_invoice_for_ticket(ticket_id, data, totals)
+        invoice_result = _create_invoice_for_ticket(ticket_id, data, totals)
+        if not invoice_result.get("invoice_id"):
+            _rollback_ticket(ticket_id, decremented)
+            return {
+                "success": False,
+                "error": "Facture non creee: {}".format(
+                    invoice_result.get("sage_error") or invoice_result.get("sfec_error") or "erreur interne"),
+            }
 
-    log_sync("pos_tickets", ticket_id, numero, "create", "pos")
-    logger.info("Ticket cree: %s (id=%d)", numero, ticket_id)
+        log_sync("pos_tickets", ticket_id, numero, "create", "pos")
+        logger.info("Ticket cree: %s (id=%d)", numero, ticket_id)
+    except Exception as exc:
+        logger.error("Creation ticket echouee: %s", exc)
+        _rollback_ticket(locals().get("ticket_id"), locals().get("decremented") or [])
+        return {"success": False, "error": "Creation du ticket impossible: {}".format(str(exc)[:200])}
 
     result = {"success": True, "id": ticket_id, "numero": numero,
+              "mode_paiement": mode_paiement,
               "montant_ttc": montant_ttc, "monnaie_rendue": monnaie_rendue}
     result.update(invoice_result)
     return result
+
+
+def _rollback_ticket(ticket_id, lignes):
+    """Compensation si la facture locale n'a pas pu etre creee."""
+    if not ticket_id:
+        return
+    try:
+        _restore_stock(lignes)
+        with get_cursor() as cur:
+            cur.execute("DELETE FROM pos_ticket_lines WHERE ticket_id = ?", (ticket_id,))
+            cur.execute("DELETE FROM pos_tickets WHERE id = ?", (ticket_id,))
+    except Exception as exc:
+        logger.error("Rollback ticket %s impossible: %s", ticket_id, exc)
 
 
 def _create_invoice_for_ticket(ticket_id, data, totals):
@@ -99,25 +315,32 @@ def _create_invoice_for_ticket(ticket_id, data, totals):
         tiers_nom = data.get("tiers_nom", "Client comptoir")
         mode_paiement = data.get("mode_paiement", "especes")
         payment_method = _map_payment_method(mode_paiement)
-        devise = data.get("devise", "XAF")
+        devise = data.get("devise", "XAF") or "XAF"
+        tiers_niu = data.get("tiers_niu", "") or ""
+        recipient_rccm = data.get("recipient_rccm", "") or ""
+        is_recipient_taxable = 1 if data.get("is_recipient_taxable", 1) else 0
 
         with get_cursor() as cur:
             cur.execute("""
                 INSERT INTO invoices (
                     numero, date_facture, reference, contact_id,
-                    tiers_code, tiers_nom, tiers_type, montant_ht, montant_tva,
+                    tiers_code, tiers_nom, tiers_niu, tiers_type, tiers_email,
+                    tiers_telephone, tiers_adresse, montant_ht, montant_tva,
                     montant_ttc, montant_restant, statut, valide,
                     type_doc, source, vendeur_id, notes,
-                    payment_method, devise
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'a_comptabiliser', 1, 'vente', 'pos', ?, ?, ?, ?)
+                    payment_method, devise, recipient_rccm, is_recipient_taxable
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'a_comptabiliser', 1,
+                          'vente', 'pos', ?, ?, ?, ?, ?, ?)
             """, (
                 numero, date_facture, "PAIEMENT " + mode_paiement,
                 data.get("contact_id"), data.get("tiers_code", ""), tiers_nom,
-                data.get("tiers_type", "particulier"),
+                tiers_niu, data.get("tiers_type", "individual"),
+                data.get("tiers_email", ""), data.get("tiers_telephone", ""),
+                data.get("tiers_adresse", ""),
                 totals.get("montant_ht", 0), totals.get("montant_tva", 0),
                 totals.get("montant_ttc", 0), 0,
                 data.get("vendeur_id"), "",
-                payment_method, devise,
+                payment_method, devise, recipient_rccm, is_recipient_taxable,
             ))
             invoice_id = cur.lastrowid
 
@@ -232,11 +455,13 @@ def _create_invoice_for_ticket(ticket_id, data, totals):
                     "montant_ttc": totals.get("montant_ttc", 0),
                     "montant_restant": 0,
                     "tiers_nom": tiers_nom,
-                    "tiers_type": data.get("tiers_type", "particulier"),
-                    "tiers_niu": data.get("tiers_niu", ""),
+                    "tiers_type": data.get("tiers_type", "individual"),
+                    "tiers_niu": tiers_niu,
                     "tiers_telephone": data.get("tiers_telephone", ""),
                     "tiers_email": data.get("tiers_email", ""),
                     "tiers_adresse": data.get("tiers_adresse", ""),
+                    "recipient_rccm": recipient_rccm,
+                    "is_recipient_taxable": is_recipient_taxable,
                     "type_doc": "vente",
                     "payment_method": payment_method,
                     "devise": devise,
@@ -359,7 +584,7 @@ def list_tickets(date_from=None, date_to=None, vendeur_id=None, search=None,
         where_clauses.append("t.date_ticket >= ?")
         params.append(date_from)
     if date_to:
-        where_clauses.append("t.date_ticket <= ?")
+        where_clauses.append("date(t.date_ticket) <= date(?)")
         params.append(date_to)
     if vendeur_id:
         where_clauses.append("t.vendeur_id = ?")
@@ -400,8 +625,15 @@ def list_tickets(date_from=None, date_to=None, vendeur_id=None, search=None,
             WHERE {where}
         """.format(where=where_sql), count_params)
         total = cur.fetchone()["cnt"]
+        cur.execute("""
+            SELECT COALESCE(SUM(CASE WHEN t.statut = 'valide' THEN t.montant_ttc ELSE 0 END), 0) AS ca
+            FROM pos_tickets t
+            LEFT JOIN vendeurs v ON t.vendeur_id = v.id
+            WHERE {where}
+        """.format(where=where_sql), count_params)
+        ca_total = cur.fetchone()["ca"]
 
-    return {"tickets": tickets, "total": total}
+    return {"tickets": tickets, "total": total, "ca_total": ca_total}
 
 
 def count_tickets():
@@ -413,16 +645,16 @@ def count_tickets():
         stats["ca_total"] = cur.fetchone()["total"]
         cur.execute("""
             SELECT COALESCE(SUM(montant_ttc), 0) as total FROM pos_tickets
-            WHERE statut = 'valide' AND date(date_ticket) = date('now')
+            WHERE statut = 'valide' AND date(date_ticket, 'localtime') = date('now', 'localtime')
         """)
         stats["ca_jour"] = cur.fetchone()["total"]
-        cur.execute("SELECT COUNT(*) as cnt FROM pos_tickets WHERE statut = 'valide' AND date(date_ticket) = date('now')")
+        cur.execute("SELECT COUNT(*) as cnt FROM pos_tickets WHERE statut = 'valide' AND date(date_ticket, 'localtime') = date('now', 'localtime')")
         stats["tickets_jour"] = cur.fetchone()["cnt"]
         cur.execute("""
             SELECT v.nom, v.prenom, COUNT(*) as nb_ventes, COALESCE(SUM(t.montant_ttc), 0) as ca
             FROM pos_tickets t
             JOIN vendeurs v ON t.vendeur_id = v.id
-            WHERE t.statut = 'valide' AND date(t.date_ticket) = date('now')
+            WHERE t.statut = 'valide' AND date(t.date_ticket, 'localtime') = date('now', 'localtime')
             GROUP BY t.vendeur_id
         """)
         stats["par_vendeur"] = rows_to_list(cur.fetchall())
@@ -509,7 +741,35 @@ def check_stock_available(lignes):
     return {"ok": len(manque) == 0, "manque": manque}
 
 
-def _decrement_stock(lignes):
+def _decrement_stock(lignes, done=None):
+    """Decremente le stock, sans jamais perdre un deficit (pas de MAX(0))."""
+    if done is None:
+        done = []
+    control = stock_control_enabled()
+    for ligne in lignes:
+        product_id = ligne.get("product_id")
+        if not product_id:
+            continue
+        qte = float(ligne.get("quantite", 1))
+        with get_cursor() as cur:
+            if control:
+                cur.execute(
+                    "UPDATE products SET stock_reel = stock_reel - ?, updated_at = datetime('now') "
+                    "WHERE id = ? AND stock_reel >= ?",
+                    (qte, product_id, qte)
+                )
+                if cur.rowcount != 1:
+                    raise ValueError("Stock insuffisant pour '{}'".format(ligne.get("designation", "")))
+            else:
+                cur.execute(
+                    "UPDATE products SET stock_reel = stock_reel - ?, updated_at = datetime('now') WHERE id = ?",
+                    (qte, product_id)
+                )
+        done.append(ligne)
+    return done
+
+
+def _restore_stock(lignes):
     for ligne in lignes:
         product_id = ligne.get("product_id")
         if not product_id:
@@ -517,7 +777,7 @@ def _decrement_stock(lignes):
         qte = float(ligne.get("quantite", 1))
         with get_cursor() as cur:
             cur.execute(
-                "UPDATE products SET stock_reel = MAX(stock_reel - ?, 0), updated_at = datetime('now') WHERE id = ?",
+                "UPDATE products SET stock_reel = stock_reel + ?, updated_at = datetime('now') WHERE id = ?",
                 (qte, product_id)
             )
 
@@ -614,7 +874,38 @@ def update_product(product_id, data):
     return {"success": True, "id": product_id}
 
 
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_PHONE_RE = re.compile(r"^[0-9+() .-]{6,20}$")
+_NIU_RE = re.compile(r"^[A-Z0-9]{16,17}$")
+
+
+def _normalise_contact_fields(data):
+    """Valide les champs annuaire et retourne (valeurs, erreur)."""
+    values = dict(data)
+    for key in ("code", "nom", "email", "telephone", "niu", "rccm", "ville", "pays"):
+        if key in values and values[key] is not None:
+            values[key] = str(values[key]).strip()
+    if values.get("niu"):
+        values["niu"] = values["niu"].upper().replace(" ", "")
+        if not _NIU_RE.match(values["niu"]):
+            return None, "NIU invalide (16 a 17 caracteres alphanumeriques)"
+    if values.get("email") and not _EMAIL_RE.match(values["email"]):
+        return None, "Adresse email invalide"
+    if values.get("telephone") and not _PHONE_RE.match(values["telephone"]):
+        return None, "Numero de telephone invalide"
+    if values.get("type") and values["type"] not in ("client", "fournisseur"):
+        return None, "Type de contact invalide"
+    return values, ""
+
+
+def _hash_pin(pin):
+    return hashlib.sha256(str(pin).encode("utf-8")).hexdigest() if pin else ""
+
+
 def create_contact(data):
+    data, err = _normalise_contact_fields(data or {})
+    if err:
+        return {"success": False, "error": err}
     code = data.get("code", "")
     nom = data.get("nom", "")
     if not code or not nom:
@@ -665,10 +956,9 @@ def create_contact(data):
 
     logger.info("Contact cree: %s - %s (id=%d)", code, nom, contact_id)
     return {"success": True, "id": contact_id}
-def list_contacts(type_filter=None, search=None, limit=200):
+def _contacts_where(type_filter=None, search=None):
     where_clauses = []
     params = []
-
     if type_filter:
         where_clauses.append("type = ?")
         params.append(type_filter)
@@ -676,16 +966,26 @@ def list_contacts(type_filter=None, search=None, limit=200):
         where_clauses.append("(code LIKE ? OR nom LIKE ? OR email LIKE ?)")
         s = "%{}%".format(search)
         params.extend([s, s, s])
-
     where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
-    params.append(limit)
+    return where_sql, params
 
+
+def list_contacts(type_filter=None, search=None, limit=200, offset=0):
+    where_sql, params = _contacts_where(type_filter, search)
+    params.extend([limit, max(0, int(offset or 0))])
     with get_cursor() as cur:
         cur.execute(
-            "SELECT * FROM contacts WHERE {} ORDER BY nom LIMIT ?".format(where_sql),
+            "SELECT * FROM contacts WHERE {} ORDER BY nom LIMIT ? OFFSET ?".format(where_sql),
             params
         )
         return rows_to_list(cur.fetchall())
+
+
+def count_contacts(type_filter=None, search=None):
+    where_sql, params = _contacts_where(type_filter, search)
+    with get_cursor() as cur:
+        cur.execute("SELECT COUNT(*) as cnt FROM contacts WHERE {}".format(where_sql), params)
+        return cur.fetchone()["cnt"]
 
 
 def list_products(type_filter=None, search=None, limit=200):
@@ -722,22 +1022,33 @@ def list_tax_rates():
 # ══════════════════════════════════════════════════════════════
 
 def create_vendeur(data):
-    code = data.get("code", "")
-    nom = data.get("nom", "")
+    code = str(data.get("code", "") or "").strip()
+    nom = str(data.get("nom", "") or "").strip()
     if not code or not nom:
         return {"success": False, "error": "Code et nom requis"}
+    if not re.match(r"^[A-Za-z0-9_-]{2,20}$", code):
+        return {"success": False, "error": "Code vendeur invalide (2 a 20 caracteres)"}
+    email = str(data.get("email", "") or "").strip()
+    if email and not _EMAIL_RE.match(email):
+        return {"success": False, "error": "Adresse email invalide"}
+    pin = str(data.get("pin", "") or "")
+    if pin and not re.match(r"^[0-9]{4,8}$", pin):
+        return {"success": False, "error": "PIN invalide (4 a 8 chiffres)"}
 
     with get_cursor() as cur:
+        cur.execute("SELECT id FROM vendeurs WHERE code = ?", (code,))
+        if cur.fetchone():
+            return {"success": False, "error": "Code vendeur deja utilise"}
         cur.execute("""
             INSERT INTO vendeurs (code, nom, prenom, email, telephone, role, pin)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (
             code, nom,
             data.get("prenom", ""),
-            data.get("email", ""),
+            email,
             data.get("telephone", ""),
             data.get("role", "vendeur"),
-            data.get("pin", "")
+            _hash_pin(pin)
         ))
         vendeur_id = cur.lastrowid
 
@@ -751,12 +1062,21 @@ def update_vendeur(vendeur_id, data):
         if not cur.fetchone():
             return {"success": False, "error": "Vendeur non trouve"}
 
+        email = str(data.get("email", "") or "").strip()
+        if email and not _EMAIL_RE.match(email):
+            return {"success": False, "error": "Adresse email invalide"}
         fields = []
         params = []
-        for key in ("nom", "prenom", "email", "telephone", "role", "pin", "est_actif"):
+        for key in ("nom", "prenom", "email", "telephone", "role", "est_actif"):
             if key in data:
                 fields.append("{} = ?".format(key))
                 params.append(data[key])
+        if data.get("pin"):
+            pin = str(data["pin"])
+            if not re.match(r"^[0-9]{4,8}$", pin):
+                return {"success": False, "error": "PIN invalide (4 a 8 chiffres)"}
+            fields.append("pin = ?")
+            params.append(_hash_pin(pin))
         if fields:
             fields.append("updated_at = datetime('now')")
             params.append(vendeur_id)
@@ -771,11 +1091,19 @@ def get_vendeur(vendeur_id):
         return row_to_dict(row) if row else None
 
 
-def list_vendeurs(active_only=True, limit=200):
+def list_vendeurs(active_only=True, limit=200, offset=0):
     with get_cursor() as cur:
         where = "WHERE est_actif = 1" if active_only else ""
-        cur.execute("SELECT * FROM vendeurs {} ORDER BY nom LIMIT ?".format(where), (limit,))
+        cur.execute("SELECT * FROM vendeurs {} ORDER BY nom LIMIT ? OFFSET ?".format(where),
+                    (limit, max(0, int(offset or 0))))
         return rows_to_list(cur.fetchall())
+
+
+def count_vendeurs(active_only=False):
+    with get_cursor() as cur:
+        where = "WHERE est_actif = 1" if active_only else ""
+        cur.execute("SELECT COUNT(*) AS cnt FROM vendeurs {}".format(where))
+        return cur.fetchone()["cnt"]
 
 
 def get_vendeur_stats(vendeur_id=None, date_from=None, date_to=None):
@@ -799,6 +1127,8 @@ def get_vendeur_stats(vendeur_id=None, date_from=None, date_to=None):
             SELECT v.id, v.nom, v.prenom, v.role,
                    COUNT(*) as nb_ventes,
                    COALESCE(SUM(t.montant_ttc), 0) as ca_total,
+                   COALESCE(SUM(CASE WHEN date(t.date_ticket, 'localtime') = date('now', 'localtime')
+                                     THEN t.montant_ttc ELSE 0 END), 0) as ca_jour,
                    COALESCE(AVG(t.montant_ttc), 0) as panier_moyen
             FROM pos_tickets t
             JOIN vendeurs v ON t.vendeur_id = v.id

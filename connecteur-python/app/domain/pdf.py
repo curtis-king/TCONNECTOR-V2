@@ -6,6 +6,12 @@ from app.config.manager import get_config
 
 logger = logging.getLogger("t-connector.pdf")
 
+
+def _xml(value):
+    """Echappe les donnees utilisateur pour le mini-XML ReportLab."""
+    from xml.sax.saxutils import escape
+    return escape(str(value if value is not None else ""))
+
 try:
     import qrcode
     HAS_QRCODE = True
@@ -76,14 +82,21 @@ def _centaines_en_lettres(n):
     return " ".join(parts)
 
 
-def _montant_en_lettres(amount):
-    """Convertit un montant en toutes lettres (francais), sans decimales (XAF)."""
+def _montant_en_lettres(amount, devise="XAF"):
+    """Convertit un montant en toutes lettres (francais), sans decimales."""
     try:
         n = int(round(amount))
     except (TypeError, ValueError):
         return ""
+    labels = {
+        "XAF": ("franc CFA", "francs CFA"),
+        "XOF": ("franc CFA", "francs CFA"),
+        "USD": ("dollar US", "dollars US"),
+        "EUR": ("euro", "euros"),
+    }
+    singulier, pluriel = labels.get((devise or "XAF").upper(), (devise or "XAF", devise or "XAF"))
     if n == 0:
-        return "Zero franc CFA"
+        return "Zero {}".format(singulier)
     negatif = n < 0
     n = abs(n)
 
@@ -109,7 +122,7 @@ def _montant_en_lettres(amount):
     texte = " ".join(p for p in parts if p)
     if negatif:
         texte = "moins " + texte
-    return (texte[0].upper() + texte[1:] + " francs CFA") if texte else ""
+    return (texte[0].upper() + texte[1:] + " " + pluriel) if texte else ""
 
 
 def _generate_qr_image(data, box_size=4):
@@ -189,32 +202,33 @@ def generate_invoice_pdf(invoice, output_path=None):
         except Exception:
             pass
 
-    elements.append(Paragraph(company.get("name", "Mon Entreprise"), styles["Title2"]))
+    elements.append(Paragraph(_xml(company.get("name", "Mon Entreprise")), styles["Title2"]))
     if company.get("legal_form"):
-        elements.append(Paragraph(company["legal_form"], styles["SubTitle"]))
+        elements.append(Paragraph(_xml(company["legal_form"]), styles["SubTitle"]))
     addr_parts = [p for p in [company.get("address", ""), company.get("city", ""), company.get("country", "")] if p]
     if addr_parts:
-        elements.append(Paragraph(", ".join(addr_parts), styles["SubTitle"]))
+        elements.append(Paragraph(_xml(", ".join(addr_parts)), styles["SubTitle"]))
 
     legal_line = []
     if company.get("tax_number"):
-        legal_line.append("NIU: {}".format(company["tax_number"]))
-    if company.get("rc_number"):
-        legal_line.append("RCCM: {}".format(company["rc_number"]))
+        legal_line.append("NIU: {}".format(_xml(company["tax_number"])))
+    rc_number = company.get("rc_number") or company.get("rccm")
+    if rc_number:
+        legal_line.append("RCCM: {}".format(_xml(rc_number)))
     if company.get("tax_regime"):
-        legal_line.append("Regime: {}".format(company["tax_regime"]))
+        legal_line.append("Regime: {}".format(_xml(company["tax_regime"])))
     if company.get("capital"):
-        legal_line.append("Capital: {} FCFA".format(company["capital"]))
+        legal_line.append("Capital: {} FCFA".format(_xml(company["capital"])))
     if legal_line:
         elements.append(Paragraph(" | ".join(legal_line), styles["SubTitle"]))
 
     if company.get("phone") or company.get("email"):
-        elements.append(Paragraph("Tel: {} | Email: {}".format(company.get("phone", ""), company.get("email", "")), styles["SubTitle"]))
+        elements.append(Paragraph("Tel: {} | Email: {}".format(_xml(company.get("phone", "")), _xml(company.get("email", ""))), styles["SubTitle"]))
 
     if company.get("bank_account") or company.get("bank_iban"):
         rib_line = [x for x in [
-            "Compte: {}".format(company["bank_account"]) if company.get("bank_account") else "",
-            "IBAN: {}".format(company["bank_iban"]) if company.get("bank_iban") else "",
+            "Compte: {}".format(_xml(company["bank_account"])) if company.get("bank_account") else "",
+            "IBAN: {}".format(_xml(company["bank_iban"])) if company.get("bank_iban") else "",
         ] if x]
         elements.append(Paragraph(" | ".join(rib_line), styles["SubTitle"]))
 
@@ -228,11 +242,11 @@ def generate_invoice_pdf(invoice, output_path=None):
 
     if type_doc == "avoir" and invoice.get("reference_invoice_id"):
         elements.append(Paragraph(
-            "Avoir sur facture n° {}".format(invoice["reference_invoice_id"]),
+            "Avoir sur facture n° {}".format(_xml(invoice["reference_invoice_id"])),
             styles["SubTitle"]
         ))
 
-    date_heure = invoice.get("created_at") or invoice.get("date_facture", "")
+    date_heure = invoice.get("date_facture") or invoice.get("created_at", "")
 
     info_data = [
         ["Numero:", invoice.get("numero", ""), "Date:", date_heure],
@@ -333,13 +347,13 @@ def generate_invoice_pdf(invoice, output_path=None):
     elements.append(wrapper)
     elements.append(Spacer(1, 4*mm))
 
-    montant_lettres = _montant_en_lettres(invoice.get("montant_ttc", 0))
+    montant_lettres = _montant_en_lettres(invoice.get("montant_ttc", 0), invoice.get("devise", "XAF"))
     if montant_lettres:
-        elements.append(Paragraph("Arrete la presente facture a la somme de : {}".format(montant_lettres), styles["SmallLeft"]))
+        elements.append(Paragraph("Arrete la presente facture a la somme de : {}".format(_xml(montant_lettres)), styles["SmallLeft"]))
    
     if invoice.get("notes"):
         elements.append(Spacer(1, 6*mm))
-        elements.append(Paragraph("<b>Notes:</b> {}".format(invoice["notes"]), styles["SmallLeft"]))
+        elements.append(Paragraph("<b>Notes:</b> {}".format(_xml(invoice["notes"])), styles["SmallLeft"]))
 
     sfec_num = invoice.get("sfec_num_certif") or invoice.get("sfec_certification_number", "")
     sfec_date = invoice.get("sfec_date_certif") or invoice.get("sfec_certification_date", "")
@@ -352,15 +366,17 @@ def generate_invoice_pdf(invoice, output_path=None):
         elements.append(Spacer(1, 3*mm))
         elements.append(Paragraph("<b>SFEC - Systeme de Facturation Electronique Certifie</b>", styles["SmallLeft"]))
 
-        cert_lines = ["Numero: {}".format(sfec_num)]
+        cert_lines = ["Numero: {}".format(_xml(sfec_num))]
         if sfec_date:
-            cert_lines.append("Date: {}".format(sfec_date))
+            cert_lines.append("Date: {}".format(_xml(sfec_date)))
         if sfec_sig:
-            cert_lines.append("Signature: {}".format(sfec_sig))
+            cert_lines.append("Signature: {}".format(_xml(sfec_sig)))
 
         qr_buf = _decode_qr_image(sfec_qr) if sfec_qr else None
-        if qr_buf is None and sfec_qr:
-            qr_buf = _generate_qr_image(sfec_qr)
+        if sfec_qr and qr_buf is None:
+            # Ne jamais re-generer un QR local a la place du QR SFEC officiel :
+            # cela produirait un code non conforme. On le signale explicitement.
+            cert_lines.append("QR SFEC original non disponible - verifier sur le portail SFEC")
         if qr_buf:
             cert_table = Table(
                 [[Paragraph("<br/>".join(cert_lines), styles["SmallLeft"]),
@@ -378,7 +394,7 @@ def generate_invoice_pdf(invoice, output_path=None):
     if footer_text:
         elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.grey))
         elements.append(Spacer(1, 2*mm))
-        elements.append(Paragraph(footer_text, styles["SubTitle"]))
+        elements.append(Paragraph(_xml(footer_text), styles["SubTitle"]))
 
     doc.build(elements)
 
@@ -417,19 +433,19 @@ def generate_ticket_pdf(ticket, output_path=None):
         except Exception:
             pass
 
-    elements.append(Paragraph(company.get("name", "Mon Entreprise"), styles["Title2"]))
+    elements.append(Paragraph(_xml(company.get("name", "Mon Entreprise")), styles["Title2"]))
     if company.get("phone"):
-        elements.append(Paragraph("Tel: {}".format(company["phone"]), styles["SubTitle"]))
+        elements.append(Paragraph("Tel: {}".format(_xml(company["phone"])), styles["SubTitle"]))
 
     elements.append(Spacer(1, 4*mm))
     elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
     elements.append(Spacer(1, 3*mm))
 
     elements.append(Paragraph("<b>TICKET DE VENTE</b>", styles["Title2"]))
-    elements.append(Paragraph("N: {}".format(ticket.get("numero", "")), styles["SmallLeft"]))
-    elements.append(Paragraph("Date: {}".format(ticket.get("date_ticket", "")), styles["SmallLeft"]))
-    elements.append(Paragraph("Client: {}".format(ticket.get("tiers_nom", "Client comptoir")), styles["SmallLeft"]))
-    elements.append(Paragraph("Caissier: {}".format(ticket.get("caissier", "") or "-"), styles["SmallLeft"]))
+    elements.append(Paragraph("N: {}".format(_xml(ticket.get("numero", ""))), styles["SmallLeft"]))
+    elements.append(Paragraph("Date: {}".format(_xml(ticket.get("date_ticket", ""))), styles["SmallLeft"]))
+    elements.append(Paragraph("Client: {}".format(_xml(ticket.get("tiers_nom", "Client comptoir"))), styles["SmallLeft"]))
+    elements.append(Paragraph("Caissier: {}".format(_xml(ticket.get("caissier", "") or "-")), styles["SmallLeft"]))
     elements.append(Spacer(1, 4*mm))
 
     header = ["Article", "Qte", "Prix", "Total"]
@@ -485,7 +501,7 @@ def generate_ticket_pdf(ticket, output_path=None):
 
     elements.append(Spacer(1, 8*mm))
     elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.grey))
-    elements.append(Paragraph(message, styles["SubTitle"]))
+    elements.append(Paragraph(_xml(message), styles["SubTitle"]))
 
     doc.build(elements)
 

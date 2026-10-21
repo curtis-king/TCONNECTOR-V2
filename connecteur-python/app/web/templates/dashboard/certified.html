@@ -36,7 +36,7 @@
 var bsC={list:[],q:"",statut:"",dfrom:"",dto:"",sort:"date",dir:-1,page:1,limit:25,per:[25,50,100]};
 function normFr(v){return String(v==null?"":v).toLowerCase().replace(/[àâäã]/g,"a").replace(/[éèêë]/g,"e").replace(/[îï]/g,"i").replace(/[ôö]/g,"o").replace(/[ûüù]/g,"u").replace(/ç/g,"c");}
 function escC(v){return String(v==null?"":v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
-function fmtMoney(v){var x=parseFloat(v);if(isNaN(x))return String(v==null?"":v);return x.toLocaleString("fr-FR",{maximumFractionDigits:0});}
+function fmtMoney(v){var x=parseFloat(v);if(isNaN(x))return escC(v==null?"":v);return x.toLocaleString("fr-FR",{maximumFractionDigits:0});}
 function badgeStatut(st){
   st=(st||"").trim();
   if(!st)return '<span class="badge badge-info">-</span>';
@@ -79,10 +79,10 @@ function renderCert(){
   for(var i=0;i<slice.length;i++){
     var v=slice[i];
     html+="<tr><td>"+escC(v.numero)+"</td><td>"+escC(v.date||"-")+"</td><td>"+badgeStatut(v.statut)+"</td>"
-+"<td>"+(v.invoice_type==="creditNote"?'<span class="badge badge-warn">Avoir</span>':'<span class="badge badge-info">Vente</span>')+"</td>"
++"<td>"+(v.invoice_type==="creditNote"?'<span class="badge badge-warn">Avoir</span>':v.invoice_type==="salesInvoice"?'<span class="badge badge-info">Vente</span>':'<span class="badge badge-info">'+escC(v.invoice_type||"-")+'</span>')+"</td>"
 +"<td>"+escC(v.buyer||"-")+"</td><td style='text-align:right'>"+fmtMoney(v.montant)+"</td>"
 +"<td class='no-print'><a class='btn btn-sm btn-primary' href='/certified/"+encodeURIComponent(v.id)+"/print' target='_blank'>Imprimer</a></td></tr>";  }
-  if(!slice.length)html='<tr><td colspan="6" style="text-align:center;color:#64748b">Aucune facture correspondante</td></tr>';
+  if(!slice.length)html='<tr><td colspan="7" style="text-align:center;color:#64748b">Aucune facture correspondante</td></tr>';
   document.getElementById("cert-body").innerHTML=html;
   setArrowsC();
   pagC();
@@ -123,28 +123,49 @@ function resetCerts(){bsC.q="";bsC.statut="";bsC.dfrom="";bsC.dto="";bsC.page=1;
   document.getElementById("c-dto").value="";
   renderCert();
 }
+function applyCerts(d){
+  bsC.list=d.invoices||[];
+  var statuts={};
+  bsC.list.forEach(function(v){if(v.statut)statuts[normFr(v.statut)]=v.statut;});
+  var keys=Object.keys(statuts).sort();
+  var opts='<option value="">Tous statuts</option>';
+  for(var i=0;i<keys.length;i++){opts+='<option value="'+normFr(statuts[keys[i]])+'">'+escC(statuts[keys[i]])+'</option>';}
+  document.getElementById("c-statut").innerHTML=opts;
+  if(d.last_sfec)document.getElementById("sfec-status").textContent="Derniere sync: "+d.last_sfec.slice(0,19).replace("T"," ");
+  document.getElementById("sfec-refresh").disabled=false;
+  renderCert();
+}
 function refreshCert(){
   var st=document.getElementById("sfec-status");
   var bt=document.getElementById("sfec-refresh");
-  st.textContent="Chargement en cours...";
   bt.disabled=true;
-  api("POST","/api/sfec/sync",{}).then(function(){setTimeout(loadCerts,2500);})
-    .catch(function(e){st.textContent="Erreur: "+e;bt.disabled=false;});
+  st.textContent="Sync SFEC en cours...";
+  api("GET","/api/certified/list").then(function(before){
+    var base=(before&&before.last_sfec)||"";
+    api("POST","/api/sfec/sync",{}).then(function(){
+      var attempts=0;
+      function poll(){
+        attempts++;
+        setTimeout(function(){
+          api("GET","/api/certified/list").then(function(d){
+            if(d&&d.last_sfec&&d.last_sfec!==base){
+              st.textContent="Sync terminee";applyCerts(d);return;
+            }
+            if(attempts>=30){st.textContent="Sync toujours en cours (ou SFEC indisponible)";bt.disabled=false;return;}
+            poll();
+          }).catch(function(){
+            if(attempts>=30){st.textContent="Etat sync indisponible";bt.disabled=false;return;}
+            poll();
+          });
+        },2000);
+      }
+      poll();
+    }).catch(function(e){st.textContent="Erreur: "+escC(e);bt.disabled=false;});
+  }).catch(function(e){st.textContent="Erreur: "+escC(e);bt.disabled=false;});
 }
 function loadCerts(){
-  api("GET","/api/certified/list").then(function(d){
-    bsC.list=d.invoices||[];
-    var statuts={};
-    bsC.list.forEach(function(v){if(v.statut)statuts[normFr(v.statut)]=v.statut;});
-    var keys=Object.keys(statuts).sort();
-    var opts='<option value="">Tous statuts</option>';
-    for(var i=0;i<keys.length;i++){opts+='<option value="'+normFr(statuts[keys[i]])+'">'+escC(statuts[keys[i]])+'</option>';}
-    document.getElementById("c-statut").innerHTML=opts;
-    if(d.last_sfec)document.getElementById("sfec-status").textContent="Derniere sync: "+d.last_sfec.slice(0,19).replace("T"," ");
-    document.getElementById("sfec-refresh").disabled=false;
-    renderCert();
-  }).catch(function(e){
-    document.getElementById("cert-body").innerHTML='<tr><td colspan="6" style="text-align:center;color:#64748b">Erreur de chargement: '+e+'</td></tr>';
+  api("GET","/api/certified/list").then(applyCerts).catch(function(e){
+    document.getElementById("cert-body").innerHTML='<tr><td colspan="7" style="text-align:center;color:#64748b">Erreur de chargement: '+escC(e)+'</td></tr>';
     document.getElementById("c-tot").textContent="0";
     document.getElementById("sfec-refresh").disabled=false;
   });

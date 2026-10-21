@@ -1,4 +1,6 @@
 import logging
+import math
+import re
 from datetime import datetime
 from app.storage.db import (
     get_cursor, generate_invoice_number, calc_line_totals,
@@ -57,9 +59,59 @@ def _validate_avoir(reference_invoice_id, exclude_invoice_id=None):
 
 logger = logging.getLogger("t-connector.invoice")
 
+_ALLOWED_TVA = (0.0, 5.0, 18.0)
+
+
+def _as_float(value, field):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise InvoiceIntegrityError("{} invalide".format(field))
+    if not math.isfinite(number):
+        raise InvoiceIntegrityError("{} invalide".format(field))
+    return number
+
+
+def _validate_invoice_lines(lignes):
+    """Valide les lignes avant ecriture (meme socle que le POS)."""
+    if not isinstance(lignes, list) or not lignes:
+        raise InvoiceIntegrityError("Au moins une ligne est obligatoire")
+    clean = []
+    for index, ligne in enumerate(lignes, start=1):
+        if not isinstance(ligne, dict):
+            raise InvoiceIntegrityError("Ligne {} invalide".format(index))
+        designation = str(ligne.get("designation", "") or "").strip()
+        if not designation:
+            raise InvoiceIntegrityError("Ligne {} : designation obligatoire".format(index))
+        quantite = _as_float(ligne.get("quantite", 1), "quantite")
+        prix = _as_float(ligne.get("prix_unitaire", 0), "prix unitaire")
+        remise_pct = _as_float(ligne.get("remise_pct", 0) or 0, "remise %")
+        taux = _as_float(ligne.get("taux_tva", 18), "taux TVA")
+        if quantite <= 0:
+            raise InvoiceIntegrityError("Ligne {} : la quantite doit etre strictement positive".format(index))
+        if prix < 0:
+            raise InvoiceIntegrityError("Ligne {} : le prix unitaire ne peut pas etre negatif".format(index))
+        if remise_pct < 0 or remise_pct > 100:
+            raise InvoiceIntegrityError("Ligne {} : remise % hors bornes (0-100)".format(index))
+        if taux not in _ALLOWED_TVA:
+            raise InvoiceIntegrityError("Ligne {} : taux de TVA non supporte ({})".format(index, taux))
+        item = dict(ligne)
+        item.update({
+            "numero_ligne": ligne.get("numero_ligne", index),
+            "designation": designation,
+            "quantite": quantite,
+            "prix_unitaire": prix,
+            "remise_pct": remise_pct,
+            "taux_tva": taux,
+        })
+        clean.append(item)
+    return clean
+
 
 def create_invoice(data):
-    numero = data.get("numero") or generate_invoice_number()
+    numero = str(data.get("numero") or "").strip() or generate_invoice_number()
+    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,49}$", numero):
+        raise InvoiceIntegrityError("Numero de facture invalide")
     date_facture = data.get("date_facture") or datetime.utcnow().strftime("%Y-%m-%d")
     date_echeance = data.get("date_echeance", "")
     reference = data.get("reference", "")
@@ -75,16 +127,19 @@ def create_invoice(data):
     source = data.get("source", "web")
     notes = data.get("notes", "")
     statut = data.get("statut", "brouillon")
-    payment_method = data.get("payment_method")
-    devise = data.get("devise")
-    recipient_rccm = data.get("recipient_rccm")
-    is_recipient_taxable = data.get("is_recipient_taxable")
+    payment_method = data.get("payment_method") or "bank_transfer"
+    devise = data.get("devise") or "XAF"
+    recipient_rccm = data.get("recipient_rccm") or ""
+    is_recipient_taxable = data.get("is_recipient_taxable", 1)
+    if is_recipient_taxable is None:
+        is_recipient_taxable = 1
     reference_invoice_id = data.get("reference_invoice_id") or ""
     montant_ht_brut = data.get("montant_ht_brut")
 
-    if type_doc == 'avoir' : 
+    if type_doc == 'avoir':
         _validate_avoir(reference_invoice_id)
 
+    lignes = _validate_invoice_lines(data.get("lignes", []))
 
     with get_cursor() as cur:
         cur.execute("""
@@ -107,7 +162,6 @@ montant_ht_brut
         ))
         invoice_id = cur.lastrowid
 
-    lignes = data.get("lignes", [])
     _save_lines(invoice_id, lignes)
     recalc_invoice_totals(invoice_id)
 
@@ -117,10 +171,28 @@ montant_ht_brut
     return {"id": invoice_id, "numero": numero}
 
 
+def _is_invoice_locked(invoice):
+    """Une facture certifiee SFEC ou ecrite dans Sage est immuable."""
+    return bool(
+        invoice.get("sfec_statut") in ("CERTIFIE", "DEJA_CERTIFIE")
+        or invoice.get("synced_sage")
+        or invoice.get("sage_piece")
+        or invoice.get("sfec_num_certif")
+    )
+
+
+def is_invoice_locked(invoice):
+    return _is_invoice_locked(invoice)
+
+
 def update_invoice(invoice_id, data):
     invoice = get_invoice(invoice_id)
     if not invoice:
         return None
+    if _is_invoice_locked(invoice):
+        raise InvoiceIntegrityError(
+            "Facture '{}' certifiee ou synchronisee Sage : modification interdite.".format(
+                invoice.get("numero", invoice_id)))
 
     # Alignement edit/create : gérer type de document + origine d'un avoir
     if "type_doc" in data or "reference_invoice_id" in data:
@@ -139,9 +211,7 @@ def update_invoice(invoice_id, data):
         "date_facture", "date_echeance", "reference", "contact_id",
         "tiers_code", "tiers_nom", "tiers_niu", "tiers_email",
         "tiers_telephone", "tiers_adresse", "tiers_type",
-        "statut", "valide", "notes", "sfec_statut", "sfec_num_certif",
-        "sfec_signature", "sfec_qr_code", "sfec_date_certif", "sfec_id",
-        "payment_method", "devise", "recipient_rccm",
+        "statut", "valide", "notes", "payment_method", "devise", "recipient_rccm",
         "is_recipient_taxable", "payment_date",
         "type_doc", "reference_invoice_id", "montant_ht_brut",
     ]
@@ -163,8 +233,9 @@ def update_invoice(invoice_id, data):
             cur.execute(sql, values)
 
     if "lignes" in data:
+        lignes = _validate_invoice_lines(data["lignes"])
         _delete_lines(invoice_id)
-        _save_lines(invoice_id, data["lignes"])
+        _save_lines(invoice_id, lignes)
         recalc_invoice_totals(invoice_id)
 
     log_sync("invoices", invoice_id, invoice["numero"], "update", "web")
@@ -176,6 +247,10 @@ def delete_invoice(invoice_id):
     invoice = get_invoice(invoice_id)
     if not invoice:
         return False
+    if _is_invoice_locked(invoice):
+        raise InvoiceIntegrityError(
+            "Facture '{}' certifiee ou synchronisee Sage : suppression interdite.".format(
+                invoice.get("numero", invoice_id)))
 
     with get_cursor() as cur:
         cur.execute("DELETE FROM invoice_lines WHERE invoice_id = ?", (invoice_id,))
@@ -210,9 +285,8 @@ def get_invoice_by_numero(numero):
         return inv
 
 
-def list_invoices(type_doc=None, statut=None, source=None, search=None,
-                  date_from=None, date_to=None, limit=200, offset=0,
-                  sort_by="date_facture", sort_dir="DESC"):
+def _invoices_where(type_doc=None, statut=None, source=None, search=None,
+                    date_from=None, date_to=None):
     where_clauses = []
     params = []
 
@@ -237,6 +311,15 @@ def list_invoices(type_doc=None, statut=None, source=None, search=None,
         params.append(date_to)
 
     where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+    return where_sql, params
+
+
+def list_invoices(type_doc=None, statut=None, source=None, search=None,
+                  date_from=None, date_to=None, limit=200, offset=0,
+                  sort_by="date_facture", sort_dir="DESC"):
+    where_sql, params = _invoices_where(
+        type_doc=type_doc, statut=statut, source=source, search=search,
+        date_from=date_from, date_to=date_to)
 
     allowed_sorts = {"date_facture", "statut", "source", "numero", "montant_ttc", "id", "tiers_nom"}
     if sort_by not in allowed_sorts:
@@ -259,6 +342,36 @@ def list_invoices(type_doc=None, statut=None, source=None, search=None,
         total = cur.fetchone()["cnt"]
 
     return {"invoices": invoices, "total": total, "limit": limit, "offset": offset}
+
+
+def filtered_invoices_stats(type_doc=None, statut=None, source=None, search=None,
+                            date_from=None, date_to=None):
+    """Cartes de stats recalculees sur le perimetre filtre (BL-03)."""
+    where_sql, params = _invoices_where(
+        type_doc=type_doc, statut=statut, source=source, search=search,
+        date_from=date_from, date_to=date_to)
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT
+                COUNT(*) AS total,
+                COALESCE(SUM(CASE WHEN statut = 'brouillon' THEN 1 ELSE 0 END), 0) AS brouillons,
+                COALESCE(SUM(CASE WHEN statut = 'valide' THEN 1 ELSE 0 END), 0) AS validees,
+                COALESCE(SUM(CASE WHEN sfec_statut IN ('CERTIFIE', 'DEJA_CERTIFIE') THEN 1 ELSE 0 END), 0) AS certifiees,
+                COALESCE(SUM(CASE WHEN sfec_statut = 'EN_COURS' THEN 1 ELSE 0 END), 0) AS certif_en_cours,
+                COALESCE(SUM(CASE WHEN sfec_statut = 'ERREUR' THEN 1 ELSE 0 END), 0) AS certif_erreur,
+                COALESCE(SUM(CASE WHEN statut != 'brouillon'
+                                  THEN CASE WHEN type_doc = 'avoir' THEN -montant_ttc ELSE montant_ttc END
+                                  ELSE 0 END), 0) AS ca,
+                COALESCE(SUM(CASE WHEN statut != 'brouillon' AND montant_restant > 0
+                                  THEN montant_restant ELSE 0 END), 0) AS impayes,
+                COALESCE(SUM(CASE WHEN source IN ('web', 'pos') AND synced_sage = 0
+                                  AND statut != 'brouillon'
+                                  AND (source != 'pos' OR (sfec_num_certif IS NOT NULL AND sfec_num_certif != ''))
+                                  THEN 1 ELSE 0 END), 0) AS pending_sage
+            FROM invoices WHERE {where}
+        """.format(where=where_sql), params)
+        row = cur.fetchone()
+        return {k: row[k] for k in row.keys()}
 
 
 def list_invoices_for_sfec():
@@ -294,7 +407,10 @@ def count_invoices():
         stats["avoirs"] = cur.fetchone()["cnt"]
         cur.execute("SELECT COUNT(*) as cnt FROM invoices WHERE type_doc = 'vente'")
         stats["ventes"] = cur.fetchone()["cnt"]
-        cur.execute("SELECT COALESCE(SUM(montant_ttc), 0) as total FROM invoices WHERE statut != 'brouillon'")
+        cur.execute("""
+            SELECT COALESCE(SUM(CASE WHEN type_doc = 'avoir' THEN -montant_ttc ELSE montant_ttc END), 0) as total
+            FROM invoices WHERE statut != 'brouillon'
+        """)
         stats["ca_total"] = cur.fetchone()["total"]
     return stats
 
@@ -351,13 +467,41 @@ def _delete_lines(invoice_id):
         cur.execute("DELETE FROM invoice_lines WHERE invoice_id = ?", (invoice_id,))
 
 
-def update_invoice_sfec(invoice_id, sfec_data):
+def update_invoice_sfec(invoice_id, sfec_data=None, **kwargs):
+    """Ecriture reservee au flux de certification (contourne l'immuabilite)."""
+    data = dict(sfec_data or {}) if isinstance(sfec_data, dict) else {}
+    data.update(kwargs)
     fields = {
-        "sfec_statut": sfec_data.get("sfec_statut", ""),
-        "sfec_num_certif": sfec_data.get("sfec_num_certif", ""),
-        "sfec_signature": sfec_data.get("sfec_signature", ""),
-        "sfec_qr_code": sfec_data.get("sfec_qr_code", ""),
-        "sfec_date_certif": sfec_data.get("sfec_date_certif", ""),
-        "sfec_id": sfec_data.get("sfec_id", ""),
+        "sfec_statut": data.get("sfec_statut", data.get("statut", "")),
+        "sfec_num_certif": data.get("sfec_num_certif", data.get("certification_number", "")),
+        "sfec_signature": data.get("sfec_signature", data.get("signature", "")),
+        "sfec_qr_code": data.get("sfec_qr_code", data.get("qr_code", "")),
+        "sfec_date_certif": data.get("sfec_date_certif", data.get("certification_date", "")),
+        "sfec_id": data.get("sfec_id", ""),
     }
-    return update_invoice(invoice_id, fields)
+    with get_cursor() as cur:
+        cur.execute("SELECT id, numero FROM invoices WHERE id = ?", (invoice_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        cur.execute("""
+            UPDATE invoices SET
+                sfec_statut = CASE WHEN ? <> '' THEN ? ELSE sfec_statut END,
+                sfec_num_certif = CASE WHEN ? <> '' THEN ? ELSE sfec_num_certif END,
+                sfec_signature = CASE WHEN ? <> '' THEN ? ELSE sfec_signature END,
+                sfec_qr_code = CASE WHEN ? <> '' THEN ? ELSE sfec_qr_code END,
+                sfec_date_certif = CASE WHEN ? <> '' THEN ? ELSE sfec_date_certif END,
+                sfec_id = CASE WHEN ? <> '' THEN ? ELSE sfec_id END,
+                updated_at = datetime('now')
+            WHERE id = ?
+        """, (
+            fields["sfec_statut"], fields["sfec_statut"],
+            fields["sfec_num_certif"], fields["sfec_num_certif"],
+            fields["sfec_signature"], fields["sfec_signature"],
+            fields["sfec_qr_code"], fields["sfec_qr_code"],
+            fields["sfec_date_certif"], fields["sfec_date_certif"],
+            fields["sfec_id"], fields["sfec_id"],
+            invoice_id,
+        ))
+    log_sync("invoices", invoice_id, row["numero"], "certify", "sfec")
+    return get_invoice(invoice_id)

@@ -9,7 +9,6 @@ un import direct de app.web.auth.security (aucun import circulaire : la
 sécurité ne dépend d'aucun module de routes).
 """
 
-import functools
 import threading
 from flask import Blueprint, jsonify, request
 from app.integration.sage.database import fetch_certified_invoices, fetch_ledger_accounts
@@ -21,6 +20,8 @@ from app.web.auth.security import _login_required, _apply_session_security, _cur
 
 
 bp = Blueprint('sync_api', __name__)
+
+_sync_guard = threading.Lock()
 
 
 @bp.route("/api/metrics", methods=["GET"])
@@ -38,7 +39,21 @@ def api_connectivity():
 @bp.route("/api/sync", methods=["POST"])
 @_login_required
 def api_sync():
-    threading.Thread(target=sync_all, daemon=True).start()
+    if not _sync_guard.acquire(blocking=False):
+        return jsonify({"ok": False,
+                        "error": "Une synchronisation est deja en cours"}), 409
+
+    def _run():
+        try:
+            sync_all()
+        finally:
+            _sync_guard.release()
+
+    try:
+        threading.Thread(target=_run, daemon=True).start()
+    except Exception:
+        _sync_guard.release()
+        return jsonify({"ok": False, "error": "Impossible de lancer la sync"}), 500
     return jsonify({"ok": True, "message": "Sync lancee"})
 
 
@@ -77,7 +92,7 @@ def api_certified_list():
         cd = inv.get("certification_date") or ""
         out.append({
             "id": inv.get("id", ""),
-            "numero": inv.get("invoice_number", ""),
+            "numero": inv.get("invoice_number") or inv.get("seller_invoice_number", ""),
             "date": cd[:10] if cd else "",
             "statut": (inv.get("invoice_status") or inv.get("certification_status")
                        or inv.get("status") or ""),
@@ -85,6 +100,21 @@ def api_certified_list():
             "montant": inv.get("total_ttc", "0"),
             "invoice_type": inv.get("invoice_type", ""),
         })
+    if not out:
+        # Repli local Sage si SFEC n'a jamais repondu (DB-41).
+        try:
+            for inv in fetch_certified_invoices():
+                out.append({
+                    "id": inv.get("id", ""),
+                    "numero": inv.get("certif_num", ""),
+                    "date": (inv.get("date") or "")[:10],
+                    "statut": "CERTIFIE",
+                    "buyer": "",
+                    "montant": "0",
+                    "invoice_type": inv.get("invoice_type", ""),
+                })
+        except Exception:
+            logger.debug("Repli local des factures certifiees indisponible")
     return jsonify({
         "invoices": out,
         "count": len(out),
@@ -156,7 +186,12 @@ def api_csrf():
 @bp.route("/api/audit", methods=["GET"])
 @_login_required
 def api_audit():
-    return jsonify({"entries": user_auth.list_audit(limit=min(int(request.args.get("limit", 200)), 500))})
+    try:
+        limit = int(request.args.get("limit", 200))
+    except (TypeError, ValueError):
+        limit = 200
+    limit = max(1, min(limit, 500))
+    return jsonify({"entries": user_auth.list_audit(limit=limit)})
 
 
 

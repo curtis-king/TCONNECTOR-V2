@@ -8,11 +8,9 @@ before/after_request ; les blueprints importent directement `_login_required`,
 `_current_identity`, `_get_csrf_token`, etc.
 """
 import functools
-import hashlib
 import hmac
 import html
 import logging
-import os
 import secrets
 from datetime import timedelta
 
@@ -26,6 +24,20 @@ from app.web.auth import user_auth
 
 logger = logging.getLogger("t-connector.dashboard")
 
+# Sentinelles internes de résolution de permission.
+_PERM_ADMIN = "@admin"
+_PERM_AUTH = "@auth"
+_PERM_DENY = "@deny"
+
+# Un secret absent, court ou laissé à une valeur d'exemple ne doit jamais
+# servir de clé de signature : sinon toute installation fraîche partage la
+# même clé (forge de cookies). On génère alors un secret aléatoire par
+# processus ; il est préférable de définir dashboard.session_secret.
+_INSECURE_SECRETS = {
+    "", "CHANGE-ME", "CHANGE-ME-IN-PRODUCTION", "change-me", "secret",
+}
+_GENERATED_SECRET = secrets.token_hex(32)
+
 
 def _esc(val):
     if val is None:
@@ -35,10 +47,13 @@ def _esc(val):
 
 def _get_secret_key():
     cfg = get_config().get("dashboard", {})
-    key = cfg.get("session_secret", "")
-    if not key:
-        machine_id = os.environ.get("COMPUTERNAME", os.environ.get("HOSTNAME", "default"))
-        key = hashlib.sha256("t-connector-{}".format(machine_id).encode()).hexdigest()[:32]
+    key = str(cfg.get("session_secret", "") or "")
+    if key in _INSECURE_SECRETS or len(key) < 32:
+        logger.warning(
+            "dashboard.session_secret absent/faible : utilisation d'un secret "
+            "aleatoire ephemere. Definissez une valeur d'au moins 32 caracteres."
+        )
+        return _GENERATED_SECRET
     return key
 
 
@@ -116,69 +131,115 @@ def _login_required(f):
 
 # ── Controle des droits : chemin -> permission ──
 
-_ACCESS_RULES = [
-    (("config",), "config.gerer"),
-    (("api", "config"), "config.gerer"),
-    (("utilisateurs",), "utilisateurs.gerer"),
-    (("api", "utilisateurs"), "utilisateurs.gerer"),
-    (("api", "audit"), "utilisateurs.gerer"),
-    (("api", "auth"), "utilisateurs.gerer"),
-    (("pos",), "pos.vente"),
-    (("api", "pos"), "pos.vente"),
-    (("api", "products"), "pos.vente"),
-    (("api", "articles"), "pos.vente"),
-    (("api", "sfec"), "sfec.certifier"),
-    (("api", "sync"), "sage.sync"),
-    (("invoices",), "factures.voir"),
-    (("billing",), "factures.voir"),
-    (("sales",), "factures.voir"),
-    (("pending",), "factures.voir"),
-    (("certified",), "factures.voir"),
-    (("api", "certified"), "factures.voir"),
-    (("api", "retry-queue"), "factures.voir"),
-    (("api", "billing"), "factures.voir"),
-    (("clients",), "clients.gerer"),
-    (("api", "clients"), "clients.voir"),
-    (("api", "contacts"), "clients.voir"),
-    (("vendeurs",), "vendeurs.gerer"),
-    (("api", "vendeurs"), "vendeurs.voir"),
-    (("api", "invoices", "stats"), "factures.voir"),
-    (("api", "invoices"), "factures.voir"),
-]
-
-_MUTATE_PERMS = {
-    ("/api/clients", "POST"): "clients.gerer",
-    ("/api/contacts", "POST"): "clients.gerer",
-    ("/api/vendeurs", "POST"): "vendeurs.gerer",
-    ("/api/products", "POST"): "pos.vente",
+_PUBLIC_PATHS = {
+    "/login", "/logout", "/health", "/ready",
+    "/api/connectivity", "/api/csrf",
 }
+_PUBLIC_PREFIXES = ("/static/",)
+
+
+def _is_public_path(path):
+    return path in _PUBLIC_PATHS or path.startswith(_PUBLIC_PREFIXES)
+
+
+def _route_path(path):
+    """Chemin normalisé (sans slash final) pour les règles de permission."""
+    return path.rstrip("/") or "/"
 
 
 def _required_permission(path, method):
-    parts = [p for p in path.strip("/").lower().split("/")][:3]
+    """Résout la permission d'une route CONNUE.
+
+    Fail-closed : toute route non explicitement couverte retourne _PERM_DENY.
+    Les routes publiques et les 404 sont traitées dans _auth_before_request.
+    """
     role = session.get("user_role") or ""
     if role == "admin":
-        return None, None
-    for key, perm in _MUTATE_PERMS.items():
-        if key == (path, method):
-            return perm, None
-    if path.endswith("/push-sage") and method == "POST":
-        return "sage.pousser", None
-    if path == "/api/invoices" and method == "POST":
+        return _PERM_ADMIN, None
+
+    p = _route_path(path).lower()
+    m = (method or "GET").upper()
+
+    # Compte : accessible à tout utilisateur authentifié.
+    if p in ("/compte/mot-de-passe", "/api/compte/password"):
+        return _PERM_AUTH, None
+
+    # Configuration / diagnostic technique.
+    if (p in ("/config", "/api/config", "/api/db/test", "/api/tables",
+              "/api/tax-rates", "/api/tax-rates/local")
+            or p.startswith("/api/config/")):
+        return "config.gerer", None
+
+    # Comptes, matrice de droits, audit.
+    if (p == "/utilisateurs" or p.startswith("/api/utilisateurs")
+            or p == "/api/audit" or p.startswith("/api/auth/")):
+        return "utilisateurs.gerer", None
+
+    # Facturation : pages et APIs.
+    if p == "/billing/invoice/new" or (
+            p.startswith("/billing/invoice/") and p.endswith("/edit")):
         return "factures.creer", None
-    if path.startswith("/api/invoices/") and method in ("PUT", "DELETE"):
-        return "factures.creer", None
-    for prefixes, perm in _ACCESS_RULES:
-        if len(prefixes) <= len(parts) and all(parts[i] == prefixes[i] for i in range(len(prefixes))):
-            return perm, None
-    return None, None
+    if p == "/billing" or p.startswith("/billing/invoice/"):
+        return "factures.voir", None
+    if (p in ("/invoices", "/pending", "/certified", "/sales")
+            or p.startswith("/certified/")):
+        return "factures.voir", None
+    if p.startswith("/api/invoices"):
+        if p.endswith("/push-sage") and m == "POST":
+            return "sage.pousser", None
+        if p == "/api/invoices" and m == "POST":
+            return "factures.creer", None
+        if m in ("PUT", "PATCH"):
+            return "factures.creer", None
+        if m == "DELETE":
+            return "factures.supprimer", None
+        return "factures.voir", None
+    if (p.startswith("/api/certified") or p == "/api/retry-queue"
+            or p == "/api/ledger-accounts"):
+        return "factures.voir", None
+
+    # POS : le controle global du stock releve de la configuration.
+    if p == "/api/pos/config":
+        return "config.gerer", None
+
+    # POS.
+    if (p == "/pos" or p.startswith("/pos/") or p.startswith("/api/pos")
+            or p.startswith("/api/products")):
+        return "pos.vente", None
+    if p == "/api/articles/sync":
+        return "sage.sync", None
+
+    # Annuaire : lecture vs mutation.
+    mutate = m in ("POST", "PUT", "PATCH", "DELETE")
+    if p == "/clients" or p == "/api/contacts/sage":
+        return "clients.voir", None
+    if p.startswith("/api/contacts"):
+        return "clients.gerer" if mutate else "clients.voir", None
+    if p == "/vendeurs":
+        return "vendeurs.voir", None
+    if p.startswith("/api/vendeurs"):
+        return "vendeurs.gerer" if mutate else "vendeurs.voir", None
+
+    # Dashboard / synchronisation / SFEC.
+    if p == "/" or p == "/api/metrics":
+        return "dashboard.voir", None
+    if p.startswith("/api/sync"):
+        return "sage.sync", None
+    if p.startswith("/api/sfec"):
+        return "sfec.certifier", None
+
+    return _PERM_DENY, None
 
 
 def _deny(perm, label):
     if request.path.startswith("/api/"):
-        return jsonify({"error": "Acces refuse (droits insuffisants)", "permission": perm}), 403
+        payload = {"error": "Acces refuse (droits insuffisants)"}
+        if perm and not str(perm).startswith("@"):
+            payload["permission"] = perm
+        return jsonify(payload), 403
     return render_template("auth/deny.html",
-                           label=_esc(label or ""), email=_esc(session.get("user_email", ""))), 403
+                           label=_esc(label or "Acces non autorise"),
+                           email=_esc(session.get("user_email", ""))), 403
 
 
 def _auth_before_request():
@@ -187,7 +248,9 @@ def _auth_before_request():
     _apply_session_security()
     path = request.path
 
-    if session.get("user_id") and not session.get("_login_checked"):
+    # Rafraîchit systématiquement le rôle depuis la base : une rétrogradation
+    # ou une désactivation prend effet immédiatement (audit AU-06).
+    if session.get("user_id"):
         live = None
         try:
             live = user_auth.get_user(session.get("user_id"))
@@ -195,6 +258,8 @@ def _auth_before_request():
             pass
         if not live or not live.get("est_actif"):
             session.clear()
+            if path.startswith("/api/"):
+                return jsonify({"error": "Non authentifie"}), 401
             return redirect(url_for("auth.login_page"))
         session["user_email"] = live["email"]
         session["user_role"] = live["role"]
@@ -235,14 +300,24 @@ def _auth_before_request():
                 email=_esc(session.get("user_email", ""))
             ), 400
 
-    if path in ("/login", "/logout") or path.startswith("/static/"):
+    if _is_public_path(path):
         return None
     if not session.get("user_id"):
         if path.startswith("/api/"):
             return jsonify({"error": "Non authentifie"}), 401
         return redirect(url_for("auth.login_page"))
+
+    # Route inconnue : laisser Flask produire un 404, sans appliquer le
+    # fail-closed (sinon toutes les URLs inexistantes répondraient 403).
+    if request.url_rule is None:
+        return None
+
     perm, _m = _required_permission(path, request.method)
-    if perm and not user_auth.has_perm(session.get("user_role", ""), perm):
+    if perm in (_PERM_ADMIN, _PERM_AUTH):
+        return None
+    if perm == _PERM_DENY or not perm:
+        return _deny(None, "Acces non autorise")
+    if not user_auth.has_perm(session.get("user_role", ""), perm):
         return _deny(perm, user_auth.PERMISSIONS.get(perm, perm))
     return None
 

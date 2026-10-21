@@ -2,17 +2,23 @@
 <div class="card"><h2>Facture {{ numero | safe }}</h2>
 <div style="margin-bottom:12px">
 <a href="/billing" class="btn btn-sm">Retour</a>
+{% if not locked %}
 <a href="/billing/invoice/{{ inv_id }}/edit" class="btn btn-sm btn-primary" style="margin-left:8px">Modifier</a>
+{% endif %}
+{% if can_certify %}
 <button class="btn btn-sm btn-success" onclick="certifyInv({{ inv_id }})" style="margin-left:8px">Certifier SFEC</button>
-<a href="/api/invoices/{{ inv_id }}/pdf" class="btn btn-sm btn-primary" style="margin-left:8px;text-decoration:none" target="_blank">PDF</a>
-<button class="btn btn-sm btn-danger" onclick="if(confirm('Supprimer ?')){api('DELETE','/api/invoices/{{ inv_id }}').then(function(){location.href='/billing'})}" style="margin-left:8px">Supprimer</button>
+{% endif %}
+<a href="/api/invoices/{{ inv_id }}/pdf" class="btn btn-sm btn-primary" style="margin-left:8px;text-decoration:none" target="_blank" rel="noopener">PDF</a>
+{% if not locked %}
+<button class="btn btn-sm btn-danger" onclick="deleteInv({{ inv_id }})" style="margin-left:8px">Supprimer</button>
+{% endif %}
 </div>
 <table>
 <tr><td>Numero</td><td><strong>{{ numero | safe }}</strong></td></tr>
 <tr><td>Date</td><td>{{ date_facture | safe }}</td></tr>
 <tr><td>Reference</td><td>{{ reference | safe }}</td></tr>
 <tr><td>Tiers</td><td>{{ tiers_nom | safe }} ({{ tiers_code | safe }})</td></tr>
-<tr><td>Statut</td><td><span class="badge badge-ok">{{ statut | safe }}</span></td></tr>
+<tr><td>Statut</td><td><span class="badge {{ statut_class }}">{{ statut | safe }}</span></td></tr>
 <tr><td>Source</td><td>{{ source | safe }}</td></tr>
 {{ meta_rows | safe }}
 {{ sfec_html | safe }}
@@ -36,5 +42,6 @@
 </div> </div>
 <script>
 window.NATIVE_ALERTS = true;
-function certifyInv(id){api("POST","/api/sfec/certify",{invoice_id:"INV-"+id}).then(function(d){if(d.success){showToast("Certifie: "+d.certification_number,"ok");setTimeout(function(){location.reload()},1500)}else{showToast("Erreur: "+d.error,"err")}})}
+function certifyInv(id){api("POST","/api/sfec/certify",{invoice_id:"INV-"+id}).then(function(d){if(d.success){showToast("Certifie: "+(d.certification_number||"en attente"),"ok");setTimeout(function(){location.reload()},1500)}else{showToast("Erreur: "+(d.error||"certification impossible"),"err")}}).catch(function(e){showToast("Erreur certification: "+e,"err")})}
+function deleteInv(id){if(!confirm("Supprimer ?"))return;api("DELETE","/api/invoices/"+id).then(function(d){if(d.success){location.href="/billing"}else{showToast("Erreur: "+(d.error||"suppression impossible"),"err")}}).catch(function(e){showToast("Erreur suppression: "+e,"err")})}
 </script>

@@ -8,6 +8,7 @@ un import direct de app.web.auth.security (aucun import circulaire : la
 sécurité ne dépend d'aucun module de routes).
 """
 
+import copy
 import functools
 import json
 import os
@@ -26,6 +27,38 @@ from app.web.common import _esc, _page
 
 
 bp = Blueprint('config', __name__)
+
+_SECRET_KEYS = {
+    "password", "api_key", "session_secret", "login_password",
+    "secret", "token", "private_key",
+}
+
+
+def _redact_config(value):
+    """Copie récursive d'une config avec tous les secrets masqués."""
+    if isinstance(value, dict):
+        return {
+            key: ("***" if key.lower() in _SECRET_KEYS and val not in (None, "")
+                  else _redact_config(val))
+            for key, val in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_config(item) for item in value]
+    return value
+
+
+def _merge_import_config(base, incoming):
+    """Fusionne un import sans écraser un secret par le masque '***'."""
+    result = copy.deepcopy(base)
+    for key, val in incoming.items():
+        if key.lower() in _SECRET_KEYS and val == "***":
+            continue
+        if isinstance(val, dict) and isinstance(result.get(key), dict):
+            result[key] = _merge_import_config(result[key], val)
+        else:
+            result[key] = copy.deepcopy(val)
+    return result
+
 
 
 @bp.route("/config", methods=["GET"])
@@ -59,7 +92,7 @@ def config_page():
         port=_esc(db.get("port", 1433)),
         database=_esc(db.get("database", "")),
         user=_esc(db.get("user", "")),
-        password=_esc(db.get("password", "")),
+        password="",
         tc_f=_s(db.get("trusted_connection"), False),
         tc_t=_s(db.get("trusted_connection"), True),
         enc_f=_s(db.get("encrypt"), False),
@@ -71,7 +104,7 @@ def config_page():
         pool_idle_timeout_ms=db.get("pool_idle_timeout_ms", 30000),
         connection_timeout_ms=db.get("connection_timeout_ms", 15000),
         request_timeout_ms=db.get("request_timeout_ms", 30000),
-        api_key=_esc(sfec.get("api_key", "")),
+        api_key="",
         sb_t=_s(sfec.get("use_sandbox"), True),
         sb_f=_s(sfec.get("use_sandbox"), False),
         en_t=_s(sfec.get("enabled"), True),
@@ -130,10 +163,7 @@ def config_page():
         ll_e=_s(log_level, "error"),
         dash_port=_esc(dash.get("port", 3000)),
         auth_t=_s(dash.get("auth_enabled"), True),
-        auth_f=_s(dash.get("auth_enabled"), False),
         login_email=_esc(dash.get("login_email", "")),
-        login_password=_esc(dash.get("login_password", "")),
-        session_secret=_esc(dash.get("session_secret", "")),
         session_max_hours=_esc(dash.get("session_max_age_hours", 24)),
         host=_esc(dash.get("host", "0.0.0.0")),
     )
@@ -178,11 +208,18 @@ def api_sfec_certify():
         inv = invoice_engine.get_invoice(inv_num)
         if not inv:
             return jsonify({"success": False, "error": "Facture SQLite #{} non trouvee".format(inv_num)}), 404
+        statut = (inv.get("statut") or "").lower()
+        if statut in ("", "brouillon", "draft"):
+            return jsonify({"success": False,
+                            "error": "Validez la facture avant de la certifier SFEC"}), 422
+        if invoice_engine.is_invoice_locked(inv):
+            return jsonify({"success": False,
+                            "error": "Facture deja certifiee SFEC ou synchronisee Sage"}), 409
 
         try:
             result = certify_sqlite_invoice(inv)
             user_auth.audit("facture.certifiee", "Certification SFEC {} #{}".format(
-                result.get("sfec_statut", ""), result.get("numero", "")),
+                result.get("certification_number", ""), inv.get("numero", "")),
                 email=(_current_identity() or {}).get("email", ""))
             return jsonify(result)
         except Exception as e:
@@ -199,7 +236,8 @@ def api_sfec_to_monitor():
     if not invoice_id:
         return jsonify({"success": False, "error": "invoice_id requis"}), 400
     try:
-        mark_to_monitor(invoice_id)
+        from app.sync.engine import mark_invoice_to_monitor
+        mark_invoice_to_monitor(invoice_id)
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -280,15 +318,7 @@ def api_tables():
 @bp.route("/api/config", methods=["GET"])
 @_login_required
 def api_get_config():
-    cfg = get_config()
-    masked = dict(cfg)
-    for section in ("db", "sfec"):
-        if section in masked:
-            masked[section] = dict(masked[section])
-            for key in ("password", "api_key"):
-                if key in masked[section]:
-                    masked[section][key] = "***"
-    return jsonify(masked)
+    return jsonify(_redact_config(get_config()))
 
 
 @bp.route("/api/config/db", methods=["POST"])
@@ -298,7 +328,7 @@ def api_config_db():
     db = dict(cfg.get("db", {}))
     data = request.get_json(silent=True) or {}
     for key in ("server", "database", "user", "password"):
-        if key in data:
+        if key in data and not (key == "password" and data[key] == ""):
             db[key] = data[key]
     for key in ("port", "polling_interval_ms", "pool_max", "pool_min",
                 "pool_idle_timeout_ms", "connection_timeout_ms", "request_timeout_ms"):
@@ -322,7 +352,7 @@ def api_config_sfec():
     sfec = dict(cfg.get("sfec", {}))
     data = request.get_json(silent=True) or {}
     for key in ("api_key", "base_url", "sandbox_url", "certify_status"):
-        if key in data:
+        if key in data and not (key == "api_key" and data[key] == ""):
             sfec[key] = data[key]
     for key in ("use_sandbox", "enabled"):
         if key in data:
@@ -453,24 +483,41 @@ def api_config_system():
         cfg["log_level"] = data["log_level"]
 
     dash = dict(cfg.get("dashboard", {}))
-    for key in ("login_email", "login_password", "session_secret", "host"):
+    for key in ("login_email", "host"):
         if key in data:
             dash[key] = data[key]
+    # Le mot de passe de bootstrap n'est jamais réaffiché ; un champ vide
+    # conserve la valeur existante. Le secret de session n'est plus éditable
+    # depuis l'interface : il est généré/validé par _get_secret_key().
+    if data.get("login_password"):
+        password = str(data["login_password"])
+        if len(password) < 10 or not any(c.isalpha() for c in password) or not any(c.isdigit() for c in password):
+            return jsonify({"ok": False, "error": "Mot de passe trop faible (10 caracteres minimum, lettres et chiffres)"}), 400
+        dash["login_password"] = password
     if "port" in data:
         try:
             dash["port"] = int(data["port"])
         except (ValueError, TypeError):
             pass
     if "auth_enabled" in data:
-        dash["auth_enabled"] = _bool(data["auth_enabled"])
+        if not _bool(data["auth_enabled"]):
+            return jsonify({
+                "ok": False,
+                "error": "La desactivation de l'authentification via l'interface est interdite",
+            }), 400
+        dash["auth_enabled"] = True
     if "session_max_age_hours" in data:
         try:
-            dash["session_max_age_hours"] = int(data["session_max_age_hours"])
+            hours = int(data["session_max_age_hours"])
+            if 1 <= hours <= 24 * 30:
+                dash["session_max_age_hours"] = hours
         except (ValueError, TypeError):
             pass
     cfg["dashboard"] = dash
 
     save_config(cfg)
+    user_auth.audit("config.systeme", "Configuration systeme mise a jour",
+                    email=(_current_identity() or {}).get("email", ""))
     return jsonify({"ok": True})
 
 
@@ -495,7 +542,7 @@ def api_config_reload():
 def api_config_export():
     from flask import send_file, after_this_request
     import tempfile
-    cfg = get_config()
+    cfg = _redact_config(get_config())
     tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8")
     json.dump(cfg, tmp, indent=2, ensure_ascii=False)
     tmp.close()
@@ -532,8 +579,20 @@ def api_config_import():
         if not isinstance(data[section], dict):
             return jsonify({"ok": False, "error": "La section '{}' doit etre un objet".format(section)}), 400
 
+    dashboard = data.get("dashboard")
+    if isinstance(dashboard, dict):
+        if dashboard.get("auth_enabled") is False or str(dashboard.get("auth_enabled")).lower() == "false":
+            return jsonify({
+                "ok": False,
+                "error": "L'import ne peut pas desactiver l'authentification",
+            }), 400
+        dashboard.pop("session_secret", None)
+
     try:
-        save_config(data)
+        merged = _merge_import_config(get_config(), data)
+        save_config(merged)
+        user_auth.audit("config.import", "Configuration importee",
+                        email=(_current_identity() or {}).get("email", ""))
         return jsonify({"ok": True, "message": "Configuration importee avec succes"})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500

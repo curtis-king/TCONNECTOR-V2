@@ -7,14 +7,14 @@ wrapping _login_required est reproduit à l'identique.
 """
 
 import functools
-import json
 import os
 from flask import Blueprint, jsonify, render_template, request, send_file, session
 from app.config.manager import get_config, save_config
 from app.domain import invoices as invoice_engine, pdf as pdf_generator, pos as pos_engine
 from app.storage import db as sqlite_db
 from app.web.common import _esc, _page
-from app.web.auth.security import _login_required
+from app.web.auth.security import _login_required, _current_identity
+from app.web.auth import user_auth
 
 bp = Blueprint("pos", __name__)
 
@@ -101,21 +101,23 @@ def pos_page():
     for v in vendeurs:
         label = "{} {}".format(v.get("prenom", "") or "", v.get("nom", "") or "").strip()
         sel = ' selected' if current_vendeur_id and v["id"] == current_vendeur_id else ""
-        vendeur_opts_html += '<option value="{}"{}>{}</option>'.format(v["id"], sel, label)
+        vendeur_opts_html += '<option value="{}"{}>{}</option>'.format(
+            v["id"], sel, _esc(label))
 
     with sqlite_db.get_cursor() as cur:
         cur.execute("SELECT id, code, nom, niu, rccm, is_taxable, type FROM contacts WHERE type = 'client' AND est_actif = 1 ORDER BY nom")
         pos_clients = sqlite_db.rows_to_list(cur.fetchall())
-        pos_clients_js = json.dumps([
-        {"id": c["id"], "code": c["code"], "nom": c["nom"],
-         "niu": c.get("niu", ""), "rccm": c.get("rccm", ""),
-         "is_taxable": c.get("is_taxable", 1)} for c in pos_clients
-    ], ensure_ascii=False)
+        pos_clients_data = [
+            {"id": c["id"], "code": c["code"], "nom": c["nom"],
+             "niu": c.get("niu", ""), "rccm": c.get("rccm", ""),
+             "type": c.get("type", ""), "type_raw": c.get("type_raw", ""),
+             "is_taxable": c.get("is_taxable", 1)} for c in pos_clients
+        ]
 
-    pos_clients_html = '<option value="|CLI-CPT|Client comptoir" selected>Client comptoir</option>'
+    pos_clients_html = '<option value="CLI-CPT" selected>Client comptoir</option>'
     for c in pos_clients:
-        pos_clients_html += '<option value="|{}|{}">{}</option>'.format(
-            _esc(c["code"]), _esc(c["nom"]), _esc("{} - {}".format(c["code"], c["nom"])))
+        pos_clients_html += '<option value="{}">{}</option>'.format(
+            _esc(c["code"]), _esc("{} - {}".format(c["code"], c["nom"])))
 
     stats_html = ('<div class="pos-stat-pill"><b>{tj}</b><span>Tickets aujourd&#39;hui</span></div>'
                   '<div class="pos-stat-pill"><b>{cj} FCFA</b><span>CA du jour</span></div>'
@@ -129,7 +131,7 @@ def pos_page():
         top10_tiles=top10_tiles,
         vendeur_opts_html=vendeur_opts_html,
         pos_clients_html=pos_clients_html,
-        pos_clients_js=pos_clients_js,
+        pos_clients_data=pos_clients_data,
         ticket_rows_html=ticket_rows_html,
         stock_ctl_js="true" if pos_engine.stock_control_enabled() else "false",
     )
@@ -154,9 +156,10 @@ def pos_print_ticket(ticket_id):
     logo_html = ""
     logo_path = company.get("logo_file_name", "")
     if logo_path and os.path.exists(logo_path):
-        logo_html = '<img src="{}" style="max-height:60px">'.format(logo_path)
+        logo_html = '<img src="{}" style="max-height:60px">'.format(_esc(logo_path))
     elif company.get("logo_base64"):
-        logo_html = '<img src="data:image/png;base64,{}" style="max-height:60px">'.format(company["logo_base64"])
+        logo_html = '<img src="data:image/png;base64,{}" style="max-height:60px">'.format(
+            _esc(company["logo_base64"]))
 
     def _fmt_cert_date(s):
         s = (s or "").strip()
@@ -194,9 +197,12 @@ def pos_print_ticket(ticket_id):
                              '<div class="info">N certif : {}</div>'.format(_esc(cert_short))]
                     if cert_date:
                         parts.append('<div class="info">Date : {}</div>'.format(_esc(cert_date)))
-                    if qr and (qr.startswith("data:") or qr.startswith("http")) and len(qr) < 40000:
+                    if qr and (
+                            qr.startswith("data:image/")
+                            or qr.startswith("https://")
+                            or qr.startswith("http://")) and len(qr) < 40000:
                         parts.append('<div style="text-align:center;margin:2px 0">'
-                                     '<img src="{}" style="width:16mm;height:16mm;image-rendering:pixelated"></div>'.format(qr))
+                                     '<img src="{}" style="width:16mm;height:16mm;image-rendering:pixelated"></div>'.format(_esc(qr)))
                     sfec_html = '<div class="rule"></div>' + "".join(parts)
                 elif sstatut == "ERREUR":
                     sfec_html = ('<div class="rule"></div>'
@@ -227,7 +233,7 @@ def pos_print_ticket(ticket_id):
         paiement=_esc(paiement_label),
         recu="{:,.0f}".format(ticket.get("montant_recu", 0)),
         monnaie="{:,.0f}".format(ticket.get("monnaie_rendue", 0)),
-        message=get_setting("ticket_message", "Merci pour votre achat !"),
+        message=_esc(get_setting("ticket_message", "Merci pour votre achat !")),
         ticket_id=ticket["id"],
     )
 
@@ -245,6 +251,9 @@ def api_pos_config():
             pos["stock_control"] = bool(data["stock_control"])
         cfg["pos"] = pos
         save_config(cfg)
+        user_auth.audit("pos.stock_control", "Controle de stock: {}".format(
+            "actif" if pos.get("stock_control", True) else "inactif"),
+            email=(_current_identity() or {}).get("email", ""))
         return jsonify({"success": True, "stock_control": bool(pos.get("stock_control", True))})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
@@ -256,20 +265,34 @@ def api_create_ticket():
     data = request.get_json(silent=True) or {}
     try:
         result = pos_engine.create_ticket(data)
+        if result.get("success"):
+            user_auth.audit("pos.ticket", "Ticket {} cree ({} FCFA)".format(
+                result.get("numero", ""), result.get("montant_ttc", 0)),
+                email=(_current_identity() or {}).get("email", ""))
         return jsonify(result)
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 400
+    except Exception:
+        import logging
+        logging.getLogger("t-connector.pos").exception("Creation ticket route echouee")
+        return jsonify({"success": False, "error": "Erreur interne de creation du ticket"}), 400
 
 
 @bp.route("/api/pos/tickets")
 @_login_required
 def api_list_tickets():
+    try:
+        limit = max(1, min(int(request.args.get("limit", 100)), 500))
+    except (TypeError, ValueError):
+        limit = 100
+    try:
+        offset = max(0, int(request.args.get("offset", 0)))
+    except (TypeError, ValueError):
+        offset = 0
     result = pos_engine.list_tickets(
         date_from=request.args.get("date_from"),
         date_to=request.args.get("date_to"),
         vendeur_id=request.args.get("vendeur_id"),
         search=request.args.get("search"),
-        limit=min(int(request.args.get("limit", 100)), 500)
+        limit=limit, offset=offset
     )
     return jsonify(result)
 
