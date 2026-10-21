@@ -1,4 +1,5 @@
 # Dépendances de développement (à installer EN PLUS de requirements.txt)
-# Installation : uv pip install --python .venv/bin/python -r requirements-dev.txt
+# Installation Windows : .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+# Installation Linux   : .venv/bin/python -m pip install -r requirements-dev.txt
 pytest>=9.0
 pytest-json-report>=1.5

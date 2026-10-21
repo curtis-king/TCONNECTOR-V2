@@ -2,8 +2,11 @@ import os
 import sys
 import win32serviceutil
 
-# Ajoute la racine du projet au sys.path (2 niveaux au-dessus de scripts/windows/).
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Ajoute la racine du projet au sys.path (3 niveaux au-dessus du fichier :
+# _install_svc.py -> windows -> scripts -> connecteur-python).
+_PROJECT_ROOT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
