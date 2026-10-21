@@ -55,10 +55,10 @@ th{background:#f5f5f5}
 <thead><tr><th>Designation</th><th style="text-align:right">Qte</th><th style="text-align:right">Prix unit.</th><th style="text-align:right">TVA</th><th style="text-align:right">Montant HT</th></tr></thead>
 <tbody>{{ item_rows | safe }}
 <tr class="total-row"><td colspan="4">Total HT</td><td style="text-align:right">{{ total_ht | safe }} {{ currency | safe }}</td></tr>
-<tr class="total-row"><td colspan="4">TVA 18%</td><td style="text-align:right">{{ total_tax18 | safe }} {{ currency | safe }}</td></tr>
-<tr class="total-row"><td colspan="4">TVA 5%</td><td style="text-align:right">{{ total_tax5 | safe }} {{ currency | safe }}</td></tr>
+{% if total_tax18 not in ("0", "0.00") %}<tr class="total-row"><td colspan="4">TVA 18%</td><td style="text-align:right">{{ total_tax18 | safe }} {{ currency | safe }}</td></tr>{% endif %}
+{% if total_tax5 not in ("0", "0.00") %}<tr class="total-row"><td colspan="4">TVA 5%</td><td style="text-align:right">{{ total_tax5 | safe }} {{ currency | safe }}</td></tr>{% endif %}
 <tr class="total-row"><td colspan="4">Exonere</td><td style="text-align:right">{{ total_exempt | safe }} {{ currency | safe }}</td></tr>
-<tr class="total-row"><td colspan="4">Remise globale</td><td style="text-align:right">-{{ discount_display | safe }} {{ currency | safe }}</td></tr>
+{% if discount_display not in ("0", "0.00") %}<tr class="total-row"><td colspan="4">Remise globale</td><td style="text-align:right">-{{ discount_display | safe }} {{ currency | safe }}</td></tr>{% endif %}
 <tr class="total-row"><td colspan="4">Centime additionnel</td><td style="text-align:right">{{ additional_cent_tax | safe }} {{ currency | safe }}</td></tr>
 <tr class="total-row"><td colspan="4">Timbre electronique</td><td style="text-align:right">{{ electronic_stamp_duty | safe }} {{ currency | safe }}</td></tr>
 <tr class="total-row"><td colspan="4"><strong>TOTAL TTC</strong></td><td style="text-align:right"><strong>{{ total_ttc | safe }} {{ currency | safe }}</strong></td></tr>

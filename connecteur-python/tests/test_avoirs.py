@@ -15,17 +15,10 @@ ici ferait dériver /api/invoices/stats et les listes. D'où :
   - un fixture autouse nettoie les factures/lignes/contacts créés AVANT et
     APRÈS la session de tests.
 
-COMPORTEMENT SERVEUR DIFFÉRENT DU PLAN (documenté, test NON faussé) :
-  - Cas 4 : la création initiale d'un contact RÉUSSIT côté base mais la route
-    /api/contacts (POST) renvoie 400 « local variable 'code' referenced before
-    assignment » — bug PRÉ-EXISTANT d'api_create_contact (directory.py :
-    `code` n'est affecté que dans la branche d'échec). Le contact est bien
-    inséré (commit avant la réponse), donc le 2e POST avec le même NIU
-    déclenche bien la détection de doublon -> 409, qui est ce que vérifie ce
-    test. Le bug de la route (400 au lieu de 200 à la création) est signalé
-    dans docs/checking/audit-plan-6-a-fin.md (section B2), sans correction
-    volontaire (hors périmètre ; déjà couvert par le fix B1 des correctifs
-    ciblés de l'audit).
+COMPORTEMENT SERVEUR DIFFERENT DU PLAN (documenté, test NON faussé) :
+  - Cas 4 : la création initiale d'un contact RÉUSSIT et la route
+    /api/contacts (POST) renvoie désormais 201, conformément à l'API REST.
+    Le 2e POST avec le même NIU déclenche la détection de doublon -> 409.
 """
 import pytest
 
@@ -64,6 +57,10 @@ def _post(client, path, payload, csrf_token):
 
 
 def _post_invoice(client, csrf_token, payload):
+    payload.setdefault("lignes", [
+        {"designation": "Ligne test", "quantite": 1,
+         "prix_unitaire": 1000, "taux_tva": 0},
+    ])
     return _post(client, "/api/invoices", payload, csrf_token)
 
 
@@ -140,9 +137,8 @@ def test_contact_doublon_niu_rejete(client, csrf_token):
     r1 = _post(client, "/api/contacts", {
         "code": PREFIX + "C1", "nom": "Contact Test 1", "niu": niu,
     }, csrf_token)
-    # Bug pré-existant de la route : 400 « local variable 'code' ... » au lieu
-    # de 200, MAIS l'INSERT est commité (voir docstring du module).
-    assert r1.status_code in (200, 400), r1.get_json()
+    # La creation d'un contact renvoie 201 (API REST).
+    assert r1.status_code in (200, 201), r1.get_json()
 
     r2 = _post(client, "/api/contacts", {
         "code": PREFIX + "C2", "nom": "Contact Test 2", "niu": niu,

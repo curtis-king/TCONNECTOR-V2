@@ -4,6 +4,13 @@
 <table><thead><tr><th>Numero</th><th>Date</th><th>Tiers</th>
 <th style="text-align:right">Montant TTC</th><th>Action</th></tr></thead>
 <tbody>{{ rows | safe }}{{ empty | safe }}</tbody></table>
+{% if count > 100 %}
+<div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px">
+<div>{% if has_prev %}<a class="btn btn-sm" href="{{ url_for('dashboard.pending_page', page=page - 1) }}">Precedent</a>{% endif %}</div>
+<div style="color:#94a3b8">{{ offset + 1 }}-{{ offset + shown }} sur {{ count }} &middot; page {{ page }}/{{ pages }}</div>
+<div>{% if has_next %}<a class="btn btn-sm" href="{{ url_for('dashboard.pending_page', page=page + 1) }}">Suivant</a>{% endif %}</div>
+</div>
+{% endif %}
 <div id="cert-status" style="margin-top:12px"></div></div>
 <script>
 function certifySingle(id){

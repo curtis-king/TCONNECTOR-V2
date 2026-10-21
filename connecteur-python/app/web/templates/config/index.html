@@ -16,7 +16,7 @@
 <div><label>Port</label><input type="number" name="port" value="{{ port | safe }}"></div>
 <div><label>Base de donnees</label><input type="text" name="database" value="{{ database | safe }}"><div class="desc">Nom exact de la base Sage 100</div></div>
 <div><label>Utilisateur</label><input type="text" name="user" value="{{ user | safe }}"></div>
-<div><label>Mot de passe</label><input type="password" name="password" value="{{ password | safe }}"></div>
+<div><label>Mot de passe</label><input type="password" name="password" value="" placeholder="Laisser vide pour conserver" autocomplete="new-password"></div>
 <div><label>Connexion Windows</label><select name="trusted_connection"><option value="false" {{ tc_f }}>Non</option><option value="true" {{ tc_t }}>Oui</option></select></div>
 <div><label>Chiffrer</label><select name="encrypt"><option value="false" {{ enc_f }}>Non</option><option value="true" {{ enc_t }}>Oui</option></select></div>
 <div><label>Confiance certificat</label><select name="trust_server_certificate"><option value="true" {{ tsc_t }}>Oui</option><option value="false" {{ tsc_f }}>Non</option></select></div>
@@ -39,7 +39,7 @@
 <h2 style="margin-bottom:16px">Configuration API SFEC</h2>
 <form id="form-sfec" onsubmit="event.preventDefault();saveForm('form-sfec','/api/config/sfec')">
 <div class="grid-2">
-<div><label>Cle API SFEC</label><input type="text" name="api_key" value="{{ api_key | safe }}"></div>
+<div><label>Cle API SFEC</label><input type="password" name="api_key" value="" placeholder="Laisser vide pour conserver" autocomplete="new-password"></div>
 <div><label>Environnement</label><select name="use_sandbox"><option value="true" {{ sb_t }}>Sandbox (test)</option><option value="false" {{ sb_f }}>Production</option></select></div>
 <div><label>SFEC active</label><select name="enabled"><option value="true" {{ en_t }}>Oui</option><option value="false" {{ en_f }}>Non</option></select></div>
 <div><label>Statut pour certification</label><select name="certify_status">
@@ -149,11 +149,11 @@
 <option value="warning" {{ ll_w }}>Warning</option>
 <option value="error" {{ ll_e }}>Error</option></select></div>
 <div><label>Port dashboard</label><input type="number" name="port" value="{{ dash_port | safe }}"></div>
-<div><label>Auth active</label><select name="auth_enabled"><option value="true" {{ auth_t }}>Oui</option><option value="false" {{ auth_f }}>Non</option></select></div>
+<div><label>Auth active</label><input type="text" value="Oui (obligatoire)" disabled></div>
 <div><label>Email login</label><input type="email" name="login_email" value="{{ login_email | safe }}"></div>
-<div><label>Mot de passe login</label><input type="password" name="login_password" value="{{ login_password | safe }}"></div>
-<div><label>Session secret</label><input type="text" name="session_secret" value="{{ session_secret | safe }}"></div>
-<div><label>Duree session (heures)</label><input type="number" name="session_max_age_hours" value="{{ session_max_hours | safe }}"></div>
+<div><label>Mot de passe login</label><input type="password" name="login_password" value="" placeholder="Laisser vide pour conserver" autocomplete="new-password"></div>
+<div><label>Secret de session</label><input type="text" value="Gere automatiquement (non affiche)" disabled></div>
+<div><label>Duree session (heures)</label><input type="number" name="session_max_age_hours" value="{{ session_max_hours | safe }}" min="1" max="720"></div>
 <div><label>Host</label><input type="text" name="host" value="{{ host | safe }}"></div>
 </div>
 <div style="margin-top:16px">

@@ -159,7 +159,6 @@
 <option value="virement">Virement</option>
 <option value="carte">Carte</option>
 <option value="cheque">Cheque</option>
-<option value="mixte">Mixte</option>
 </select>
 <div class="pos-pay-methods" id="pos-pay-methods"></div>
 </div>
@@ -181,17 +180,16 @@
 var posCart=[];
 var posLineIdx=0;
 var posSearchTimer=null;
-var posClients={{ pos_clients_js | safe }};
+var posClients={{ pos_clients_data | tojson }};
 window.NATIVE_ALERTS = true;
 
 function _h(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
 
 function getPosClientData(v){
   v=String(v||"");
-  if(v==="|CLI-CPT|Client comptoir"){var c=posClients.filter(function(x){return x.code==="CLI-CPT"})[0];return {code:"CLI-CPT",nom:"Client comptoir",id:c?c.id:null};}
-  var parts=v.split("|");
-  if(parts.length>=3){return {code:parts[1],nom:parts.slice(2).join("|"),id:null};}
-  return {code:"",nom:"Client comptoir",id:null};
+  var c=posClients.filter(function(x){return x.code===v})[0];
+  if(c){return {code:c.code,nom:c.nom,id:c.id,niu:c.niu||"",rccm:c.rccm||"",type:c.type_raw||c.type||"",is_taxable:c.is_taxable};}
+  return {code:"CLI-CPT",nom:"Client comptoir",id:null,niu:"",rccm:"",type:"individual",is_taxable:1};
 }
 
 function addToCartFromTile(elm){
@@ -210,8 +208,9 @@ function addToCart(p){
 
 function addPosLineManual(){
   var desc=prompt("Designation de la ligne :");if(!desc||!desc.trim())return;
-  var prix=parseFloat(prompt("Prix unitaire (FCFA) :"))||0;
-  var q=parseInt(document.getElementById("pos-qte").value)||1;
+  var prix=parseFloat(prompt("Prix unitaire (FCFA) :"));
+  if(!isFinite(prix)||prix<0){showToast("Prix unitaire invalide","err");return}
+  var q=parseFloat(document.getElementById("pos-qte").value)||1;if(!isFinite(q)||q<0.5)q=0.5;
   posLineIdx++;posCart.push({idx:posLineIdx,ref:"",barcode:"",designation:desc.trim(),prix_unitaire:prix,quantite:q,taux_tva:18,product_id:null});
   renderPosCart();
 }
@@ -289,7 +288,7 @@ function renderPosCart(){
   calcMonnaie();
 }
 
-function updatePosQte(idx,val){var l=posCart.filter(function(x){return x.idx===idx})[0];if(l){l.quantite=parseFloat(val)||1;renderPosCart()}}
+function updatePosQte(idx,val){var l=posCart.filter(function(x){return x.idx===idx})[0];if(l){var q=parseFloat(val);if(!isFinite(q)||q<0.5)q=0.5;l.quantite=q;renderPosCart()}}
 function removePosLine(idx){posCart=posCart.filter(function(l){return l.idx!==idx});renderPosCart()}
 function clearCart(){posCart=[];posLineIdx=0;renderPosCart()}
 function round2(n){return Math.round(n*100)/100}
@@ -320,6 +319,10 @@ function validerTicket(){
   var pcd=getPosClientData(document.getElementById("pos-client").value);
   var data={tiers_nom:pcd.nom||"Client comptoir",
             tiers_code:pcd.code||"",
+            tiers_niu:pcd.niu||"",
+            tiers_rccm:pcd.rccm||"",
+            tiers_type:pcd.type||"individual",
+            is_recipient_taxable:(pcd.is_taxable===0||pcd.is_taxable===false)?0:1,
             contact_id:pcd.id||null,
             mode_paiement:document.getElementById("pos-paiement").value,
             montant_recu:parseFloat(document.getElementById("pos-recu").value)||0,
@@ -332,8 +335,9 @@ function validerTicket(){
       if(d.invoice_numero){msg+=" - Facture "+d.invoice_numero}
       if(d.sfec_ok){msg+=" - SFEC certifiee ("+String(d.sfec_num_certif||"").slice(0,20)+")"}
       else if(d.sfec_error){msg+=" - SFEC: "+String(d.sfec_error).slice(0,40)}
-      msg+=" - Monnaie : "+Number(d.monnaie_rendue||0).toLocaleString("fr-FR")+" FCFA";
+      if(d.mode_paiement==="especes"){msg+=" - Monnaie : "+Number(d.monnaie_rendue||0).toLocaleString("fr-FR")+" FCFA";}
       if(d.sage_ok){msg+=" - ecrite dans Sage"}
+      else if(d.sage_error){msg+=" - Sage: "+String(d.sage_error).slice(0,40)}
       showToast(msg,(d.sfec_ok&&d.sage_ok)?"ok":"warn");
       clearCart();
       document.getElementById("pos-recu").value=0;
@@ -358,7 +362,6 @@ var POS_PAY_METHODS=[
   {v:"carte",l:"Carte",i:'<rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/>'},
   {v:"virement",l:"Virement",i:'<polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/>'},
   {v:"cheque",l:"Cheque",i:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>'},
-  {v:"mixte",l:"Mixte",i:'<circle cx="9" cy="9" r="7"/><path d="M14.5 4.5A7 7 0 1 1 4.5 14.5"/>'}
 ];
 function renderPayMethods(){
   var wrap=document.getElementById("pos-pay-methods");if(!wrap)return;
@@ -381,6 +384,7 @@ function syncPayUI(){
   var current=document.getElementById("pos-paiement").value;
   var wrap=document.getElementById("pos-pay-methods");if(!wrap)return;
   Array.prototype.forEach.call(wrap.children,function(btn,i){btn.classList.toggle("active",POS_PAY_METHODS[i].v===current)});
+  var recu=document.getElementById("pos-recu");if(recu){var box=recu.parentElement;box.style.display=current==="especes"?"":"none";if(current!=="especes")recu.value=0;}
 }
 renderPayMethods();
 </script>

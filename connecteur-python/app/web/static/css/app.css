@@ -37,6 +37,11 @@ body{font-family:'Segoe UI',Tahoma,sans-serif;background:#f1f5f9;color:#1e293b;m
 .sidebar-nav li a .logout{color:#dc2626}
 .sidebar-nav li a.logout-link{color:#dc2626}
 .sidebar-nav li a.logout-link:hover{background:#fef2f2;color:#b91c1c}
+.sidebar-nav li form.logout-form{margin:0}
+.sidebar-nav li button.logout-link{display:flex;align-items:center;gap:12px;width:100%;padding:10px 14px;background:transparent;border:0;border-left:3px solid transparent;border-radius:10px;color:#dc2626;font:inherit;font-size:13px;font-weight:500;text-align:left;cursor:pointer;transition:all 0.18s}
+.sidebar-nav li button.logout-link:hover{background:#fef2f2;color:#b91c1c}
+.sidebar-nav li button.logout-link .label{white-space:nowrap}
+.inline-logout{display:inline;margin:0}
 .main-content{margin-left:250px;flex:1;padding:24px 32px;max-width:calc(100vw - 250px);transition:margin-left 0.25s ease}
 .topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid #eef2f7}
 .topbar-title{font-size:21px;font-weight:700;color:#0f172a}

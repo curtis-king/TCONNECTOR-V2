@@ -79,7 +79,7 @@ def login_page():
     return redirect("/")
 
 
-@bp.route("/logout", methods=["GET"])
+@bp.route("/logout", methods=["POST"])
 def logout():
     user_auth.audit("deconnexion", "Deconnexion", email=session.get("user_email", ""),
                     ip=request.remote_addr or "")
@@ -99,7 +99,9 @@ def api_compte_password():
     ident = _current_identity() or {}
     data = request.get_json(silent=True) or {}
     try:
-        user, err = user_auth.authenticate(ident.get("email", ""), data.get("current", ""))
+        user, err = user_auth.authenticate(
+            ident.get("email", ""), data.get("current", ""),
+            ip=request.remote_addr or "")
         if not user:
             return jsonify({"success": False, "error": "Mot de passe actuel incorrect"}), 400
         user_auth.set_password(user["id"], data.get("nouveau", ""))

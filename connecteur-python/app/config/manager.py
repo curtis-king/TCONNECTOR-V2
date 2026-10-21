@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import copy
+import tempfile
 import threading
 
 if getattr(sys, 'frozen', False):
@@ -22,6 +23,8 @@ for _c in _config_candidates:
         break
 if CONFIG_FILE is None:
     CONFIG_FILE = _config_candidates[0]
+# Surcharge réservée aux tests isolés (copie temporaire de config.json).
+CONFIG_FILE = os.environ.get("TCONNECTOR_CONFIG_FILE") or CONFIG_FILE
 
 _lock = threading.RLock()
 _config = None
@@ -163,9 +166,35 @@ def load_config():
 def save_config(cfg):
     global _config
     with _lock:
-        _config = copy.deepcopy(cfg)
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(_config, f, indent=2, ensure_ascii=False)
+        clean = copy.deepcopy(cfg)
+        # La clé fournie par l'environnement ne doit JAMAIS être persistée
+        # dans config.json (audit : fuite de secret via export/sauvegarde).
+        env_key = os.environ.get("SFEC_API_KEY", "").strip()
+        if env_key and clean.get("sfec", {}).get("api_key") == env_key:
+            clean.setdefault("sfec", {})["api_key"] = ""
+
+        directory = os.path.dirname(CONFIG_FILE) or "."
+        os.makedirs(directory, exist_ok=True)
+        tmp_path = None
+        try:
+            fd, tmp_path = tempfile.mkstemp(prefix=".config-", suffix=".json", dir=directory)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(clean, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            try:
+                os.chmod(tmp_path, 0o600)
+            except OSError:
+                pass
+            os.replace(tmp_path, CONFIG_FILE)
+            tmp_path = None
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+        _config = copy.deepcopy(clean)
 
 
 def get_config():
