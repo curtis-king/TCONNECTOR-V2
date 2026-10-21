@@ -104,6 +104,19 @@ scripts\windows\lancer.bat
 `installer.bat` copie `dist\TConnector\` vers `C:\TConnector` et cree le
 service `TConnectorSFEC`.
 
+## Impression automatique (`print_hijack`)
+
+Le workflow complet est decrit dans
+[`docs/impression-workflow.md`](docs/impression-workflow.md) : dossiers de
+depot, configuration des imprimantes, certification SFEC, tests et depannage.
+
+Points cles :
+
+- les factures Sage sont deposees en PDF dans `data/WATCH/IN` ;
+- le watcher genere la version conforme et l'imprime via SumatraPDF ;
+- renseigner `print_hijack.printer_name` ou configurer un site dans `/sites` ;
+- `print_hijack.enabled` doit etre a `true`.
+
 ## Tests
 
 ```bat

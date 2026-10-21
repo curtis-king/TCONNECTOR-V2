@@ -27,17 +27,30 @@
   },
   "company": {
     "name": "YOUR_COMPANY_NAME",
+    "slogan": "",
     "address": "YOUR_ADDRESS",
     "city": "Brazzaville",
     "country": "Congo",
     "phone": "",
     "email": "",
+    "website": "",
     "tax_number": "YOUR_NIU",
+    "rc_number": "",
+    "logo_base64": "",
+    "logo_file_name": "",
     "currency": "XAF",
+    "currency_symbol": "FCFA",
+    "default_payment_terms": "Net 30",
     "bank_name": "",
     "bank_account": "",
+    "bank_iban": "",
+    "bank_swift": "",
     "invoice_prefix": "INV-",
-    "invoice_next_number": 1
+    "invoice_next_number": 1,
+    "invoice_notes": "",
+    "invoice_footer": "",
+    "tax_regime": "",
+    "qrcode_enabled": true
   },
   "queue": {
     "max_concurrent": 5,
@@ -74,14 +87,19 @@
     "login_password": "CHANGE-THIS",
     "session_max_age_hours": 24
   },
+  "pos": {
+    "stock_control": true
+  },
   "print_hijack": {
     "enabled": false,
-    "printer_name": "YOUR_PRINTER_NAME",
-    "sumatra_path": "C:/Users/YOUR_USER/AppData/Local/SumatraPDF/SumatraPDF.exe",
     "watch_dir": "data/WATCH/IN",
     "out_dir": "data/WATCH/OUT",
     "done_dir": "data/WATCH/DONE",
     "quarantine_dir": "data/WATCH/QUARANTINE",
+    "printer_name": "YOUR_PRINTER_NAME",
+    "sumatra_path": "C:/Users/YOUR_USER/AppData/Local/SumatraPDF/SumatraPDF.exe",
+    "sumatra_min_version": "3.5.2",
+    "auto_install_sumatra": true,
     "stable_delay_s": 2,
     "stable_retries": 5,
     "poll_interval_s": 5,

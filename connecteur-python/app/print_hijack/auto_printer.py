@@ -65,10 +65,13 @@ def printer_exists(name):
 
 def print_pdf(pdf_path, printer_name, sumatra_path, dry_run=False, timeout_s=60):
     """Imprime un PDF. Retourne (ok, erreur)."""
-    if dry_run or not printer_name:
+    if dry_run:
         logger.info("[dry_run] impression simulee: %s -> '%s'",
                     pdf_path, printer_name or "(aucune)")
         return True, ""
+    if not printer_name:
+        return False, ("Aucune imprimante configuree "
+                       "(print_hijack.printer_name ou site actif)")
     exe = resolve_sumatra_path(sumatra_path)
     if not exe:
         return False, "SumatraPDF introuvable (configurer print_hijack.sumatra_path)"

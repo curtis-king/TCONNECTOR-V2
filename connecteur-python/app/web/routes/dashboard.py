@@ -529,6 +529,7 @@ def impressions_page():
         "ATTENTE_CERTIF": ("badge-warn", "Attente certif"),
         "NON_CONFORME": ("badge-warn", "Non conforme"),
         "SKIP_DEDUP": ("badge-info", "Doublon"),
+        "IMPRIMANTE_ABSENTE": ("badge-err", "Imprimante absente"),
         "QUARANTINE": ("badge-err", "Quarantaine"),
         "REFUS": ("badge-err", "Refuse"),
         "ERREUR": ("badge-err", "Erreur"),
