@@ -402,3 +402,69 @@ def test_vendeur_link_is_case_insensitive(app_instance):
         _purge_user(email)
         with _cur() as cur:
             cur.execute("DELETE FROM vendeurs WHERE code = ?", ("TEST-SEC-V1",))
+
+
+# ── Validation des plages de configuration (CF-13/14/15/22/23) ───────────────
+
+def test_config_db_rejette_valeurs_hors_plage(client):
+    """CF-13/23 : port invalide et pool_min > pool_max sont refuses (400)."""
+    token = _csrf(client)
+    r = client.post("/api/config/db", json={"port": 99999},
+                    headers={"X-CSRF-Token": token})
+    assert r.status_code == 400
+    assert "port" in str(r.get_json())
+
+    from app.config.manager import get_config
+    pool_max = int((get_config().get("db") or {}).get("pool_max", 10) or 10)
+    r = client.post("/api/config/db", json={"pool_min": pool_max + 5},
+                    headers={"X-CSRF-Token": token})
+    assert r.status_code == 400
+    assert "pool_min" in str(r.get_json())
+
+
+def test_config_sfec_valide_urls_et_statut(client):
+    """CF-14/15 : URL non-http(s) refusee, hote prive signale (non bloque),
+    certify_status restreint a la liste SFEC."""
+    from app.config.manager import get_config, save_config
+    token = _csrf(client)
+    cfg = get_config()
+    old_urls = {k: (cfg.get("sfec") or {}).get(k, "") for k in ("base_url", "sandbox_url")}
+    try:
+        r = client.post("/api/config/sfec", json={"base_url": "ftp://x"},
+                        headers={"X-CSRF-Token": token})
+        assert r.status_code == 400
+
+        r = client.post("/api/config/sfec", json={"base_url": "http://192.168.10.5:8080"},
+                        headers={"X-CSRF-Token": token})
+        assert r.status_code == 200
+        assert r.get_json().get("warnings"), "un avertissement hote prive est attendu"
+
+        r = client.post("/api/config/sfec", json={"certify_status": "BIDON"},
+                        headers={"X-CSRF-Token": token})
+        assert r.status_code == 400
+    finally:
+        cfg = get_config()
+        cfg.setdefault("sfec", {}).update(old_urls)
+        save_config(cfg)
+
+
+def test_config_validation_controle_croise(client):
+    """CF-22 : tolerance negative refusee, per_minute_max <= daily_max impose."""
+    from app.config.manager import get_config
+    token = _csrf(client)
+    daily = int((get_config().get("rate_limit") or {}).get("daily_max", 1000) or 1000)
+    r = client.post("/api/config/validation", json={"tolerance_amount": -5},
+                    headers={"X-CSRF-Token": token})
+    assert r.status_code == 400
+    r = client.post("/api/config/validation", json={"per_minute_max": daily + 1},
+                    headers={"X-CSRF-Token": token})
+    assert r.status_code == 400
+    assert "per_minute_max" in str(r.get_json())
+
+
+def test_config_sync_borne_file_attente(client):
+    """CF-13 : job_timeout_ms negatif refuse sur /api/config/sync."""
+    token = _csrf(client)
+    r = client.post("/api/config/sync", json={"job_timeout_ms": -1},
+                    headers={"X-CSRF-Token": token})
+    assert r.status_code == 400

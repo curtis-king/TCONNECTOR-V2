@@ -180,6 +180,54 @@ def _bool(val):
     return bool(val)
 
 
+def _apply_bounded(data, target, specs, errors):
+    """Copie des entiers bornes de data vers target (CF-13/22/23).
+
+    specs : tuples (cle, min, max). Toute valeur hors plage ou non entiere
+    alimente `errors` au lieu d'etre ecrite silencieusement.
+    """
+    for key, lo, hi in specs:
+        if key not in data:
+            continue
+        try:
+            val = int(data[key])
+        except (ValueError, TypeError):
+            errors.append("{}: valeur entiere attendue".format(key))
+            continue
+        if val < lo or val > hi:
+            errors.append("{}: doit etre entre {} et {}".format(key, lo, hi))
+            continue
+        target[key] = val
+
+
+def _validate_url(val, label):
+    """Valide le format d'une URL http(s) (CF-14) et la retourne nettoyee."""
+    from urllib.parse import urlparse
+    url = str(val or "").strip()
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError("{}: URL http(s) invalide".format(label))
+    if parsed.username or parsed.password:
+        raise ValueError("{}: les identifiants dans l'URL sont interdits".format(label))
+    return url
+
+
+def _is_private_host(url):
+    """True si l'hote de l'URL est prive/loopback (sans resolution DNS — les
+    noms internes courants et les IP litterales seulement). Sert a AVERTIR,
+    pas a bloquer : un TCC Server auto-heberge peut etre local."""
+    import ipaddress
+    from urllib.parse import urlparse
+    host = (urlparse(url).hostname or "").lower()
+    if host in ("localhost",) or host.endswith((".local", ".internal", ".lan")):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+        return ip.is_private or ip.is_loopback or ip.is_link_local
+    except ValueError:
+        return False
+
+
 @bp.route("/api/db/test", methods=["GET"])
 @_login_required
 def api_db_test():
@@ -360,15 +408,38 @@ def api_config_sfec():
     cfg = get_config()
     sfec = dict(cfg.get("sfec", {}))
     data = request.get_json(silent=True) or {}
-    for key in ("api_key", "base_url", "sandbox_url", "certify_status"):
+    errors = []
+    warnings = []
+    for key in ("api_key", "certify_status"):
         if key in data and not (key == "api_key" and data[key] == ""):
             sfec[key] = data[key]
+    # CF-14 : URLs validees (format) + avertissement si hote prive (SSRF) —
+    # non bloquant car le middleware TCC Server peut etre auto-heberge.
+    for key in ("base_url", "sandbox_url"):
+        if key in data:
+            try:
+                sfec[key] = _validate_url(data[key], key)
+            except ValueError as exc:
+                errors.append(str(exc))
+            else:
+                if _is_private_host(sfec[key]):
+                    warnings.append("{} : hote prive/local — verifiez qu'il s'agit bien du serveur SFEC/TCC".format(key))
+    # CF-15 : statut de certification restreint aux valeurs SFEC connues.
+    if "certify_status" in data:
+        allowed = ("SAISI", "CONFIRME", "A COMPTABILISER", "COMPTABILISE", "LETTRE")
+        if str(data["certify_status"]).strip().upper() not in allowed:
+            errors.append("certify_status: valeur attendue parmi {}".format(", ".join(allowed)))
     for key in ("use_sandbox", "enabled"):
         if key in data:
             sfec[key] = _bool(data[key])
+    if errors:
+        return jsonify({"ok": False, "errors": errors}), 400
     cfg["sfec"] = sfec
     save_config(cfg)
-    return jsonify({"ok": True})
+    resp = {"ok": True}
+    if warnings:
+        resp["warnings"] = warnings
+    return jsonify(resp)
 
 
 @bp.route("/api/config/company", methods=["POST"])
@@ -425,22 +496,22 @@ def api_config_sync():
     db = dict(cfg.get("db", {}))
     if "polling_enabled" in data:
         db["polling_enabled"] = _bool(data["polling_enabled"])
-    if "polling_interval_ms" in data:
-        try:
-            db["polling_interval_ms"] = int(data["polling_interval_ms"])
-        except (ValueError, TypeError):
-            pass
+    errors = []
+    _apply_bounded(data, db, (("polling_interval_ms", 1000, 3600000),), errors)
     cfg["db"] = db
 
     queue = dict(cfg.get("queue", {}))
-    for key in ("max_concurrent", "max_retries", "retry_base_delay_ms", "max_queue_size", "job_timeout_ms"):
-        if key in data:
-            try:
-                queue[key] = int(data[key])
-            except (ValueError, TypeError):
-                pass
+    _apply_bounded(data, queue, (
+        ("max_concurrent", 1, 50),
+        ("max_retries", 0, 20),
+        ("retry_base_delay_ms", 100, 3600000),
+        ("max_queue_size", 1, 100000),
+        ("job_timeout_ms", 1000, 3600000),
+    ), errors)
     cfg["queue"] = queue
 
+    if errors:
+        return jsonify({"ok": False, "errors": errors}), 400
     save_config(cfg)
     return jsonify({"ok": True})
 
@@ -454,22 +525,31 @@ def api_config_validation():
     validation = dict(cfg.get("validation", {}))
     if "strict_mode" in data:
         validation["strict_mode"] = _bool(data["strict_mode"])
+    errors = []
     if "tolerance_amount" in data:
         try:
-            validation["tolerance_amount"] = float(data["tolerance_amount"])
+            tol = float(data["tolerance_amount"])
+            if tol < 0 or tol > 1000000000:
+                errors.append("tolerance_amount: doit etre entre 0 et 1000000000")
+            else:
+                validation["tolerance_amount"] = tol
         except (ValueError, TypeError):
-            pass
+            errors.append("tolerance_amount: nombre attendu")
     cfg["validation"] = validation
 
     rate_limit = dict(cfg.get("rate_limit", {}))
-    for key in ("daily_max", "per_minute_max", "alert_threshold_percent"):
-        if key in data:
-            try:
-                rate_limit[key] = int(data[key])
-            except (ValueError, TypeError):
-                pass
+    _apply_bounded(data, rate_limit, (
+        ("daily_max", 1, 1000000),
+        ("per_minute_max", 1, 100000),
+        ("alert_threshold_percent", 0, 100),
+    ), errors)
+    # CF-22 : controle croise — la limite minute ne depasse pas la limite jour.
+    if rate_limit.get("per_minute_max", 1) > rate_limit.get("daily_max", 1):
+        errors.append("per_minute_max ne peut pas depasser daily_max")
     cfg["rate_limit"] = rate_limit
 
+    if errors:
+        return jsonify({"ok": False, "errors": errors}), 400
     save_config(cfg)
     return jsonify({"ok": True})
 

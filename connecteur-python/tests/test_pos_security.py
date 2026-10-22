@@ -1,4 +1,6 @@
 """Tests Vague 2 POS : validation des lignes, tiers fiscaux, atomicite et immuabilite."""
+import uuid
+
 import pytest
 
 from app.domain import invoices as invoice_engine
@@ -104,3 +106,30 @@ def test_facture_certifiee_non_modifiable_ni_supprimable():
         invoice_engine.update_invoice(invoice_id, {"notes": "modification interdite"})
     with pytest.raises(invoice_engine.InvoiceIntegrityError):
         invoice_engine.delete_invoice(invoice_id)
+
+
+# ── Idempotence de creation de ticket (PO-25/PO-63) ─────────────────────────
+
+def test_ticket_idempotent_sur_retry():
+    """Un retry avec la meme cle d'idempotence ne duplique ni le ticket,
+    ni la facture : meme ticket_id, flag duplicate."""
+    key = "test-idem-{}".format(uuid.uuid4().hex[:16])
+    r1 = pos_engine.create_ticket(_ticket(idempotency_key=key))
+    assert r1["success"] is True, r1
+    r2 = pos_engine.create_ticket(_ticket(idempotency_key=key))
+    assert r2["success"] is True, r2
+    assert r2.get("duplicate") is True
+    assert r2["id"] == r1["id"]
+    assert r2["numero"] == r1["numero"]
+    with get_cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS n FROM pos_tickets WHERE id = ?", (r1["id"],))
+        assert cur.fetchone()["n"] == 1
+        cur.execute("SELECT COUNT(*) AS n FROM pos_idempotency WHERE key = ?", (key,))
+        assert cur.fetchone()["n"] == 1
+        cur.execute("DELETE FROM pos_idempotency WHERE key = ?", (key,))
+
+
+def test_cle_idempotence_invalide_refusee():
+    result = pos_engine.create_ticket(_ticket(idempotency_key="!!bad key!!"))
+    assert result["success"] is False
+    assert "idempotence" in result["error"].lower()

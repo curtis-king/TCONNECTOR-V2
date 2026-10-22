@@ -57,6 +57,26 @@ Tests ajoutes (`tests/test_billing_security.py`, 3) : centime sur TVA
 collectee (18 % + 5 %), QR jamais regenere (monkeypatch anti-appel),
 numerotation pilotee par `/config`.
 
+## 0.3 Vague 9 — P2 robustesse (2026-10-22)
+
+| ID | Probleme | Correctif |
+|---|---|---|
+| PO-25 / PO-63 | Aucune idempotence sur `/api/pos/ticket` : un retry reseau dupliquait vente + facture + certification SFEC | Table `pos_idempotency` (cle → ticket) ; `create_ticket` renvoie le ticket existant (`duplicate: true`) pour une cle deja traitee ; le front envoie une cle par panier (`crypto.randomUUID`), conservee entre les retries et regeneree apres succes ; toast « Doublon evite » |
+| PO-35 | Ecritures ticket+lignes+stock+facture non transactionnelles | **Partiellement traite** : le rollback de compensation (V2) restaure stock/ticket si la facture echoue, et l'idempotence (ci-dessus) supprime le risque de doublon au retry. Une vraie transaction englobante exigerait de refondre `get_cursor()` — differe (V6) |
+| CF-13 | Plages numeriques libres (ports, timeouts, pool...) | `_apply_bounded()` : refus 400 explicite sur `/api/config/db` (port 1-65535, timeouts, pool 0-100...), `/api/config/sync` (queue bornee) au lieu d'ignorer silencieusement |
+| CF-14 | URLs SFEC non valides (SSRF) | `_validate_url()` impose http(s) sans identifiants ; `_is_private_host()` AVERTIT (non bloquant — TCC Server auto-heberge possible) : `warnings` dans la reponse |
+| CF-15 | `certify_status` libre | Restreint a SAISI / CONFIRME / A COMPTABILISER / COMPTABILISE / LETTRE |
+| CF-22 / CF-23 | Aucune coherence croisee | `pool_min <= pool_max` et `per_minute_max <= daily_max` verifies ; `tolerance_amount` >= 0 ; `alert_threshold_percent` 0-100 |
+
+Tests ajoutes : `tests/test_pos_security.py` (2 : idempotence, cle invalide) ;
+`tests/test_security.py` (4 : bornes db, URLs/statut SFEC, controle croise
+validation, bornes queue).
+
+**Note coherence** : le commit `0c86287` (ventilation centimes dans le
+payload SFEC, travaux paralleles) reutilise `compute_cent_tax()` avec la meme
+regle legale (decret n° 2023-1737 art. 22) — web, POS et payload SFEC sont
+alignes.
+
 ## 1. Etat global
 
 | Vague | Perimetre | Constats | Etat |
