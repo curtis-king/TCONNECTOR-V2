@@ -12,6 +12,13 @@
 </div>
 {% endif %}
 <div id="cert-status" style="margin-top:12px"></div></div>
+
+<div class="card" style="margin-top:16px"><h2>Factures a surveiller ({{ anomalies_count }})</h2>
+<p style="font-size:13px;color:#94a3b8;margin-bottom:12px">Factures non reconstructibles ou rejetees par SFEC. Le motif est conserve ; « Relancer » remet le statut a vide pour un seul passage.</p>
+<table><thead><tr><th>Numero</th><th>Date facture</th><th>Detecte le</th><th>Motif</th>
+<th style="text-align:right">Montant TTC</th><th>Action</th></tr></thead>
+<tbody>{{ anomaly_rows | safe }}{{ anomaly_empty | safe }}</tbody></table></div>
+
 <script>
 function certifySingle(id){
 document.getElementById("cert-status").textContent="Certification en cours...";
@@ -35,5 +42,16 @@ setTimeout(function(){ location.reload(); }, 1500);
 showToast("Erreur: "+d.error,"err");
 }
 });
+}
+function relancer(numero){
+document.getElementById("cert-status").textContent="Relance de "+numero+"...";
+api("POST","/api/sfec/relancer",{numero:numero}).then(function(d){
+if(d.success){
+showToast(d.queued ? (d.message || "Statut remis a vide") : "Relance effectuee","ok");
+setTimeout(function(){ location.reload(); }, 1500);
+} else {
+showToast("Erreur: "+(d.error || "relance impossible"),"err");
+}
+}).catch(function(e){showToast("Erreur relance: "+e,"err")});
 }
 </script>

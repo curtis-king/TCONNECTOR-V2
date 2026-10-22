@@ -253,6 +253,14 @@ SCHEMA = """
             CREATE INDEX IF NOT EXISTS idx_sfec_invoice_links_parent
                 ON sfec_invoice_links(parent_numero);
 
+            CREATE TABLE IF NOT EXISTS sfec_anomalies (
+                numero TEXT PRIMARY KEY,
+                motif TEXT NOT NULL DEFAULT '',
+                detected_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_sfec_anomalies_detected
+                ON sfec_anomalies(detected_at DESC);
+
             CREATE TABLE IF NOT EXISTS invoice_lines (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 invoice_id INTEGER NOT NULL,
@@ -691,6 +699,64 @@ def set_sfec_invoice_link(numero, parent_numero):
                 created_at = datetime('now')
         """, (numero, parent_numero))
     return True
+
+
+def record_sfec_anomaly(numero, motif):
+    """Enregistre/actualise le motif d'une facture A_SURVEILLER."""
+    numero = str(numero or "").strip()
+    if not numero:
+        return False
+    motif = str(motif or "").strip() or "verification requise"
+    with get_cursor() as cur:
+        cur.execute("""
+            INSERT INTO sfec_anomalies (numero, motif)
+            VALUES (?, ?)
+            ON CONFLICT(numero) DO UPDATE SET
+                motif = excluded.motif,
+                detected_at = datetime('now')
+        """, (numero, motif))
+    return True
+
+
+def fetch_sfec_anomalies(limit=500):
+    """Liste les anomalies SFEC, avec les montants du miroir si disponibles."""
+    try:
+        limit = max(1, int(limit))
+    except (TypeError, ValueError):
+        limit = 500
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT a.numero, a.motif, a.detected_at,
+                   i.montant_ttc, i.tiers_nom, i.date_facture
+            FROM sfec_anomalies a
+            LEFT JOIN invoices i ON i.numero = a.numero
+            ORDER BY a.detected_at DESC, a.numero
+            LIMIT ?
+        """, (limit,))
+        return [dict(row) for row in cur.fetchall()]
+
+
+def get_sfec_anomaly(numero):
+    numero = str(numero or "").strip()
+    if not numero:
+        return None
+    with get_cursor() as cur:
+        cur.execute(
+            "SELECT numero, motif, detected_at FROM sfec_anomalies WHERE numero = ?",
+            (numero,),
+        )
+        row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def clear_sfec_anomaly(numero):
+    """Retire l'anomalie apres certification reussie."""
+    numero = str(numero or "").strip()
+    if not numero:
+        return 0
+    with get_cursor() as cur:
+        cur.execute("DELETE FROM sfec_anomalies WHERE numero = ?", (numero,))
+        return cur.rowcount or 0
 
 
 def update_invoice_sfec(invoice_id, sfec_id="", certification_number="",

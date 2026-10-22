@@ -1709,6 +1709,11 @@ def write_sfec_to_invoice(invoice_id, certification_number, signature, qr_code, 
                     invoice_id, domaine, type_doc, piece))
 
     logger.info("Ecriture SFEC OK: %s (certif=%s)", invoice_id, cert_num_str[:30])
+    try:
+        from app.storage.db import clear_sfec_anomaly
+        clear_sfec_anomaly(piece)
+    except Exception as e:
+        logger.debug("Suppression anomalie SQLite echouee pour %s: %s", piece, e)
     return dict(invoice_id=invoice_id, certification_number=cert_num_str,
                 signature=sig_str, qr_code=qr_str, certification_date=date_str)
 
@@ -1790,13 +1795,23 @@ def mark_certifying(invoice_id):
 
 
 def mark_to_monitor(invoice_id, reason=""):
+    parts = str(invoice_id or "").split("-")
+    piece = "-".join(parts[2:]) if len(parts) >= 3 else str(invoice_id or "")
+    motif = reason or "verification requise"
+
+    # Toujours tracer localement, meme si Sage est indisponible : la page
+    # /pending doit conserver le motif pour l'operateur.
+    try:
+        from app.storage.db import record_sfec_anomaly
+        record_sfec_anomaly(piece, motif)
+    except Exception as e:
+        logger.debug("Enregistrement anomalie SQLite echoue pour %s: %s", piece, e)
+
     t = get_table_map()
-    parts = invoice_id.split("-")
-    if len(parts) < 3:
+    if len(parts) < 3 or not t.get("documents"):
         return
     domaine = int(parts[0])
     type_doc = int(parts[1])
-    piece = "-".join(parts[2:])
     try:
         with get_cursor() as cur:
             cur.execute("""
@@ -1806,7 +1821,7 @@ def mark_to_monitor(invoice_id, reason=""):
             """.format(t["documents"]), domaine, type_doc, piece)
             if cur.rowcount > 0:
                 logger.warning("Facture mise A_SURVEILLER: %s - %s",
-                               invoice_id, reason or "verification requise")
+                               invoice_id, motif)
     except Exception as e:
         logger.debug("mark_to_monitor echoue pour %s: %s", invoice_id, e)
 
@@ -1827,6 +1842,12 @@ def mark_certified(invoice_id, note="CERTIFIE"):
                   AND (SFEC_STATUT IS NULL OR SFEC_STATUT NOT IN ('CERTIFIE', ?))
             """.format(t["documents"]), note, domaine, type_doc, piece, note)
         logger.info("Facture marquee %s: %s", note, invoice_id)
+        if note == "CERTIFIE":
+            try:
+                from app.storage.db import clear_sfec_anomaly
+                clear_sfec_anomaly(piece)
+            except Exception as exc:
+                logger.debug("Suppression anomalie SQLite echouee pour %s: %s", piece, exc)
     except Exception as e:
         logger.debug("mark_certified echoue pour %s: %s", invoice_id, e)
 

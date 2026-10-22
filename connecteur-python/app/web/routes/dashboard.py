@@ -10,6 +10,7 @@ sécurité ne dépend d'aucun module de routes).
 
 import calendar
 import functools
+import json
 import os
 import time
 
@@ -44,8 +45,15 @@ from app.domain.pdf import (
     tirage_stamp,
 )
 from app.integration.sfec.client import SfecClient
+from app.integration.sage.database import reset_sfec_monitor
 from app.sync.connectivity import get_status
-from app.sync.engine import get_cache, get_metrics, get_retry_queue, polling_active
+from app.sync.engine import (
+    certify_single,
+    get_cache,
+    get_metrics,
+    get_retry_queue,
+    polling_active,
+)
 from app.storage import db as sqlite_db
 from app.web.common import _csv_response, _esc, _page
 from app.web.auth.security import _get_csrf_token, _login_required, logger
@@ -231,6 +239,39 @@ def pending_page():
         sfec_warn = ('<p class="badge badge-warn" style="margin-bottom:12px">'
                      'Liste SFEC indisponible : filtre base sur le statut local, verification impossible</p>')
     empty = '<tr><td colspan="5" style="text-align:center;color:#64748b">Toutes certifiees !</td></tr>' if not rows else ""
+
+    # Proposition 06 : les factures A_SURVEILLER ne sont plus muettes. Le
+    # motif est enregistre par mark_to_monitor() et affiche ici avec une
+    # action « Relancer » qui remet le statut a NULL pour un seul passage.
+    try:
+        anomalies = sqlite_db.fetch_sfec_anomalies(limit=500)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Lecture des anomalies SFEC impossible: %s", exc)
+        anomalies = []
+    anomaly_rows = ""
+    for anomaly in anomalies:
+        numero = str(anomaly.get("numero") or "")
+        montant = anomaly.get("montant_ttc")
+        montant_txt = _safe_amount(montant, 2) if montant not in (None, "") else "-"
+        retry_arg = _esc(json.dumps(numero))
+        anomaly_rows += (
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td>"
+            "<td style='text-align:right'>{}</td>"
+            "<td><button class='btn btn-sm btn-success' "
+            "onclick=\"relancer({})\">Relancer</button></td></tr>"
+        ).format(
+            _esc(numero),
+            _esc(anomaly.get("date_facture", "")),
+            _esc(anomaly.get("detected_at", "")),
+            _esc(anomaly.get("motif", "")),
+            montant_txt,
+            retry_arg,
+        )
+    anomaly_empty = (
+        '<tr><td colspan="6" style="text-align:center;color:#64748b">'
+        'Aucune anomalie SFEC</td></tr>'
+    ) if not anomaly_rows else ""
+
     return _page(render_template("dashboard/pending.html",
         count=total_pending,
         sfec_warn=sfec_warn,
@@ -238,8 +279,60 @@ def pending_page():
                       if i.get("statut_code") == 2 and i.get("type_doc", "vente") != "avoir"),
         rows=rows, empty=empty, page=page, pages=pages,
         has_prev=page > 1, has_next=page < pages,
-        offset=offset, shown=len(page_rows)
+        offset=offset, shown=len(page_rows),
+        anomaly_rows=anomaly_rows,
+        anomaly_empty=anomaly_empty,
+        anomalies_count=len(anomalies),
     ))
+
+
+@bp.route("/api/sfec/relancer", methods=["POST"])
+@_login_required
+def api_sfec_relancer():
+    """Relance manuelle d'une anomalie SFEC (proposition 06).
+
+    Le statut Sage est remis a NULL uniquement pour cette piece et seulement
+    s'il vaut A_SURVEILLER. Si la facture est presente dans le cache, on
+    tente immediatement la certification ; sinon le prochain cycle la
+    reprendra.
+    """
+    data = request.get_json(silent=True) or {}
+    numero = str(data.get("numero") or "").strip()
+    if not numero:
+        return jsonify({"success": False, "error": "numero requis"}), 400
+
+    try:
+        reset_sfec_monitor(numero)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Relance SFEC: reset Sage impossible pour %s: %s", numero, exc)
+
+    try:
+        with sqlite_db.get_cursor() as cur:
+            cur.execute(
+                "UPDATE invoices SET sfec_statut = '' "
+                "WHERE numero = ? AND sfec_statut = 'A_SURVEILLER'",
+                (numero,),
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Relance SFEC: reset SQLite impossible pour %s: %s", numero, exc)
+
+    invoice = None
+    for inv in get_cache().get("sales_invoices", []):
+        if str(inv.get("numero") or "") == numero:
+            invoice = inv
+            break
+    if not invoice:
+        return jsonify({
+            "success": True,
+            "queued": True,
+            "message": "Statut remis a vide : reprise au prochain cycle",
+        })
+
+    try:
+        return jsonify(certify_single(invoice.get("id")))
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Relance SFEC echouee pour %s: %s", numero, exc)
+        return jsonify({"success": False, "error": str(exc)}), 500
 
 
 @bp.route("/certified", methods=["GET"])

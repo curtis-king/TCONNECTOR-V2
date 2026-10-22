@@ -188,3 +188,65 @@ CREATE TABLE IF NOT EXISTS sfec_anomalies (
 | Le code `AUTRE` est refusé par SFEC | Renseigner `validation.additional_tax_codes` (ex. `203`) |
 
 **Rollback** : retirer `check_sage_totals()` de `certify_invoice()`.
+
+---
+
+## 9. État d'implémentation — 2026-10-22
+
+### 9.1 Stockage local du motif
+
+`app/storage/db.py` :
+
+- table `sfec_anomalies(numero PRIMARY KEY, motif, detected_at)` + index sur `detected_at` ;
+- `record_sfec_anomaly()` : `INSERT ... ON CONFLICT(numero) DO UPDATE` ;
+- `fetch_sfec_anomalies()` : jointure `LEFT JOIN invoices` pour récupérer `montant_ttc`, `date_facture` et `tiers_nom` quand le miroir local connaît la pièce ;
+- `get_sfec_anomaly()` / `clear_sfec_anomaly()`.
+
+`mark_to_monitor()` (`app/integration/sage/database.py:1798`) enregistre le motif **avant** de toucher à Sage : une panne SQL Server ne fait donc plus perdre l'information affichée à l'opérateur. Le statut Sage reste inchangé si la table `F_DOCENTETE` n'est pas disponible.
+
+La certification réussie efface l'anomalie dans les deux chemins d'écriture : `write_sfec_to_invoice()` et `mark_certified()`.
+
+### 9.2 Page « À surveiller »
+
+La page `/pending` contient désormais une carte « Factures a surveiller » avec :
+
+- `numero`, `date_facture`, `detected_at`, `motif`, `montant_ttc` ;
+- un bouton **Relancer** par ligne.
+
+`POST /api/sfec/relancer` (`app/web/routes/dashboard.py`) :
+
+1. appelle `reset_sfec_monitor(numero)` : seul `A_SURVEILLER` repasse à `NULL`, jamais `ERREUR` ni `CERTIFIE` ;
+2. remet aussi `sfec_statut=''` dans le miroir SQLite ;
+3. si la facture est dans le cache, lance immédiatement `certify_single()` ; sinon le prochain cycle la reprend.
+
+Un 422 de validation locale reste définitif : il est enregistré `A_SURVEILLER` et n'appelle jamais l'API SFEC. Un 400 API suit la même règle via la proposition 02.
+
+### 9.3 Export client
+
+`scripts/export_anomalies_sfec.py` :
+
+- lit Sage avec `fetch_sales_invoices()` (mêmes requêtes que l'auto-certification) ;
+- ne retient que `DO_Statut=2`, hors avoirs et montants négatifs ;
+- charge les lignes avec `fetch_doc_lines()` puis reconstruit le payload **sans appel API** ;
+- écrit un CSV UTF-8 BOM avec `numero`, `date`, `tiers`, `montant_ht`, `montant_ttc`, `ttc_calcule`, `ecart`, `ratio_ttc_ht`, `taxes_additionnelles`, `motif`.
+
+Les clusters A et C sortent avec `[]` et ne figurent pas dans le CSV. Les clusters B (`TTC = HT`) et D (`1,1825`) restent avec un motif lisible. L'option `--limit` permet d'élargir la lecture au-delà des 1 000 factures récentes.
+
+### 9.4 Tests
+
+`tests/test_sfec_anomalies.py` — 6 tests :
+
+1. export : A et C absents, B et D présents avec motif et écart ;
+2. `certify_invoice()` lève 422 avant tout appel HTTP ;
+3. `certify_single()` marque `A_SURVEILLER` sur 422 ;
+4. `mark_to_monitor()` conserve le motif même sans Sage ;
+5. `/pending` affiche le motif et le bouton Relancer ;
+6. `/api/sfec/relancer` remet uniquement la pièce ciblée à zéro et relance.
+
+Résultat local : `pytest tests/test_sfec_avoirs.py tests/test_sfec_centimes.py tests/test_certification_retry.py tests/test_article_sync.py tests/test_sqlite_concurrency.py tests/test_avoirs.py tests/test_billing_security.py tests/test_dashboard_security.py tests/test_directory_security.py tests/test_smoke.py tests/test_bootstrap.py tests/test_sfec_anomalies.py -q` → **104 tests OK**.
+
+### 9.5 Critères restant à vérifier en exploitation
+
+- [ ] `SELECT count(*) FROM invoices WHERE sfec_statut='A_SURVEILLER'` ≈ 12 (hors avoirs), puis 14 après rapatriement.
+- [ ] Le CSV de production contient bien les 12 factures B/D.
+- [ ] Aucun cluster C n'apparaît en `A_SURVEILLER` après une passe complète.
