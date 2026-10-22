@@ -166,15 +166,34 @@ def _update_from_sage(invoice_id, sage_inv):
                     "sfec_qr_code": sage_inv.get("sfec_qr_code", ""),
                 }
 
+        montant_ht = sage_inv.get("montant_ht", 0) or 0
+        montant_ttc = sage_inv.get("montant_ttc", 0) or 0
+        try:
+            sage_type = int(float(sage_inv.get("sage_type", 6) or 6))
+        except (TypeError, ValueError):
+            sage_type = 6
+        try:
+            sage_domaine = int(float(sage_inv.get("sage_domaine", 0) or 0))
+        except (TypeError, ValueError):
+            sage_domaine = 0
+        type_doc = "avoir" if (
+            sage_type == 7 or float(montant_ttc) < 0
+        ) else "vente"
+
         cur.execute("""
             UPDATE invoices SET
-                montant_ht = ?, montant_ttc = ?, montant_restant = ?,
+                montant_ht = ?, montant_tva = ?, montant_ttc = ?,
+                montant_restant = ?, type_doc = ?,
+                sage_domaine = ?, sage_type = ?, sage_piece = ?,
                 synced_sage = 1, updated_at = datetime('now')
             WHERE id = ?
         """, (
-            sage_inv.get("montant_ht", 0),
-            sage_inv.get("montant_ttc", 0),
+            montant_ht,
+            round(float(montant_ttc) - float(montant_ht), 2),
+            montant_ttc,
             sage_inv.get("montant_restant", 0),
+            type_doc, sage_domaine, sage_type,
+            sage_inv.get("sage_piece") or sage_inv.get("numero", ""),
             invoice_id
         ))
 

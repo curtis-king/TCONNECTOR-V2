@@ -76,6 +76,60 @@ def _map_recipient_type(raw_value):
 def _map_invoice_type(type_doc):
     return _TYPE_DOC_TO_SFEC.get(type_doc, "salesInvoice")
 
+
+# 25VFA3122, 9FAZ00124, VBA2818, FA00001...
+_REF_TOKEN = re.compile(r"\b\d{0,2}[A-Z]{2,4}\d{3,}\b")
+
+
+def resolve_invoice_number(raw, by_numero, manual_links=None, child_numero=None):
+    """Retrouve un numero de piece Sage dans une reference libre.
+
+    Ordre : lien manuel -> exact -> sans espaces/casse -> token ressemblant
+    a un numero -> sous-chaine (le plus long d'abord). Retourne None si rien
+    ne correspond : l'avoir part en A_SURVEILLER, il n'est jamais certifie
+    avec une reference inventee.
+
+    `manual_links` est la table `sfec_invoice_links` (numero avoir ->
+    parent). Elle est consultee en priorite pour le `child_numero` courant.
+    """
+    if not raw and not (manual_links and child_numero):
+        return None
+
+    if manual_links and child_numero:
+        parent = manual_links.get(str(child_numero).strip())
+        if parent:
+            # Le parent peut etre plus ancien que la fenetre du cache : le
+            # moteur fera un GET SFEC de verification avant de certifier.
+            logger.info("Avoir %s: lien manuel vers %s", child_numero, parent)
+            return parent
+
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    if text in by_numero:
+        return text
+
+    upper_index = {}
+    for numero in by_numero:
+        upper_index.setdefault(str(numero).strip().upper(), numero)
+
+    compact = text.upper().replace(" ", "")
+    if compact in upper_index:
+        return upper_index[compact]
+
+    for token in _REF_TOKEN.findall(text.upper()):
+        numero = upper_index.get(token)
+        if numero:
+            return numero
+
+    # Sous-chaine : on essaie les numeros les plus longs d'abord pour eviter
+    # qu'un numero court contenu dans un autre gagne.
+    for numero in sorted(by_numero, key=lambda n: len(str(n)), reverse=True):
+        if len(str(numero)) >= 6 and str(numero).upper() in text.upper():
+            return numero
+
+    return None
+
 def _safe_str(val, default=""):
     if val is None:
         return default
@@ -163,7 +217,10 @@ def _extract_additional_taxes(invoice, subtotal, total_tax, centimes,
     if max_rate is None:
         max_rate = _safe_float(cfg.get("max_additional_tax_rate"), 10.0)
 
-    sage_ttc = _safe_float(invoice.get("montant_ttc"), 0)
+    # Un avoir peut porter des montants negatifs dans Sage : la ventilation
+    # se fait toujours en valeur absolue (le signe est porte par le type de
+    # piece creditNote, pas par les montants du payload).
+    sage_ttc = abs(_safe_float(invoice.get("montant_ttc"), 0))
     if sage_ttc <= 0:
         return []
 
@@ -245,6 +302,14 @@ def check_sage_totals(invoice, payload, tolerance=None):
 def db_invoice_to_sfec(invoice):
     company = get_company_config()
     lignes = invoice.get("lignes") or []
+    raw_ttc = _safe_float(invoice.get("montant_ttc"), 0)
+    # Facture d'avoir saisie en DO_Type=6 avec des montants negatifs : SFEC
+    # attend un creditNote a montants positifs. Le signe est porte par le
+    # type de piece, jamais par les montants du payload.
+    is_credit_note = (
+        _map_invoice_type(invoice.get("type_doc", "vente")) == "creditNote"
+        or raw_ttc < 0
+    )
 
     items = []
     total_tax_t = 0
@@ -252,8 +317,14 @@ def db_invoice_to_sfec(invoice):
     total_exempt = 0
 
     for line in lignes:
-        quantity = max(_safe_float(line.get("quantite", 1), 1), 1)
-        unit_price = max(_safe_float(line.get("prix_unitaire", 0), 0), 0)
+        quantity = _safe_float(line.get("quantite", 1), 1)
+        if is_credit_note:
+            quantity = abs(quantity)
+        quantity = max(quantity, 1)
+        unit_price = _safe_float(line.get("prix_unitaire", 0), 0)
+        if is_credit_note:
+            unit_price = abs(unit_price)
+        unit_price = max(unit_price, 0)
         subtotal = round(unit_price * quantity, 2)
 
         # BUG (Incoherence totaux a l'envoi SFEC) : le net HT d'une ligne Sage
@@ -268,10 +339,14 @@ def db_invoice_to_sfec(invoice):
             "discount_amount" in line or "remise_montant" in line
         )
         raw_net = line.get("montant_ht")
+        if is_credit_note and raw_net not in (None, ""):
+            raw_net = abs(_safe_float(raw_net, 0))
         if explicit_discount or raw_net in (None, ""):
             discount_amount = round(_safe_float(
                 line.get("discount_amount", line.get("remise_montant", 0)), 0
             ), 2)
+            if is_credit_note:
+                discount_amount = abs(discount_amount)
             net_amount = round(subtotal - discount_amount, 2)
         else:
             net_amount = round(_safe_float(raw_net, subtotal), 2)
@@ -285,6 +360,8 @@ def db_invoice_to_sfec(invoice):
 
         rate_num, rate_str = _extract_tax_rate(line.get("taux_tva", "18"))
         tax_amount = _safe_float(line.get("montant_tva", 0), 0)
+        if is_credit_note:
+            tax_amount = abs(tax_amount)
         if tax_amount == 0:
             tax_amount = round(net_amount * rate_num / 100, 2)
         # SFEC attend le TTC de ligne (HT net + TVA). Les centimes et taxes
@@ -343,6 +420,9 @@ def db_invoice_to_sfec(invoice):
     if not items:
         montant_ht = _safe_float(invoice.get("montant_ht"), 0)
         montant_ttc = _safe_float(invoice.get("montant_ttc"), 0)
+        if is_credit_note:
+            montant_ht = abs(montant_ht)
+            montant_ttc = abs(montant_ttc)
 
         if montant_ht <= 0 and montant_ttc > 0:
             # Repli degrade : sans lignes ni HT, on suppose le taux standard
@@ -411,6 +491,46 @@ def db_invoice_to_sfec(invoice):
         subtotal + total_tax + additional_cent_tax + additional_taxes_total, 2
     )
 
+    invoice_type = _map_invoice_type(invoice.get("type_doc", "vente"))
+    if raw_ttc < 0:
+        # Facture d'avoir saisie en DO_Type=6 avec des montants negatifs :
+        # SFEC attend un creditNote a montants positifs.
+        invoice_type = "creditNote"
+
+    amount_due = round(_safe_float(invoice.get("montant_restant"), total_amount), 2)
+    discount_amount = round(_safe_float(invoice.get("discount_amount", 0), 0), 2)
+
+    if invoice_type == "creditNote":
+        # SFEC attend un creditNote a montants POSITIFS : on normalise en
+        # valeur absolue, quel que soit le signe stocke dans Sage.
+        subtotal = round(abs(subtotal), 2)
+        total_tax_t = round(abs(total_tax_t), 2)
+        total_tax_r = round(abs(total_tax_r), 2)
+        total_exempt = round(abs(total_exempt), 2)
+        total_tax = round(abs(total_tax), 2)
+        additional_cent_tax = round(abs(additional_cent_tax), 2)
+        discount_amount = round(abs(discount_amount), 2)
+        additional_taxes = [
+            dict(t, tax_amount=round(abs(_safe_float(t.get("tax_amount"), 0)), 2))
+            for t in additional_taxes
+        ]
+        for item in items:
+            for key in ("unit_price", "subtotal", "discount_amount",
+                        "amount_after_discount", "net_amount", "tax_amount",
+                        "total_amount"):
+                item[key] = round(abs(_safe_float(item.get(key), 0)), 2)
+        # Les lignes ont ete normalisees : on recalcule les totaux de ligne
+        # pour garantir la coherence attendue par validate_sfec_payload().
+        subtotal = round(sum(i["subtotal"] for i in items), 2)
+        total_line_discount = round(sum(i["discount_amount"] for i in items), 2)
+        total_amount = round(
+            subtotal + total_tax + additional_cent_tax
+            + round(sum(_safe_float(t.get("tax_amount"), 0)
+                        for t in additional_taxes), 2),
+            2,
+        )
+        amount_due = round(abs(amount_due), 2)
+
     raw_niu = _safe_str(invoice.get("recipient_niu"))
     raw_phone = _safe_str(invoice.get("recipient_phone"))
     raw_email = _safe_str(invoice.get("recipient_email"))
@@ -428,8 +548,6 @@ def db_invoice_to_sfec(invoice):
         if recipient_type == "business":
             recipient_type = "individual"
 
-    invoice_type = _map_invoice_type(invoice.get("type_doc", "vente"))
-
     devise = _safe_str(invoice.get("devise"), "")
     if not devise:
         devise = "XAF" if company.get("currency", "XAF") == "XAF" else "USD"
@@ -445,12 +563,12 @@ def db_invoice_to_sfec(invoice):
         "total_tax_r_amount": round(total_tax_r, 2),
         "total_exempt_amount": round(total_exempt, 2),
         "total_tax_amount": total_tax,
-        "discount_amount": round(_safe_float(invoice.get("discount_amount", 0), 0), 2),
+        "discount_amount": discount_amount,
         "total_line_discount_amount": total_line_discount,
         "additional_cent_tax": additional_cent_tax,
         "electronic_stamp_duty": 0,  # regle absolue SFEC : toujours 0, jamais lu depuis invoice
         "total_amount": total_amount,
-        "amount_due": round(_safe_float(invoice.get("montant_restant"), total_amount), 2),
+        "amount_due": amount_due,
         "currency": devise,
         "payment_method": _safe_str(invoice.get("payment_method"), "bank_transfer"),
         "items": items,
@@ -476,6 +594,13 @@ def db_invoice_to_sfec(invoice):
         ref_invoice_id = _safe_str(invoice.get("reference_invoice_id"))
         if ref_invoice_id:
             sfec_req["reference_invoice_id"] = ref_invoice_id
+        # L'OpenAPI SFEC exige ces deux champs en plus de
+        # reference_invoice_id (doc /api/certify, CertifyInvoiceRequest).
+        for key in ("external_credit_note_number",
+                    "original_sfec_invoice_number"):
+            value = _safe_str(invoice.get(key))
+            if value:
+                sfec_req[key] = value
 
     recipient_rccm = _safe_str(invoice.get("recipient_rccm"))
     if recipient_rccm:
@@ -529,8 +654,13 @@ def validate_sfec_payload(payload, tolerance_amount=None):
         errors.append("recipient_name requis")
 
     # BUG-002 : un avoir doit obligatoirement referencer sa facture de vente
-    if payload.get("invoice_type") == "creditNote" and not payload.get("reference_invoice_id"):
-        errors.append("reference_invoice_id requis pour un avoir (creditNote)")
+    if payload.get("invoice_type") == "creditNote":
+        if not payload.get("reference_invoice_id"):
+            errors.append("reference_invoice_id requis pour un avoir (creditNote)")
+        if not payload.get("external_credit_note_number"):
+            errors.append("external_credit_note_number requis pour un avoir")
+        if not payload.get("original_sfec_invoice_number"):
+            errors.append("original_sfec_invoice_number requis pour un avoir")
 
     # Regles complementaires (section 5 du plan) -- ajout au-dela de la demande initiale
     recipient_type = payload.get("recipient_type")
@@ -710,6 +840,11 @@ def check_health():
 
 
 def sqlite_invoice_to_sfec(invoice):
+    type_doc = invoice.get("type_doc", "vente")
+    is_credit_note = (
+        type_doc == "avoir"
+        or _safe_float(invoice.get("montant_ttc"), 0) < 0
+    )
     adapted = {
         "id": invoice.get("id"),
         "numero": invoice.get("numero"),
@@ -726,7 +861,7 @@ def sqlite_invoice_to_sfec(invoice):
         "recipient_type_raw": invoice.get("tiers_type", "business"),
         "recipient_address": invoice.get("tiers_adresse", ""),
         "nom_tiers": invoice.get("tiers_nom", ""),
-        "type_doc": invoice.get("type_doc", "vente"),
+        "type_doc": type_doc,
         "payment_method": invoice.get("payment_method", "bank_transfer"),
         "devise": invoice.get("devise", "XAF"),
         "recipient_rccm": invoice.get("recipient_rccm", ""),
@@ -734,8 +869,22 @@ def sqlite_invoice_to_sfec(invoice):
         "discount_amount": invoice.get("discount_amount", 0),
         "additional_cent_tax": invoice.get("additional_cent_tax", 0),
         "reference_invoice_id": invoice.get("reference_invoice_id", ""),
+        "external_credit_note_number": invoice.get("external_credit_note_number", ""),
+        "original_sfec_invoice_number": invoice.get("original_sfec_invoice_number", ""),
         "payment_date": invoice.get("payment_date", ""),
     }
+    if is_credit_note:
+        # Repli pour les avoirs locaux crees avant l'ajout des champs SFEC :
+        # le numero ERP de l'avoir et celui de la facture d'origine sont
+        # connus localement. Ne jamais utiliser la signature de certification.
+        adapted["external_credit_note_number"] = (
+            adapted["external_credit_note_number"]
+            or _safe_str(invoice.get("numero"))
+        )
+        adapted["original_sfec_invoice_number"] = (
+            adapted["original_sfec_invoice_number"]
+            or adapted["reference_invoice_id"]
+        )
 
     lignes_adaptees = []
     for l in invoice.get("lignes", []):
@@ -749,6 +898,7 @@ def sqlite_invoice_to_sfec(invoice):
             "type_article": l.get("type_article", "product"),
             "quantite": l.get("quantite", 1),
             "prix_unitaire": l.get("prix_unitaire", 0),
+            "montant_ht": l.get("montant_ht", 0),
             "montant_tva": l.get("montant_tva", 0),
             "montant_ttc": l.get("montant_ttc", 0),
             "taux_tva": str(l.get("taux_tva", 18)),

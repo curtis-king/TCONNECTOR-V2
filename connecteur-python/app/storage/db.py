@@ -245,6 +245,14 @@ SCHEMA = """
                 FOREIGN KEY (vendeur_id) REFERENCES vendeurs(id)
             );
 
+            CREATE TABLE IF NOT EXISTS sfec_invoice_links (
+                numero TEXT PRIMARY KEY,
+                parent_numero TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_sfec_invoice_links_parent
+                ON sfec_invoice_links(parent_numero);
+
             CREATE TABLE IF NOT EXISTS invoice_lines (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 invoice_id INTEGER NOT NULL,
@@ -641,6 +649,48 @@ def compute_cent_tax(tva_collectee):
     ET la TVA a taux reduit (5 %), pas seulement la tranche 18 %.
     """
     return round((tva_collectee or 0) * cent_tax_rate() / 100.0, 2)
+
+
+def get_sfec_invoice_link(numero):
+    """Parent manuel d'un avoir (table sfec_invoice_links), ou ''."""
+    numero = str(numero or "").strip()
+    if not numero:
+        return ""
+    with get_cursor() as cur:
+        cur.execute(
+            "SELECT parent_numero FROM sfec_invoice_links WHERE numero = ?",
+            (numero,),
+        )
+        row = cur.fetchone()
+    return (row["parent_numero"] if row else "") or ""
+
+
+def fetch_sfec_invoice_links():
+    """Tous les liens manuels avoir -> facture d'origine."""
+    with get_cursor() as cur:
+        cur.execute("SELECT numero, parent_numero FROM sfec_invoice_links")
+        return {
+            row["numero"]: row["parent_numero"]
+            for row in cur.fetchall()
+            if row["numero"] and row["parent_numero"]
+        }
+
+
+def set_sfec_invoice_link(numero, parent_numero):
+    """Enregistre/remplace le parent manuel d'un avoir."""
+    numero = str(numero or "").strip()
+    parent_numero = str(parent_numero or "").strip()
+    if not numero or not parent_numero:
+        raise ValueError("numero et parent_numero sont obligatoires")
+    with get_cursor() as cur:
+        cur.execute("""
+            INSERT INTO sfec_invoice_links (numero, parent_numero)
+            VALUES (?, ?)
+            ON CONFLICT(numero) DO UPDATE SET
+                parent_numero = excluded.parent_numero,
+                created_at = datetime('now')
+        """, (numero, parent_numero))
+    return True
 
 
 def update_invoice_sfec(invoice_id, sfec_id="", certification_number="",

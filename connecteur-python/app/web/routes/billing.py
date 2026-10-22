@@ -9,6 +9,7 @@ wrapping _login_required est reproduit à l'identique.
 import functools
 from flask import Blueprint, jsonify, render_template, request, send_file
 from app.domain import invoices as invoice_engine, pdf as pdf_generator, pos as pos_engine
+from app.integration.sage.database import reset_sfec_monitor
 from app.storage import db as sqlite_db
 from app.sync import bidirectional as sync_bidirectional
 from app.web.auth import user_auth
@@ -365,6 +366,88 @@ def api_invoice_push_sage(invoice_id):
         return jsonify(result), code
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+@bp.route("/api/invoices/<path:numero>/link-parent", methods=["POST"])
+@_login_required
+def api_invoice_link_parent(numero):
+    """Lien manuel avoir -> facture d'origine (filet de securite).
+
+    La reference Sage (DO_Ref) est souvent du texte libre. Quand elle n'est
+    pas resolvable automatiquement, l'operateur peut enregistrer le parent
+    ici : la table `sfec_invoice_links` est consultee en priorite par la
+    certification (proposition 05).
+    """
+    data = request.get_json(silent=True) or {}
+    numero = str(numero or "").strip()
+    parent = str(
+        data.get("parent_numero")
+        or data.get("reference_invoice_id")
+        or ""
+    ).strip()
+
+    if not numero:
+        return jsonify({"success": False, "error": "numero d'avoir requis"}), 422
+    if not parent:
+        return jsonify({"success": False, "error": "parent_numero requis"}), 422
+    if parent == numero:
+        return jsonify({"success": False,
+                        "error": "Un avoir ne peut pas referencer lui-meme"}), 422
+
+    parent_ttc = None
+    with sqlite_db.get_cursor() as cur:
+        cur.execute(
+            "SELECT montant_ttc FROM invoices WHERE numero = ?", (parent,)
+        )
+        row = cur.fetchone()
+    if row is not None:
+        parent_ttc = row["montant_ttc"]
+
+    if parent_ttc is None:
+        # Le miroir ne contient pas encore le parent : on tente le cache Sage.
+        try:
+            from app.sync.engine import get_cache
+            for inv in get_cache().get("sales_invoices", []):
+                if str(inv.get("numero", "")) == parent:
+                    parent_ttc = inv.get("montant_ttc", 0)
+                    break
+        except Exception:
+            pass
+
+    if parent_ttc is None:
+        return jsonify({"success": False,
+                        "error": "Facture d'origine '{}' introuvable".format(parent)}), 404
+    try:
+        if float(parent_ttc or 0) < 0:
+            return jsonify({"success": False,
+                            "error": "La facture d'origine '{}' est un avoir".format(parent)}), 422
+    except (TypeError, ValueError):
+        pass
+
+    sqlite_db.set_sfec_invoice_link(numero, parent)
+
+    # Un avoir deja marque A_SURVEILLER doit pouvoir etre rejoue apres le
+    # lien manuel. On ne touche jamais a ERREUR ni a CERTIFIE.
+    try:
+        reset_sfec_monitor(numero)
+    except Exception:
+        pass
+    try:
+        with sqlite_db.get_cursor() as cur:
+            cur.execute("""
+                UPDATE invoices SET sfec_statut = ''
+                WHERE numero = ? AND sfec_statut = 'A_SURVEILLER'
+            """, (numero,))
+    except Exception:
+        pass
+
+    who = (_current_identity() or {}).get("email", "")
+    user_auth.audit(
+        "avoir.lie_parent",
+        "Avoir {} lie a la facture {}".format(numero, parent),
+        email=who,
+    )
+    return jsonify({"success": True, "numero": numero, "parent_numero": parent})
 
 
 @bp.route("/api/invoices/stats")

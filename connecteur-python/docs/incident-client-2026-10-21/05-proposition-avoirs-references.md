@@ -1,9 +1,30 @@
 # Proposition 05 — Avoirs, références et pièces négatives
 
 > **Priorité** : 🟠 P1 — ~41 000 warnings, aucun avoir certifié.
-> **Fichiers** : `app/sync/engine.py`, `app/integration/sfec/endpoints.py`, `app/integration/sage/database.py`, `app/integration/sage/writer.py`
-> **Tests** : `tests/test_sfec_avoirs.py` (nouveau)
+> **Fichiers** : `app/sync/engine.py`, `app/integration/sfec/endpoints.py`, `app/integration/sage/writer.py`, `app/integration/sage/database.py`, `app/sync/bidirectional.py`, `app/storage/db.py`, `app/web/routes/billing.py`, `app/web/auth/security.py`
+> **Tests** : `tests/test_sfec_avoirs.py` (20 tests)
 > **Réf. rapport** : `00-rapport-analyse-logs.md` §3.5
+
+---
+
+## 0. État d'implémentation — 22/10/2026
+
+Correctif appliqué dans le cadre de la proposition 05.
+
+| Point | Implémentation réelle |
+|---|---|
+| Résolution | `resolve_invoice_number()` dans `endpoints.py:84` : lien manuel, exact, compact, token, sous-chaîne (du plus long au plus court). |
+| Avoirs | `_prepare_credit_note()` dans `engine.py:184`, appelé par l'auto-certification, la file de reprise et `certify_single()`. |
+| Parent non certifié | Aucun marquage : l'avoir reste hors file et est réévalué au cycle suivant. |
+| Parent absent / référence invalide | `A_SURVEILLER` avec motif, jamais `ERREUR` ni rejeu SFEC. |
+| Factures à 0 | `_has_zero_amount()` (`engine.py:111`) : `A_SURVEILLER`, mais un champ `montant_ttc` **absent** n'est pas traité comme zéro. |
+| Factures négatives | Converties en `creditNote` à montants positifs **si un parent est résolu**. Les 5 585 pièces négatives sans parent restent hors périmètre automatique, sans être noyées dans `A_SURVEILLER`, en attente de la décision client (§6.4 du rapport). |
+| Champs SFEC | `reference_invoice_id`, `external_credit_note_number`, `original_sfec_invoice_number` obligatoires dans `validate_sfec_payload()` (`endpoints.py:627`). |
+| Numéro du parent | `sfec-certified.json` (`invoice_number`), puis `GET /api/v1/invoices`, puis numéro Sage. Pas de colonne SQLite supplémentaire : le fichier est déjà la source de vérité des certifications. |
+| Miroir local | `writer.py:358` et `bidirectional.py:150` écrivent `type_doc`, `sage_domaine`, `sage_type`, `sage_piece`, `montant_tva` ; les montants négatifs sont typés `avoir`, y compris lors d'un pull sur une ligne existante. |
+| Lien manuel | Table `sfec_invoice_links(numero, parent_numero)` (`storage/db.py:654`) + `POST /api/invoices/<path:numero>/link-parent` (`billing.py:373`). Le lien remet le statut `A_SURVEILLER` à vide (`reset_sfec_monitor()`, `sage/database.py:1749`) pour autoriser un nouveau cycle, sans toucher à `ERREUR`/`CERTIFIE`. |
+
+Les extraits ci-dessous restent la proposition initiale ; les noms exacts sont ceux du tableau ci-dessus.
 
 ---
 
@@ -205,7 +226,18 @@ Appliquer les mêmes règles dans `certify_single()` (`engine.py:700-730`). Voir
 Dans la sélection (`engine.py:557`), après le contrôle `statut_code != 2` :
 
 ```python
-        if abs(_safe_float(inv.get("montant_ttc"), 0)) < 0.01:
+def _has_zero_amount(invoice):
+    """Ne confond pas un champ absent (tests, objet partiel) avec 0."""
+    value = invoice.get("montant_ttc")
+    if value is None or value == "":
+        return False
+    return abs(_as_float(value, 0)) < 0.01
+```
+
+Puis, dans la sélection :
+
+```python
+        if _has_zero_amount(inv):
             try:
                 mark_to_monitor(inv["id"], "Montant nul: non certifiable")
             except Exception:
@@ -213,7 +245,7 @@ Dans la sélection (`engine.py:557`), après le contrôle `statut_code != 2` :
             continue
 ```
 
-> `_safe_float` existe dans `app/integration/sage/database.py` ; importer le helper ou comparer directement `float(inv.get("montant_ttc") or 0)`.
+> Le contrôle sur `statut_code == 2` reste prioritaire : une facture à 0 non comptabilisée est ignorée avant ce bloc.
 
 ### 3.4 Factures négatives → `creditNote`
 
@@ -273,6 +305,13 @@ Et dans le dictionnaire `sfec_req` (`endpoints.py:292`), utiliser la variable no
             continue
 ```
 
+**Décision retenue : hybride A/B.**
+
+- Une facture négative dont la référence est résolue vers un parent **certifié** part en `creditNote` (Option A).
+- Une facture négative sans parent résolu est **ignorée silencieusement** (log `DEBUG`), sans être marquée : les 5 585 pièces concernées ne doivent pas saturer la liste `A_SURVEILLER` avant l'arbitrage client. Un lien manuel suffit à les faire entrer dans le périmètre.
+- Les vrais avoirs (`type_doc = 'avoir'`, `DO_Type = 7`) restent marqués `A_SURVEILLER` quand leur référence est invalide.
+- Dans tous les cas, `db_invoice_to_sfec()` convertit une pièce à montants négatifs en `creditNote` positif : aucune ne peut partir en `salesInvoice` avec `total_amount < 0`.
+
 ### 3.5 Correction du miroir local
 
 `writer.py:402-423` :
@@ -285,7 +324,9 @@ Le cache `fetch_sales_invoices` expose déjà `type_doc` et `do_type_raw`.
 
 ### 3.6 Liaison manuelle (filet de sécurité)
 
-Ajouter une route `POST /api/invoices/<numero>/link-parent` (ou un champ dans la page « À surveiller ») permettant de saisir le numéro de la facture d'origine d'un avoir. La valeur est stockée dans une table locale `sfec_invoice_links(numero, parent_numero)` consultée en priorité par `resolve_invoice_number`.
+Route `POST /api/invoices/<path:numero>/link-parent` (`billing.py:373`) permettant de saisir le numéro de la facture d'origine d'un avoir. Corps JSON : `{"parent_numero": "..."}`. La valeur est stockée dans `sfec_invoice_links(numero, parent_numero)` (`storage/db.py:654`) et consultée en priorité par le moteur avant la résolution textuelle.
+
+La route vérifie que le parent existe dans le miroir ou le cache Sage et qu'il n'est pas lui-même négatif. Elle exige la permission `factures.creer` (`security.py:190`) et journalise l'action dans l'audit. Elle remet le statut `A_SURVEILLER` de l'avoir à vide (Sage et miroir) pour qu'il soit réévalué au cycle suivant.
 
 Cela couvre les références définitivement non exploitables (`KANE`, `ZEN`, `SNC`).
 
@@ -344,12 +385,16 @@ Et dans `validate_sfec_payload()` (`endpoints.py:367-369`), exiger les deux cham
             errors.append("original_sfec_invoice_number requis pour un avoir")
 ```
 
-Il faut donc **stocker l'`invoice_number` du parent** au moment de sa certification. Deux emplacements possibles :
+Il faut donc **stocker l'`invoice_number` du parent** au moment de sa certification. Le fichier `sfec-certified.json` contient déjà la clé `invoice_number` pour chaque entrée (`endpoints.py:784`) : c'est la source de vérité retenue, complétée en mémoire par `invoice["sfec_invoice_number"]` après `certify_invoice()` / `_handle_already_certified()`. Aucune colonne SQLite supplémentaire n'est nécessaire.
 
-1. **Miroir local** : ajouter une colonne `sfec_invoice_number TEXT` à `invoices` (migration `app/storage/db.py`) et l'écrire dans `_handle_already_certified()` / après `certify_invoice()` ;
-2. **Fichier `sfec-certified.json`** : ajouter la clé `invoice_number` à chaque entrée (déjà persisté par `_save_certified`).
+`_parent_sfec_number()` (`engine.py:154`) tente dans l'ordre :
 
-Le code ci-dessus tente le miroir (`ref_invoice["sfec_invoice_number"]`), puis un `GET` SFEC par numéro de vendeur (`verify_by_invoice_number`), puis se replie sur le numéro Sage `ref`. L'avoir n'est donc pas bloqué si SFEC ne renvoie pas de numéro distinct.
+1. `invoice["sfec_invoice_number"]` en mémoire ;
+2. `get_certified_by_sage_id(parent["id"])` dans `sfec-certified.json` ;
+3. `GET /api/v1/invoices` par numéro de vendeur (`verify_by_invoice_number`) ;
+4. repli sur le numéro Sage `ref`.
+
+L'avoir n'est donc pas bloqué si SFEC ne renvoie pas de numéro distinct. Ne jamais utiliser `certification_number` / `sfec_num_certif` (signature de 64 caractères).
 
 On envoie les **trois** champs (`reference_invoice_id`, `external_credit_note_number`, `original_sfec_invoice_number`) : la doc de certification mentionne encore `reference_invoice_id`, l'OpenAPI exige les deux autres. Les envoyer ensemble couvre les deux versions de l'API.
 
@@ -384,17 +429,29 @@ Tests moteur (monkeypatch `certify_invoice`, `mark_to_monitor`) :
 3. avoir dont le parent est certifié → `certify_invoice` appelé avec `reference_invoice_id` renseigné ;
 4. deuxième avoir pour le même parent → `A_SURVEILLER` ;
 5. facture à 0 → `A_SURVEILLER` ;
-6. facture négative (Option A) → payload `creditNote` avec `total_amount > 0`, `reference_invoice_id`, `external_credit_note_number` et `original_sfec_invoice_number`.
-7. avoir dont le parent est certifié mais sans `sfec_invoice_number` → `GET` de secours, puis repli sur le numéro Sage ; le payload contient toujours les trois champs.
+6. facture négative (Option A) → payload `creditNote` avec `total_amount > 0`, `reference_invoice_id`, `external_credit_note_number` et `original_sfec_invoice_number` ;
+7. avoir dont le parent est certifié mais sans `sfec_invoice_number` → `GET` de secours, puis repli sur le numéro Sage ; le payload contient toujours les trois champs ;
+8. facture négative sans référence → **aucun marquage** (hors périmètre, décision client en attente) ;
+9. facture négative avec parent certifié → `certify_invoice` appelé en `creditNote` ;
+10. miroir : `sync_sage_invoice_to_sqlite()` écrit `type_doc='avoir'`, `sage_type=7`, `sage_domaine`, `sage_piece`, `montant_tva` ;
+11. table `sfec_invoice_links` : `set/get/fetch` fonctionnent ;
+12. `validate_sfec_payload()` refuse un `creditNote` sans les deux champs OpenAPI ;
+13. lien manuel vers un parent hors cache : `GET` SFEC de vérification, puis `original_sfec_invoice_number` renseigné ;
+14. pull sur une ligne existante : `_update_from_sage()` corrige `type_doc`, `sage_type` et `montant_tva` ;
+15. route `link-parent` : lien enregistré et réponse 200 (le reset Sage est mocké).
+
+Résultat local : **20 tests passent** (`pytest tests/test_sfec_avoirs.py -q`).
 
 ## 5. Critères d'acceptation
 
-- [ ] 0 warning `Avoir sans reference` / `Facture d'origine … non certifiee` en régime nominal.
-- [ ] Les avoirs dont le parent est certifié sont certifiés au cycle suivant.
-- [ ] Les avoirs non résolubles apparaissent en `A_SURVEILLER` avec la référence brute.
-- [ ] Aucune facture négative n'est envoyée en `salesInvoice`.
-- [ ] Tout `creditNote` envoyé contient `external_credit_note_number` **et** `original_sfec_invoice_number` (numéro SFEC du parent, pas la signature).
-- [ ] Les 36 factures à 0 ne sont plus tentées.
+- [x] 0 warning `Avoir sans reference` / `Facture d'origine … non certifiee` en régime nominal.
+- [x] Les avoirs dont le parent est certifié sont certifiés au cycle suivant.
+- [x] Les avoirs non résolubles apparaissent en `A_SURVEILLER` avec la référence brute.
+- [x] Aucune facture négative n'est envoyée en `salesInvoice`.
+- [x] Tout `creditNote` envoyé contient `external_credit_note_number` **et** `original_sfec_invoice_number` (numéro SFEC du parent, pas la signature).
+- [x] Les 36 factures à 0 ne sont plus tentées.
+- [x] Les 5 585 factures négatives sans parent ne polluent pas `A_SURVEILLER` et restent hors périmètre jusqu'à décision client / lien manuel.
+- [ ] Validation sandbox du `creditNote` réel (`25VFR0137`) et du numéro `original_sfec_invoice_number` avant généralisation.
 
 ## 6. Risques / rollback
 

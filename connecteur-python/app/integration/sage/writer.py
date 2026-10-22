@@ -275,7 +275,7 @@ def read_invoices_from_sage():
                     d.DO_Domaine AS sage_domaine,
                     d.DO_Type AS sage_type,
                     d.DO_Piece AS sage_piece,
-                    CASE WHEN d.DO_Type = 7 THEN 'avoir' ELSE 'facture' END AS type_doc,
+                    CASE WHEN d.DO_Type = 7 THEN 'avoir' ELSE 'vente' END AS type_doc,
                     '' AS reference_invoice_id,
                     ISNULL(TRY_CONVERT(VARCHAR(10), d.DO_Date, 120), '') AS date_facture,
                     ISNULL(d.DO_Tiers, '') AS tiers_code,
@@ -335,6 +335,10 @@ def read_invoices_from_sage():
                     inv["sage_type"] = int(float(str(inv["sage_type"])))
                 except (ValueError, TypeError):
                     inv["sage_type"] = 0
+                if inv["sage_type"] == 7 or inv.get("montant_ttc", 0) < 0:
+                    # Avoir Sage ou facture negative : le miroir doit le
+                    # distinguer d'une vente (audit 2026-10-21).
+                    inv["type_doc"] = "avoir"
                 try:
                     inv["valide"] = 1 if int(float(str(inv.get("valide", 0) or 0))) == 1 else 0
                 except (ValueError, TypeError):
@@ -356,6 +360,24 @@ def sync_sage_invoice_to_sqlite(sage_inv):
     if not numero:
         return None
 
+    montant_ht = sage_inv.get("montant_ht", 0) or 0
+    montant_ttc = sage_inv.get("montant_ttc", 0) or 0
+    montant_tva = round(float(montant_ttc) - float(montant_ht), 2)
+    try:
+        sage_type = int(float(sage_inv.get("sage_type", 6) or 6))
+    except (TypeError, ValueError):
+        sage_type = 6
+    try:
+        sage_domaine = int(float(sage_inv.get("sage_domaine", 0) or 0))
+    except (TypeError, ValueError):
+        sage_domaine = 0
+    sage_piece = sage_inv.get("sage_piece") or numero
+    type_doc = "avoir" if (
+        sage_type == 7
+        or sage_inv.get("type_doc") == "avoir"
+        or float(montant_ttc) < 0
+    ) else "vente"
+
     with get_sqlite_cursor() as cur:
         cur.execute("SELECT id FROM invoices WHERE numero = ? AND source = 'sage'", (numero,))
         existing = cur.fetchone()
@@ -363,7 +385,9 @@ def sync_sage_invoice_to_sqlite(sage_inv):
         if existing:
             cur.execute("""
                 UPDATE invoices SET
-                    tiers_code = ?, montant_ht = ?, montant_ttc = ?, montant_restant = ?,
+                    tiers_code = ?, montant_ht = ?, montant_tva = ?,
+                    montant_ttc = ?, montant_restant = ?,
+                    type_doc = ?, sage_domaine = ?, sage_type = ?, sage_piece = ?,
                     tiers_nom = CASE WHEN ? <> '' THEN ? ELSE tiers_nom END,
                     tiers_niu = CASE WHEN ? <> '' THEN ? ELSE tiers_niu END,
                     tiers_adresse = CASE WHEN ? <> '' THEN ? ELSE tiers_adresse END,
@@ -375,9 +399,9 @@ def sync_sage_invoice_to_sqlite(sage_inv):
                 WHERE id = ?
             """, (
                 sage_inv.get("tiers_code", ""),
-                sage_inv.get("montant_ht", 0),
-                sage_inv.get("montant_ttc", 0),
+                montant_ht, montant_tva, montant_ttc,
                 sage_inv.get("montant_restant", 0),
+                type_doc, sage_domaine, sage_type, sage_piece,
                 sage_inv.get("tiers_nom", ""), sage_inv.get("tiers_nom", ""),
                 sage_inv.get("tiers_niu", ""), sage_inv.get("tiers_niu", ""),
                 sage_inv.get("tiers_adresse", ""), sage_inv.get("tiers_adresse", ""),
@@ -403,23 +427,24 @@ def sync_sage_invoice_to_sqlite(sage_inv):
                 INSERT INTO invoices (
                     numero, date_facture, tiers_code, reference,
                     tiers_nom, tiers_niu, tiers_adresse, tiers_telephone, tiers_email,
-                    montant_ht, montant_ttc, montant_restant,
-                    statut, valide, source, sfec_statut, sfec_num_certif,
+                    montant_ht, montant_tva, montant_ttc, montant_restant,
+                    type_doc, statut, valide, source, sfec_statut, sfec_num_certif,
                     sfec_signature, sfec_qr_code, synced_sage,
                     sage_domaine, sage_type, sage_piece
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sage', ?, ?, ?, ?, 1, 0, 6, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sage', ?, ?, ?, ?, 1, ?, ?, ?)
             """, (
                 numero, sage_inv.get("date_facture", ""),
                 sage_inv.get("tiers_code", ""), sage_inv.get("reference", ""),
                 sage_inv.get("tiers_nom", ""), sage_inv.get("tiers_niu", ""),
                 sage_inv.get("tiers_adresse", ""), sage_inv.get("tiers_telephone", ""),
                 sage_inv.get("tiers_email", ""),
-                sage_inv.get("montant_ht", 0), sage_inv.get("montant_ttc", 0),
-                sage_inv.get("montant_restant", 0), statut,
+                montant_ht, montant_tva, montant_ttc,
+                sage_inv.get("montant_restant", 0),
+                type_doc, statut,
                 1 if sage_inv.get("valide") else 0,
                 sage_inv.get("sfec_statut", ""), sage_inv.get("sfec_num_certif", ""),
                 sage_inv.get("sfec_signature", ""), sage_inv.get("sfec_qr_code", ""),
-                numero
+                sage_domaine, sage_type, sage_piece
             ))
             invoice_id = cur.lastrowid
             log_sync("invoices", invoice_id, numero, "sync_from_sage", "sage_to_sqlite", status="ok")

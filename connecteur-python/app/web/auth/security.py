@@ -194,6 +194,8 @@ def _required_permission(path, method):
             or p.startswith("/certified/")):
         return "factures.voir", None
     if p.startswith("/api/invoices"):
+        if p.endswith("/link-parent") and m == "POST":
+            return "factures.creer", None
         if p.endswith("/push-sage") and m == "POST":
             return "sage.pousser", None
         if p == "/api/invoices" and m == "POST":

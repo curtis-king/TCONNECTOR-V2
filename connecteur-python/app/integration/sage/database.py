@@ -1746,6 +1746,30 @@ def reset_stuck_en_cours(reset_errors=False):
         pass
 
 
+def reset_sfec_monitor(piece):
+    """Autorise un nouveau passage apres un lien manuel avoir -> parent.
+
+    Ne touche qu'au statut A_SURVEILLER (jamais ERREUR ni CERTIFIE) et
+    uniquement pour la piece concernee, tous types confondus (6 et 7).
+    """
+    t = get_table_map()
+    if not t["documents"] or not piece:
+        return 0
+    try:
+        with get_cursor() as cur:
+            cur.execute("""
+                UPDATE {} SET SFEC_STATUT = NULL
+                WHERE DO_Domaine = 0 AND DO_Type IN (6, 7) AND DO_Piece = ?
+                  AND SFEC_STATUT = 'A_SURVEILLER'
+                  AND SFEC_DATE_CERTIF IS NULL
+                  AND (SFEC_NUM_CERTIF IS NULL OR SFEC_NUM_CERTIF = '')
+            """.format(t["documents"]), piece)
+            return cur.rowcount or 0
+    except Exception as e:
+        logger.debug("reset_sfec_monitor echoue pour %s: %s", piece, e)
+        return 0
+
+
 def mark_certifying(invoice_id):
     t = get_table_map()
     parts = invoice_id.split("-")
