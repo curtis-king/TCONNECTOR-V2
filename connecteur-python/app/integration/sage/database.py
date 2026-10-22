@@ -1713,21 +1713,35 @@ def write_sfec_to_invoice(invoice_id, certification_number, signature, qr_code, 
                 signature=sig_str, qr_code=qr_str, certification_date=date_str)
 
 
-def reset_stuck_en_cours():
+def reset_stuck_en_cours(reset_errors=False):
+    """Debloque les certifications interrompues.
+
+    - `EN_COURS` : un process precedent a crashé pendant la certification ;
+      ce statut doit etre libere, sinon la facture reste bloquee a vie.
+    - `ERREUR` : NE DOIT PAS etre remis a NULL en fonctionnement normal.
+      Sinon chaque passe rejoue les memes factures a l'infini (audit
+      2026-10-21 : 14 866 rejets pour 191 factures, 64 passes en 1 h 30).
+      `reset_errors=True` est reserve a une operation d'upgrade explicite
+      (script ponctuel), jamais au cycle automatique.
+    """
     t = get_table_map()
     if not t["documents"]:
         return
+    statuts = ("EN_COURS", "ERREUR") if reset_errors else ("EN_COURS",)
+    placeholders = ", ".join(["?"] * len(statuts))
     try:
         with get_cursor() as cur:
             cur.execute("""
                 UPDATE {} SET SFEC_STATUT = NULL
-                WHERE SFEC_STATUT IN ('EN_COURS', 'ERREUR')
+                WHERE SFEC_STATUT IN ({})
                   AND DO_Domaine = 0
                   AND SFEC_DATE_CERTIF IS NULL
                   AND (SFEC_NUM_CERTIF IS NULL OR SFEC_NUM_CERTIF = '')
-            """.format(t["documents"]))
+            """.format(t["documents"], placeholders), statuts)
             if cur.rowcount > 0:
-                logger.info("Statuts bloques remis a NULL: %d factures", cur.rowcount)
+                logger.info("Statuts %s remis a NULL: %d factures",
+                            "EN_COURS/ERREUR" if reset_errors else "EN_COURS",
+                            cur.rowcount)
     except Exception:
         pass
 
@@ -1751,7 +1765,7 @@ def mark_certifying(invoice_id):
         logger.debug("mark_certifying echoue pour %s: %s", invoice_id, e)
 
 
-def mark_to_monitor(invoice_id):
+def mark_to_monitor(invoice_id, reason=""):
     t = get_table_map()
     parts = invoice_id.split("-")
     if len(parts) < 3:
@@ -1766,6 +1780,9 @@ def mark_to_monitor(invoice_id):
                 WHERE DO_Domaine = ? AND DO_Type = ? AND DO_Piece = ?
                   AND (SFEC_STATUT IS NULL OR SFEC_STATUT <> 'CERTIFIE')
             """.format(t["documents"]), domaine, type_doc, piece)
+            if cur.rowcount > 0:
+                logger.warning("Facture mise A_SURVEILLER: %s - %s",
+                               invoice_id, reason or "verification requise")
     except Exception as e:
         logger.debug("mark_to_monitor echoue pour %s: %s", invoice_id, e)
 

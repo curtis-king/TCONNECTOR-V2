@@ -215,6 +215,13 @@ devient :
         _seen_numeros.add(_num)
 ```
 
+Deux filtres supplémentaires sont appliqués dans la même boucle :
+
+- `A_SURVEILLER` n'est **jamais** remis dans `to_certify` (sinon un rejet définitif serait rejoué à chaque passe) ;
+- `CERTIFIE` / `DEJA_CERTIFIE` non trouvés dans le lookup SFEC ne sont pas recertifiés (la reconciliation/08 traite les certificats orphelins).
+
+La reprise manuelle d'une facture `A_SURVEILLER` reste possible via `certify_single()`.
+
 ### 3.4 400/422 → `A_SURVEILLER` avec motif
 
 > **400** = rejet de validation de l'API SFEC (définitif). **422** = rejet local de `validate_sfec_payload` / `check_sage_totals` (définitif aussi). Aucun des deux ne doit être rejoué.
@@ -253,7 +260,7 @@ et après l'`UPDATE` :
             return ("error_reject", numero)
 ```
 
-**Dans `retry_certification_queue`** (`engine.py:170-185`) : même changement (`mark_certification_failed` → `mark_to_monitor`).
+**Dans `_process_retry_queue`** (`engine.py:170-185`) : même changement (`mark_certification_failed` → `mark_to_monitor`), plus `_schedule_retry` et ré-enfilement pour les erreurs transitoires.
 
 **Dans `certify_single`** (`engine.py:740-760`) : même changement.
 
@@ -308,7 +315,7 @@ Exemple pour le bloc `else` :
 
 ```python
         else:
-            if _retry_attempts.get(numero, 0) >= 4:
+            if _retry_attempts.get(numero, 0) >= 3:
                 try:
                     mark_to_monitor(invoice["id"], str(e)[:200])
                 except Exception:
@@ -356,7 +363,7 @@ if __name__ == "__main__":
 2. **Une passe concurrente est ignorée** : lancer deux threads appelant `auto_certify_invoices()` avec un `time.sleep` dans `_auto_certify_invoices_locked` ; vérifier que le 2ᵉ log `deja en cours` et qu'il n'y a qu'un appel à `certify_invoice`.
 3. **Facture en double dans le snapshot** : snapshot avec 2 entrées même `numero` → un seul `certify_invoice`.
 4. **400/422 → A_SURVEILLER** : `certify_invoice` lève une exception avec `status_code = 400` puis `422` → `mark_to_monitor` appelé, `mark_certification_failed` **pas** appelé, aucun nouvel appel HTTP.
-5. **Backoff** : 4 erreurs transitoires → 4ᵉ appel marque `A_SURVEILLER`, les tentatives sont espacées.
+5. **Backoff** : 4 erreurs transitoires → 4ᵉ appel marque `A_SURVEILLER`, les tentatives sont espacées (60 s, 300 s, 900 s).
 
 ## 5. Critères d'acceptation
 

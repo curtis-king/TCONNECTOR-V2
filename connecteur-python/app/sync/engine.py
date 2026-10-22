@@ -8,7 +8,7 @@ from app.config.manager import get_config
 from app.integration.sage.database import (
     fetch_sales_invoices, fetch_purchase_invoices, fetch_contacts,
     fetch_tax_rates, fetch_ledger_accounts, fetch_certified_invoices,
-    mark_certifying, mark_certified, mark_certification_failed, mark_to_monitor,
+    mark_certifying, mark_certified, mark_to_monitor,
     write_sfec_to_invoice, reset_stuck_en_cours, close_pool
 )
 from app.integration.sfec.endpoints import certify_invoice, _extract_cert_data as _extract_sfec_cert_data
@@ -44,6 +44,45 @@ _retry_lock = threading.Lock()
 _sfec_lookup_cache = {}
 _sfec_lookup_ts = 0
 _SFEC_LOOKUP_TTL = 300
+
+# Empeche deux passes de certification concurrentes : sync_all() relache
+# _lock avant d'appeler auto_certify_invoices().
+_certify_run_lock = threading.Lock()
+_startup_reset_done = False
+
+# Backoff en memoire des erreurs transitoires (reseau, verrou Sage, 502).
+# Aucune ecriture 'ERREUR' en base : une facture doit pouvoir reessayer.
+_retry_after = {}
+_retry_attempts = {}
+_RETRY_BACKOFF_S = (60, 300, 900, 3600)
+_logged_errors = set()
+
+
+def _should_retry(numero):
+    return time.time() >= _retry_after.get(numero, 0)
+
+
+def _schedule_retry(numero):
+    n = _retry_attempts.get(numero, 0)
+    delay = _RETRY_BACKOFF_S[min(n, len(_RETRY_BACKOFF_S) - 1)]
+    _retry_attempts[numero] = n + 1
+    _retry_after[numero] = time.time() + delay
+    logger.info("Retry SFEC %s dans %ds (tentative %d)", numero, delay, n + 1)
+
+
+def _reset_retry(numero):
+    _retry_attempts.pop(numero, None)
+    _retry_after.pop(numero, None)
+
+
+def _log_certify_error(numero, message):
+    """Loggue une erreur une seule fois par (facture, motif) et par process."""
+    key = (numero, str(message)[:120])
+    if key in _logged_errors:
+        logger.debug("Certification echouee pour %s: %s", numero, message)
+    else:
+        _logged_errors.add(key)
+        logger.error("Certification echouee pour %s: %s", numero, message)
 
 
 def get_cache():
@@ -112,12 +151,20 @@ def _process_retry_queue():
         invoice_id = item.get("id", "")
         numero = item.get("numero", "")
 
+        if not _should_retry(numero):
+            # Backoff en cours : ne pas rejouer a chaque cycle de polling.
+            with _retry_lock:
+                _retry_queue.append(item)
+            continue
+
         if invoice_id in certified_ids:
+            _reset_retry(numero)
             success += 1
             continue
 
         if sfec_lookup and numero in sfec_lookup:
             _handle_already_certified(item, sfec_lookup)
+            _reset_retry(numero)
             success += 1
             continue
 
@@ -149,6 +196,7 @@ def _process_retry_queue():
             with _lock:
                 invoice["sfec_statut"] = "CERTIFIE"
                 invoice["sfec_num_certif"] = cert_number
+            _reset_retry(numero)
             success += 1
             logger.info("Retry queue: facture certifiee avec succes: %s (certif: %s)", numero, cert_number)
 
@@ -164,28 +212,39 @@ def _process_retry_queue():
             status_code = getattr(e, "status_code", None)
             if status_code == 409:
                 _handle_already_certified(item, sfec_lookup)
+                _reset_retry(numero)
                 success += 1
             elif status_code == 502:
                 errors += 1
                 try:
-                    mark_to_monitor(invoice_id)
+                    mark_to_monitor(invoice_id, "SFEC 502: {}".format(str(e)[:180]))
                 except Exception:
                     pass
+                _reset_retry(numero)
             elif status_code in (400, 422):
                 errors += 1
                 try:
-                    mark_certification_failed(invoice_id, "SFEC {}: {}".format(status_code, str(e)[:200]))
+                    mark_to_monitor(invoice_id, "SFEC {}: {}".format(status_code, str(e)[:180]))
                 except Exception:
                     pass
+                _reset_retry(numero)
             else:
                 errors += 1
-                try:
-                    mark_certification_failed(invoice_id, str(e)[:200])
-                except Exception:
-                    pass
+                if _retry_attempts.get(numero, 0) >= 3:
+                    try:
+                        mark_to_monitor(invoice_id, str(e)[:200])
+                    except Exception:
+                        pass
+                    _reset_retry(numero)
+                else:
+                    _schedule_retry(numero)
+                    with _retry_lock:
+                        item["attempts"] = item.get("attempts", 0) + 1
+                        _retry_queue.append(item)
 
         time.sleep(0.1)
 
+    _cache["retry_queue_count"] = len(_retry_queue)
     if success > 0 or errors > 0:
         logger.info("Retry queue termine: %d succes, %d erreurs", success, errors)
 
@@ -453,6 +512,7 @@ def _certify_single_worker(invoice, sfec_lookup):
     try:
         if sfec_lookup and numero in sfec_lookup:
             _handle_already_certified(invoice, sfec_lookup)
+            _reset_retry(numero)
             return ("skip", numero)
 
         mark_certifying(invoice["id"])
@@ -472,41 +532,70 @@ def _certify_single_worker(invoice, sfec_lookup):
         with _lock:
             invoice["sfec_statut"] = "CERTIFIE"
             invoice["sfec_num_certif"] = cert_number
+        _reset_retry(numero)
 
         return ("ok", numero, cert_number)
 
     except NetworkOfflineError:
+        _reset_retry(numero)
         _enqueue_for_retry(invoice)
         return ("offline", numero)
 
     except Exception as e:
-        logger.error("Certification echouee pour %s: %s", numero, e)
+        _log_certify_error(numero, e)
         status_code = getattr(e, "status_code", None)
         error_body = getattr(e, "error_body", "")
         if status_code == 409:
             _handle_already_certified(invoice, sfec_lookup)
+            _reset_retry(numero)
             return ("skip", numero)
         elif status_code == 502:
             try:
-                mark_to_monitor(invoice["id"])
+                mark_to_monitor(invoice["id"], "SFEC 502: {}".format(str(e)[:180]))
             except Exception:
                 pass
+            _reset_retry(numero)
             return ("error_502", numero)
         elif status_code in (400, 422):
+            # Rejet definitif : rejouer ne changera rien tant que la donnee
+            # n'est pas corrigee. On sort la facture de la boucle de retry.
             try:
-                mark_certification_failed(invoice["id"], "SFEC {}: {}".format(status_code, error_body[:200]))
+                mark_to_monitor(
+                    invoice["id"],
+                    "SFEC {}: {}".format(status_code, (error_body or str(e))[:180]),
+                )
             except Exception:
                 pass
+            _reset_retry(numero)
             return ("error_reject", numero)
         else:
-            try:
-                mark_certification_failed(invoice["id"], str(e)[:200])
-            except Exception:
-                pass
+            if _retry_attempts.get(numero, 0) >= 3:
+                try:
+                    mark_to_monitor(invoice["id"], str(e)[:200])
+                except Exception:
+                    pass
+                _reset_retry(numero)
+            else:
+                _schedule_retry(numero)
             return ("error", numero)
 
 
 def auto_certify_invoices():
+    # Empeche deux passes concurrentes : sync_all() relache _lock avant
+    # d'appeler la certification, donc le scheduler pouvait demarrer une
+    # nouvelle sync pendant qu'une certification tournait (audit 21/10 :
+    # meme facture tentee 6 fois en 400 ms -> 409 en serie).
+    if not _certify_run_lock.acquire(blocking=False):
+        logger.info("Auto-certification deja en cours - passe ignoree")
+        return
+    try:
+        _auto_certify_invoices_locked()
+    finally:
+        _certify_run_lock.release()
+
+
+def _auto_certify_invoices_locked():
+    global _startup_reset_done
     config = get_config()
     sfec_cfg = config.get("sfec", {})
 
@@ -523,10 +612,14 @@ def auto_certify_invoices():
         _queue_uncertified_for_retry()
         return
 
-    try:
-        reset_stuck_en_cours()
-    except Exception:
-        pass
+    if not _startup_reset_done:
+        # Un EN_COURS ne peut provenir que d'un process interrompu : on le
+        # libere une seule fois au demarrage, jamais a chaque passe.
+        try:
+            reset_stuck_en_cours()
+        except Exception:
+            pass
+        _startup_reset_done = True
 
     with _lock:
         invoices_snapshot = list(_cache["sales_invoices"])
@@ -552,16 +645,28 @@ def auto_certify_invoices():
                 avoir_ids_par_ref.setdefault(_r, []).append(_x.get("id"))
 
 
+    _seen_ids = set()
+    _seen_numeros = set()
     for inv in invoices_snapshot:
         if inv.get("statut_code", 0) != 2:
             continue
+
+        _id = inv.get("id")
+        _num = inv.get("numero", "")
+        if _id in _seen_ids:
+            continue
+        if _num and _num in _seen_numeros:
+            continue
+        _seen_ids.add(_id)
+        _seen_numeros.add(_num)
+
         to_account += 1
         numero = inv.get("numero", "")
         sfec_statut = inv.get("sfec_statut", "")
 
         type_doc = inv.get("type_doc", "vente")
 
-        if sfec_statut in ("EN_COURS", "ERREUR"):
+        if sfec_statut in ("EN_COURS", "ERREUR", "A_SURVEILLER"):
             continue
 
         if numero in sfec_lookup:
@@ -573,18 +678,26 @@ def auto_certify_invoices():
                     pass
             continue
 
+        # Ne jamais recertifier une facture deja certifiee : si elle n'est
+        # pas dans le lookup SFEC, ce sera traite par la reconciliation/08.
+        if sfec_statut in ("CERTIFIE", "DEJA_CERTIFIE"):
+            continue
+
         if type_doc == "avoir":
             ref = inv.get("reference_invoice_id") or inv.get("reference", "")
             if not ref:
                 try:
-                    mark_certification_failed(inv["id"], "Avoir sans reference facture d'origine")
+                    mark_to_monitor(inv["id"], "Avoir sans reference facture d'origine")
                 except Exception:
                     pass
                 continue
             ref_invoice = by_numero.get(ref)
             if not ref_invoice or ref_invoice.get("sfec_statut") not in ("CERTIFIE", "DEJA_CERTIFIE"):
                 try:
-                    mark_certification_failed(inv["id"], "Facture d'origine '{}' non certifiee".format(ref))
+                    mark_to_monitor(
+                        inv["id"],
+                        "Facture d'origine '{}' non certifiee".format(ref),
+                    )
                 except Exception:
                     pass
                 continue
@@ -592,10 +705,16 @@ def auto_certify_invoices():
             deja_avoir = any(_i != inv.get("id") for _i in _ids_ref)
             if deja_avoir:
                 try:
-                    mark_certification_failed(inv["id"], "Un avoir deja certifie existe pour '{}'".format(ref))
+                    mark_to_monitor(
+                        inv["id"],
+                        "Un avoir deja certifie existe pour '{}'".format(ref),
+                    )
                 except Exception:
                     pass
                 continue
+
+        if not _should_retry(numero):
+            continue
 
         to_certify.append(inv)
 
@@ -679,7 +798,9 @@ def _queue_uncertified_for_retry():
     queued = 0
     for inv in _cache["sales_invoices"]:
         if inv["id"] not in certified_ids and inv.get("valide", 0) == 1:
-            if inv.get("sfec_statut", "") not in ("EN_COURS", "ERREUR"):
+            if inv.get("sfec_statut", "") not in (
+                    "EN_COURS", "ERREUR", "A_SURVEILLER",
+                    "CERTIFIE", "DEJA_CERTIFIE"):
                 if inv["id"] not in existing_ids:
                     _enqueue_for_retry(inv)
                     queued += 1
@@ -729,6 +850,7 @@ def certify_single(invoice_id):
         return {"success": False, "error": "Pas de connexion internet - facture mise en file d'attente",
                 "queued": True}
 
+    numero = invoice.get("numero", "")
     try:
         mark_certifying(invoice_id)
         result = certify_invoice(invoice)
@@ -745,6 +867,7 @@ def certify_single(invoice_id):
         with _lock:
             invoice["sfec_statut"] = "CERTIFIE"
             invoice["sfec_num_certif"] = cert_number
+        _reset_retry(numero)
 
         return {
             "success": True,
@@ -752,6 +875,7 @@ def certify_single(invoice_id):
             "qr_code": qr,
         }
     except NetworkOfflineError:
+        _reset_retry(numero)
         _enqueue_for_retry(invoice)
         return {"success": False, "error": "Pas de connexion internet - facture mise en file d'attente",
                 "queued": True}
@@ -763,7 +887,6 @@ def certify_single(invoice_id):
             except Exception:
                 pass
             try:
-                numero = invoice.get("numero", "")
                 sfec_lookup = _build_sfec_lookup()
                 sfec_inv = sfec_lookup.get(numero) if sfec_lookup else None
                 if sfec_inv:
@@ -781,17 +904,33 @@ def certify_single(invoice_id):
                             invoice["sfec_num_certif"] = cert_number
             except Exception as ex:
                 logger.error("Ecriture SFEC echouee (manuel deja certifiee) pour %s: %s", invoice_id, ex)
+            _reset_retry(numero)
             return {"success": True, "certification_number": "DEJA_CERTIFIE", "note": "Facture deja certifiee sur SFEC"}
         if status_code == 502:
             try:
-                mark_to_monitor(invoice_id)
+                mark_to_monitor(invoice_id, "SFEC 502: {}".format(str(e)[:180]))
             except Exception:
                 pass
+            _reset_retry(numero)
             return {"success": False, "error": "Certification recue mais non verifiee sur SFEC", "note": "EN_ATTENTE"}
-        try:
-            mark_certification_failed(invoice_id, str(e))
-        except Exception:
-            pass
+        if status_code in (400, 422):
+            try:
+                mark_to_monitor(
+                    invoice_id,
+                    "SFEC {}: {}".format(status_code, str(e)[:180]),
+                )
+            except Exception:
+                pass
+            _reset_retry(numero)
+            return {"success": False, "error": str(e)}
+        if _retry_attempts.get(numero, 0) >= 3:
+            try:
+                mark_to_monitor(invoice_id, str(e)[:200])
+            except Exception:
+                pass
+            _reset_retry(numero)
+        else:
+            _schedule_retry(numero)
         return {"success": False, "error": str(e)}
 
 
@@ -882,9 +1021,9 @@ def apply_config():
     return {"ok": True, "message": "Configuration appliquee. Pool DB reinitialise."}
 
 
-def mark_invoice_to_monitor(invoice_id):
+def mark_invoice_to_monitor(invoice_id, reason=""):
     """Marque a surveiller dans Sage ET dans le cache (sinon /pending reste inchange)."""
-    mark_to_monitor(invoice_id)
+    mark_to_monitor(invoice_id, reason)
     with _lock:
         for inv in _cache["sales_invoices"]:
             if inv.get("id") == invoice_id:
