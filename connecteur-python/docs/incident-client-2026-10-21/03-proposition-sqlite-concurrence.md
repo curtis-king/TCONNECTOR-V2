@@ -232,21 +232,30 @@ def execute_with_retry(cur, sql, params=(), attempts=3):
 
 ### 3.4 Fermeture propre à l'arrêt
 
-`main.py` appelle `close_connection()` sur `SIGINT`/`SIGTERM`. Avec le stockage thread-local, seules les connexions du thread appelant sont fermées ; ajouter une liste de connexions pour un arrêt propre (optionnel) :
+`main.py` appelle `close_all_connections()` sur `SIGINT`/`SIGTERM`. Avec le stockage thread-local, seules les connexions du thread appelant sont accessibles directement ; on tient donc un registre faible par thread (`sqlite3.Connection` n'est pas weakref-able, mais `threading.Thread` l'est) :
 
 ```python
-_all_conns = set()
+import weakref
+
+_all_conns = weakref.WeakKeyDictionary()
 _all_lock = threading.Lock()
+
 # a la creation :
 with _all_lock:
-    _all_conns.add(conn)
+    _all_conns[threading.current_thread()] = conn
+
 # dans close_all_connections() :
 with _all_lock:
-    for c in list(_all_conns):
-        try: c.close()
-        except Exception: pass
+    conns = list(_all_conns.values())
     _all_conns.clear()
+for c in conns:
+    try:
+        c.close()
+    except Exception:
+        pass
 ```
+
+Le registre faible évite de retenir les connexions des workers éphémères du `ThreadPoolExecutor` après la mort de leur thread.
 
 ## 4. Tests
 

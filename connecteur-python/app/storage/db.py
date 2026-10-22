@@ -5,6 +5,7 @@ import time
 import sqlite3
 import logging
 import threading
+import weakref
 from datetime import datetime
 from contextlib import contextmanager
 
@@ -16,8 +17,16 @@ DATA_DIR = _uses_data_dir()
 # Chemin surchargeable pour les tests isolés (jamais la base de dev).
 DB_PATH = os.environ.get("TCONNECTOR_DB_PATH") or os.path.join(DATA_DIR, "tconnector.db")
 
-_lock = threading.Lock()
-_conn = None
+# Une connexion sqlite3 n'est PAS reentrante : la partager entre les
+# threads Flask, le scheduler, les workers de certification et le watcher
+# provoquait des SystemError sur commit() et des transactions perdues
+# (audit 2026-10-21). Connexion dediee par thread, WAL pour la concurrence
+# lecteur/lecteur + writer unique.
+_local = threading.local()
+# Cle = thread (weakref) : les connexions des workers ephemères ne sont pas
+# retenues apres la mort du thread. Sert uniquement a l'arret propre.
+_all_conns = weakref.WeakKeyDictionary()
+_all_lock = threading.Lock()
 
 
 def _get_db_path():
@@ -26,38 +35,57 @@ def _get_db_path():
 
 
 def get_connection():
-    global _conn
-    with _lock:
-        if _conn is not None:
+    conn = getattr(_local, "conn", None)
+    if conn is not None:
+        try:
+            conn.execute("SELECT 1")
+            return conn
+        except Exception:
             try:
-                _conn.execute("SELECT 1")
-                return _conn
+                conn.close()
             except Exception:
-                try:
-                    _conn.close()
-                except Exception:
-                    pass
-                _conn = None
+                pass
+            _local.conn = None
+            with _all_lock:
+                _all_conns.pop(threading.current_thread(), None)
 
-        path = _get_db_path()
-        _conn = sqlite3.connect(path, timeout=10, check_same_thread=False)
-        _conn.row_factory = sqlite3.Row
-        _conn.execute("PRAGMA journal_mode=WAL")
-        _conn.execute("PRAGMA foreign_keys=ON")
-        _conn.execute("PRAGMA busy_timeout=5000")
-        logger.info("SQLite connecte: %s", path)
-        return _conn
+    path = _get_db_path()
+    conn = sqlite3.connect(path, timeout=30, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=10000")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    _local.conn = conn
+    with _all_lock:
+        _all_conns[threading.current_thread()] = conn
+    logger.info("SQLite connecte (thread=%s): %s",
+                threading.current_thread().name, path)
+    return conn
 
 
 def close_connection():
-    global _conn
-    with _lock:
-        if _conn is not None:
-            try:
-                _conn.close()
-            except Exception:
-                pass
-            _conn = None
+    conn = getattr(_local, "conn", None)
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        _local.conn = None
+        with _all_lock:
+            _all_conns.pop(threading.current_thread(), None)
+
+
+def close_all_connections():
+    """Ferme toutes les connexions connues (arret propre du process)."""
+    with _all_lock:
+        conns = list(_all_conns.values())
+        _all_conns.clear()
+    for conn in conns:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 @contextmanager
@@ -66,15 +94,35 @@ def get_cursor():
     cur = conn.cursor()
     try:
         yield cur
-        conn.commit()
+        # Ne pas committer un contexte en lecture seule : cela provoquait
+        # "cannot commit - no transaction is active" sur les SELECT.
+        if conn.in_transaction:
+            conn.commit()
     except Exception:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
+        if conn.in_transaction:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         raise
     finally:
         cur.close()
+
+
+def execute_with_retry(cur, sql, params=(), attempts=3):
+    """Execute une ecriture en tolerant un verrou SQLite transitoire."""
+    last = None
+    for i in range(attempts):
+        try:
+            cur.execute(sql, params)
+            return
+        except sqlite3.OperationalError as e:
+            last = e
+            msg = str(e).lower()
+            if "locked" not in msg and "busy" not in msg:
+                raise
+            time.sleep(0.2 * (2 ** i))
+    raise last
 
 
 SCHEMA = """

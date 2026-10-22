@@ -9,7 +9,7 @@ from app.core.paths import base_dir, data_dir
 from app.core.logging_setup import setup_logging
 from app.config.manager import load_config, get_config
 from app.integration.sage.database import close_pool
-from app.storage.db import init_database, get_cursor
+from app.storage.db import init_database, get_cursor, close_all_connections
 from app.sync.connectivity import check_now, start_background_check, stop_background_check
 from app.sync.scheduler import start_all, stop_all
 from app.web.app import create_app
@@ -90,6 +90,7 @@ def main():
         logger.info("Signal recu (%s) - Arret en cours...", signum)
         stop_all()
         close_pool()
+        close_all_connections()
         logger.info("T-CONNECTOR arrete proprement")
         sys.exit(0)
 
@@ -112,11 +113,13 @@ def main():
     except KeyboardInterrupt:
         stop_all()
         close_pool()
+        close_all_connections()
         logger.info("T-CONNECTOR arrete")
     except Exception as e:
         logger.error("Erreur fatale: %s", e)
         stop_all()
         close_pool()
+        close_all_connections()
         raise
 
 
