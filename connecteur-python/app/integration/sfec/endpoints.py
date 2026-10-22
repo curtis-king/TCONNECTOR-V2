@@ -7,6 +7,7 @@ import threading
 from datetime import datetime
 from app.config.manager import get_company_config, get_config
 from app.integration.sfec.client import SfecClient
+from app.storage.db import compute_cent_tax
 
 _DEFAULT_RECIPIENT_NIU = "M000000000000001"
 _DEFAULT_RECIPIENT_PHONE = "069134144"
@@ -117,6 +118,130 @@ def _safe_float(val, default=0):
         return default
 
 
+# Ratios TTC/HT des factures Sage connues. Le 1,219 correspond a 18 % de TVA
+# + 3 % de taxe additionnelle + 5 % de centimes sur la TVA ; le 1,189 au seul
+# 18 % + centimes ; le 1,0525 au 5 % + centimes.
+_RATIO_TO_VAT_RATE = (
+    (1.0, 0.0),
+    (1.0525, 0.05),
+    (1.189, 0.18),
+    (1.219, 0.18),
+)
+
+
+def _validation_config():
+    try:
+        return get_config().get("validation", {}) or {}
+    except Exception:
+        return {}
+
+
+def _infer_vat_rate(ratio):
+    """Deduit le taux de TVA d'un ratio TTC/HT connu, sinon None."""
+    if ratio is None:
+        return None
+    for ref, rate in _RATIO_TO_VAT_RATE:
+        if abs(ratio - ref) <= 0.001:
+            return rate
+    return None
+
+
+def _extract_additional_taxes(invoice, subtotal, total_tax, centimes,
+                              tolerance=None, max_rate=None):
+    """Deduit les taxes additionnelles du TTC Sage.
+
+    SFEC separe la TVA (total_tax_t_amount / total_tax_r_amount), le centime
+    additionnel (additional_cent_tax, 5 % de la TVA) et les autres taxes
+    (additional_taxes : 3 %, 0,25 %, TAR, TAX_MUNI...). Le TTC Sage est la
+    source de verite : on isole le residu apres TVA et centimes.
+    """
+    if subtotal <= 0:
+        return []
+    cfg = _validation_config()
+    if tolerance is None:
+        tolerance = _safe_float(cfg.get("ttc_sage_tolerance"), 1.0)
+    if max_rate is None:
+        max_rate = _safe_float(cfg.get("max_additional_tax_rate"), 10.0)
+
+    sage_ttc = _safe_float(invoice.get("montant_ttc"), 0)
+    if sage_ttc <= 0:
+        return []
+
+    extra = round(sage_ttc - subtotal - total_tax - centimes, 2)
+    if extra <= tolerance:
+        return []
+
+    rate = round(extra / subtotal * 100, 2)
+    # Les arrondis de Sage transforment 3 % en 2,99 % : on rehausse les taux
+    # quasi entiers, sans toucher aux taux fractionnaires (0,25 %).
+    if abs(rate - round(rate)) <= 0.05:
+        rate = float(round(rate))
+    if max_rate and rate > max_rate:
+        return []
+
+    code = _safe_str(invoice.get("additional_tax_code"), "")
+    if not code:
+        for key, val in (cfg.get("additional_tax_codes") or {}).items():
+            try:
+                if abs(float(key) - rate) <= 0.1:
+                    code = _safe_str(val)
+                    break
+            except (TypeError, ValueError):
+                continue
+    code = code or "AUTRE"
+
+    label = _safe_str(invoice.get("additional_tax_label"), "")
+    if not label:
+        label = "Taxe additionnelle {}%".format(("%g" % rate))
+
+    return [{
+        "tax_code": code,
+        "tax_label": label,
+        "tax_amount": extra,
+        "tax_rate": rate,
+    }]
+
+
+def check_sage_totals(invoice, payload, tolerance=None):
+    """Compare le TTC reconstruit par le payload au TTC Sage.
+
+    Detecte notamment les factures TTC = HT (aucune TVA facturee) et les
+    taxes non ventilables. Ne certifie jamais un ecart > tolerance.
+    """
+    cfg = _validation_config()
+    if tolerance is None:
+        tolerance = _safe_float(cfg.get("ttc_sage_tolerance"), 1.0)
+
+    sage_ttc = _safe_float(invoice.get("montant_ttc"), None)
+    if sage_ttc is None or sage_ttc <= 0:
+        return []
+
+    sage_ht = _safe_float(invoice.get("montant_ht"), None)
+    if sage_ht is None or sage_ht <= 0:
+        return ["HT Sage absent ou nul: ventilation TVA/centimes non fiable "
+                "- verifier la facture dans Sage"]
+
+    if abs(sage_ttc - sage_ht) <= tolerance:
+        return ["TTC = HT ({} FCFA): aucune TVA facturee - exoneration a "
+                "confirmer".format(sage_ttc)]
+
+    max_rate = _safe_float(cfg.get("max_additional_tax_rate"), 10.0)
+    for tax in payload.get("additional_taxes") or []:
+        rate = _safe_float(tax.get("tax_rate"), 0)
+        if max_rate and rate > max_rate:
+            return ["Taxe additionnelle inhabituelle: {} % ({}) - verifier "
+                    "la facture dans Sage".format(rate, tax.get("tax_code"))]
+
+    computed = _safe_float(payload.get("total_amount"), 0)
+    ecart = round(computed - sage_ttc, 2)
+    if abs(ecart) <= tolerance:
+        return []
+
+    return ["TTC Sage={} != TTC calcule={} (ecart {} FCFA): taxe non "
+            "ventilable - corriger la facture dans Sage".format(
+                sage_ttc, computed, ecart)]
+
+
 def db_invoice_to_sfec(invoice):
     company = get_company_config()
     lignes = invoice.get("lignes") or []
@@ -162,9 +287,10 @@ def db_invoice_to_sfec(invoice):
         tax_amount = _safe_float(line.get("montant_tva", 0), 0)
         if tax_amount == 0:
             tax_amount = round(net_amount * rate_num / 100, 2)
-        total_amount = _safe_float(line.get("montant_ttc", 0), 0)
-        if total_amount == 0:
-            total_amount = round(net_amount + tax_amount, 2)
+        # SFEC attend le TTC de ligne (HT net + TVA). Les centimes et taxes
+        # additionnelles sont ventiles au niveau facture : ne pas reprendre
+        # DL_MontantTTC, qui les inclut deja (double comptage sinon).
+        item_total = round(net_amount + tax_amount, 2)
 
         designation = _safe_str(line.get("description"), "")
         if not designation:
@@ -196,13 +322,14 @@ def db_invoice_to_sfec(invoice):
             "type": item_type,
             "unit_price": round(unit_price, 2),
             "quantity": round(quantity, 2),
-            "subtotal": round(subtotal, 2),
+            "subtotal": round(net_amount, 2),
             "discount_amount": round(discount_amount, 2),
             "discount_type": discount_type,
-            "net_amount": round(net_amount, 2),
+            "amount_after_discount": round(net_amount, 2),
+            "net_amount": item_total,
             "tax_rate": rate_str,
             "tax_amount": round(tax_amount, 2),
-            "total_amount": round(total_amount, 2),
+            "total_amount": item_total,
         }
         items.append(item)
 
@@ -215,15 +342,26 @@ def db_invoice_to_sfec(invoice):
 
     if not items:
         montant_ht = _safe_float(invoice.get("montant_ht"), 0)
-        montant_tva = _safe_float(invoice.get("montant_tva"), 0)
         montant_ttc = _safe_float(invoice.get("montant_ttc"), 0)
-        if montant_ht == 0 and montant_ttc > 0:
-            montant_ht = round(montant_ttc / 1.18, 2)
-            montant_tva = round(montant_ttc - montant_ht, 2)
+
+        if montant_ht <= 0 and montant_ttc > 0:
+            # Repli degrade : sans lignes ni HT, on suppose le taux standard
+            # 18 % + centimes (1,189). check_sage_totals() signalera les
+            # factures dont le TTC n'est pas reconstructible.
+            montant_ht = round(montant_ttc / 1.189, 2)
         if montant_ht <= 0 and montant_ttc <= 0:
             montant_ht = 1
-            montant_tva = round(montant_ht * 0.18, 2)
-            montant_ttc = round(montant_ht + montant_tva, 2)
+
+        ratio = (montant_ttc / montant_ht) if montant_ht else None
+        rate = _infer_vat_rate(ratio)
+        if rate is None:
+            rate = 0.18
+        montant_tva = round(montant_ht * rate, 2)
+        centimes = compute_cent_tax(montant_tva)
+        if montant_ttc <= 0:
+            montant_ttc = round(montant_ht + montant_tva + centimes, 2)
+
+        item_total = round(montant_ht + montant_tva, 2)
         items = [{
             "designation": "Facture",
             "classification_code": None,
@@ -233,22 +371,45 @@ def db_invoice_to_sfec(invoice):
             "subtotal": montant_ht,
             "discount_amount": 0,
             "discount_type": "fixed",
-            "net_amount": montant_ht,
-            "tax_rate": "18",
+            "amount_after_discount": montant_ht,
+            "net_amount": item_total,
+            "tax_rate": ("%g" % (rate * 100)),
             "tax_amount": montant_tva,
-            "total_amount": montant_ttc,
+            "total_amount": item_total,
         }]
-        total_tax_t = montant_tva
-        total_exempt = 0
-        total_tax_r = 0
+        if rate == 0.05:
+            total_tax_t = 0
+            total_tax_r = montant_tva
+            total_exempt = 0
+        elif rate == 0:
+            total_tax_t = 0
+            total_tax_r = 0
+            total_exempt = montant_ht
+        else:
+            total_tax_t = montant_tva
+            total_tax_r = 0
+            total_exempt = 0
 
     total_tax = round(total_tax_t + total_tax_r, 2)
     subtotal = round(sum(i["subtotal"] for i in items), 2)
-    total_amount = round(
-    sum(i["total_amount"] for i in items)
-    + _safe_float(invoice.get("additional_cent_tax"), 0), 2
-)
     total_line_discount = round(sum(i["discount_amount"] for i in items), 2)
+
+    # Centime additionnel = 5 % de la TVA collectee (decret n° 2023-1737,
+    # art. 22), jamais 5 % du HT. Meme regle que recalc_invoice_totals().
+    additional_cent_tax = compute_cent_tax(total_tax)
+
+    # Taxes additionnelles (3 %, 0,25 %, TAR, TAX_MUNI...) : hors
+    # total_tax_amount, dans `additional_taxes`.
+    additional_taxes = _extract_additional_taxes(
+        invoice, subtotal, total_tax, additional_cent_tax
+    )
+    additional_taxes_total = round(
+        sum(_safe_float(t.get("tax_amount"), 0) for t in additional_taxes), 2
+    )
+
+    total_amount = round(
+        subtotal + total_tax + additional_cent_tax + additional_taxes_total, 2
+    )
 
     raw_niu = _safe_str(invoice.get("recipient_niu"))
     raw_phone = _safe_str(invoice.get("recipient_phone"))
@@ -286,7 +447,7 @@ def db_invoice_to_sfec(invoice):
         "total_tax_amount": total_tax,
         "discount_amount": round(_safe_float(invoice.get("discount_amount", 0), 0), 2),
         "total_line_discount_amount": total_line_discount,
-        "additional_cent_tax": round(_safe_float(invoice.get("additional_cent_tax", 0), 0), 2),
+        "additional_cent_tax": additional_cent_tax,
         "electronic_stamp_duty": 0,  # regle absolue SFEC : toujours 0, jamais lu depuis invoice
         "total_amount": total_amount,
         "amount_due": round(_safe_float(invoice.get("montant_restant"), total_amount), 2),
@@ -294,6 +455,9 @@ def db_invoice_to_sfec(invoice):
         "payment_method": _safe_str(invoice.get("payment_method"), "bank_transfer"),
         "items": items,
     }
+
+    if additional_taxes:
+        sfec_req["additional_taxes"] = additional_taxes
 
     if comp_niu:
         sfec_req["taxpayer_niu"] = comp_niu
@@ -391,12 +555,16 @@ def validate_sfec_payload(payload, tolerance_amount=None):
         except Exception:
             tolerance_amount = 1.0
 
+    additional_taxes_total = round(
+        sum(_safe_float(t.get("tax_amount"), 0)
+            for t in (payload.get("additional_taxes") or [])),
+        2
+    )
     expected_total = round(
         _safe_float(payload.get("subtotal"), 0)
-        - _safe_float(payload.get("discount_amount"), 0)
-        - _safe_float(payload.get("total_line_discount_amount"), 0)
         + _safe_float(payload.get("total_tax_amount"), 0)
         + _safe_float(payload.get("additional_cent_tax"), 0)
+        + additional_taxes_total
         + _safe_float(payload.get("electronic_stamp_duty"), 0),
         2
     )
@@ -426,7 +594,7 @@ def _extract_cert_data(sfec_inv):
 def certify_invoice(invoice):
     client = SfecClient()
     sfec_req = db_invoice_to_sfec(invoice)
-    errors = validate_sfec_payload(sfec_req)
+    errors = validate_sfec_payload(sfec_req) + check_sage_totals(invoice, sfec_req)
     if errors:
         msg = "Validation SFEC echouee: {}".format("; ".join(errors))
         logger.error(msg)
@@ -594,7 +762,7 @@ def sqlite_invoice_to_sfec(invoice):
 
 def certify_sqlite_invoice(invoice):
     sfec_req = sqlite_invoice_to_sfec(invoice)
-    errors = validate_sfec_payload(sfec_req)
+    errors = validate_sfec_payload(sfec_req) + check_sage_totals(invoice, sfec_req)
     if errors:
         msg = "Validation SFEC: {}".format("; ".join(errors))
         raise Exception(msg)

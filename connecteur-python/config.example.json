@@ -61,7 +61,10 @@
   },
   "validation": {
     "strict_mode": true,
-    "tolerance_amount": 0.01
+    "tolerance_amount": 0.01,
+    "ttc_sage_tolerance": 1.0,
+    "max_additional_tax_rate": 10,
+    "additional_tax_codes": {}
   },
   "notifications": {
     "enabled": true,

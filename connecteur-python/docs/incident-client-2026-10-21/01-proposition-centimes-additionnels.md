@@ -336,16 +336,22 @@ Puis, juste après la construction de `sfec_req` :
 ```python
     if not items:
         montant_ht = _safe_float(invoice.get("montant_ht"), 0)
-        montant_tva = _safe_float(invoice.get("montant_tva"), 0)
         montant_ttc = _safe_float(invoice.get("montant_ttc"), 0)
-        if montant_ht == 0 and montant_ttc > 0:
-            # TTC = HT + 18 % + 5 % de la TVA  =>  coefficient 1,189
+
+        if montant_ht <= 0 and montant_ttc > 0:
+            # Repli degrade : sans lignes ni HT, on suppose 18 % + centimes.
             montant_ht = round(montant_ttc / 1.189, 2)
-            montant_tva = round(
-                montant_ttc - montant_ht
-                - compute_cent_tax(round(montant_ht * 0.18, 2)),
-                2,
-            )
+        if montant_ht <= 0 and montant_ttc <= 0:
+            montant_ht = 1
+
+        ratio = (montant_ttc / montant_ht) if montant_ht else None
+        rate = _infer_vat_rate(ratio)
+        if rate is None:
+            rate = 0.18
+        montant_tva = round(montant_ht * rate, 2)
+        centimes = compute_cent_tax(montant_tva)
+        if montant_ttc <= 0:
+            montant_ttc = round(montant_ht + montant_tva + centimes, 2)
 ```
 
 Puis, dans l'item de repli :
@@ -353,25 +359,16 @@ Puis, dans l'item de repli :
 ```python
         # avant : "subtotal": montant_ht, "net_amount": montant_ht,
         #         "total_amount": montant_ttc,
+        item_total = round(montant_ht + montant_tva, 2)
         "subtotal": montant_ht,
-        "net_amount": round(montant_ht + montant_tva, 2),
-        "total_amount": round(montant_ht + montant_tva, 2),
+        "amount_after_discount": montant_ht,
+        "net_amount": item_total,
+        "total_amount": item_total,
 ```
 
-Et après le bloc :
+Le reste (centimes, taxes additionnelles, total) est calculé par l'en-tête commun (§4.4) : le repli n'a plus à recalculer ces montants.
 
-```python
-        additional_cent_tax = compute_cent_tax(montant_tva)
-        additional_taxes = _extract_additional_taxes(
-            invoice, montant_ht, montant_tva, additional_cent_tax
-        )
-        total_amount = round(
-            montant_ht + montant_tva + additional_cent_tax
-            + sum(t["tax_amount"] for t in additional_taxes), 2
-        )
-```
-
-> Le repli reste un cas dégradé : il suppose 18 % et ne gère ni le mixte 18/5 ni la taxe de 3 %. Il ne doit servir qu'aux factures **sans lignes** ; sinon, le calcul par lignes est la seule source fiable.
+> Le repli reste un cas dégradé : si le HT manque, on suppose 18 % + centimes, et `check_sage_totals()` signale « HT Sage absent » — donc pas de certification silencieuse. Il ne doit servir qu'aux factures **sans lignes**.
 
 ### 4.7 Validateur — `endpoints.py:394-410`
 
@@ -430,19 +427,26 @@ def check_sage_totals(invoice, payload, tolerance=None):
         tolerance = float(cfg.get("ttc_sage_tolerance", 1.0))
 
     sage_ttc = _safe_float(invoice.get("montant_ttc"), None)
-    if sage_ttc in (None, ""):
+    if sage_ttc is None or sage_ttc <= 0:
         return []
 
     sage_ht = _safe_float(invoice.get("montant_ht"), None)
-    if sage_ht is not None and abs(sage_ttc - sage_ht) <= tolerance:
+    if sage_ht is None or sage_ht <= 0:
+        return [
+            "HT Sage absent ou nul: ventilation TVA/centimes non fiable "
+            "- verifier la facture dans Sage"
+        ]
+
+    if abs(sage_ttc - sage_ht) <= tolerance:
         return [
             "TTC = HT ({} FCFA) : aucune TVA facturee — exoneration a "
             "confirmer avant certification".format(sage_ttc)
         ]
 
+    max_rate = _safe_float(cfg.get("max_additional_tax_rate"), 10.0)
     for tax in payload.get("additional_taxes") or []:
         rate = _safe_float(tax.get("tax_rate"), 0)
-        if rate > float(cfg.get("max_additional_tax_rate", 10.0)):
+        if max_rate and rate > max_rate:
             return [
                 "Taxe additionnelle inhabituelle: {} % ({}) — verifier la "
                 "facture dans Sage".format(rate, tax.get("tax_code"))
@@ -475,14 +479,13 @@ def check_sage_totals(invoice, payload, tolerance=None):
   "tolerance_amount": 0.01,
   "ttc_sage_tolerance": 1.0,
   "max_additional_tax_rate": 10.0,
-  "additional_tax_codes": {
-    "3.0": "203",
-    "0.25": "204"
-  }
+  "additional_tax_codes": {}
 }
 ```
 
 `ttc_sage_tolerance = 1,0 FCFA` absorbe les arrondis de Sage (écarts observés : −0,54 à +0,53 FCFA). `max_additional_tax_rate = 10 %` empêche d'absorber silencieusement une erreur de saisie.
+
+`additional_tax_codes` reste **vide** tant que le code SFEC exact de la taxe de 3 % n'est pas confirmé : le payload envoie alors `AUTRE`. Le code Sage imprimé sur la facture (`203`) n'est pas nécessairement un code SFEC (`TAR`, `TAX_MUNI`…). À renseigner après le test sandbox, sans redéploiement.
 
 ## 5. Tests
 
@@ -541,14 +544,14 @@ def test_remise_ligne_aligne_sfec():
     inv = _invoice([{
         "designation": "Produit remise", "quantite": 1, "prix_unitaire": 10000,
         "montant_ht": 9000, "taux_tva": 18, "montant_tva": 1620,
-        "montant_ttc": 10629,   # 9 000 + 1 620 + 9
+        "montant_ttc": 10701,   # 9 000 + 1 620 + 81 (5 % de TVA)
     }])
     p = db_invoice_to_sfec(inv)
     assert p["items"][0]["subtotal"] == 9000.0          # HT net
     assert p["items"][0]["discount_amount"] == 1000.0
     assert p["items"][0]["net_amount"] == 10620.0       # TTC de ligne
     assert p["subtotal"] == 9000.0
-    assert p["total_amount"] == 10629.0
+    assert p["total_amount"] == 10701.0
 
 
 def test_taxe_additionnelle_3_pourcent():
@@ -583,13 +586,15 @@ def test_ttc_egal_ht_signale():
 Cas à couvrir aussi :
 
 - facture locale (`source = 'web'`) : `montant_ttc` déjà calculé par `recalc_invoice_totals` → aucun `additional_taxes` parasite ;
+- cluster A (`25VFB3811`) : écart résiduel −0,46 FCFA absorbé par `ttc_sage_tolerance = 1,0` ;
+- cluster D (`25VFA3134`) : mixte 18 %/5 % → total 177 375, aucun `additional_taxes` ;
 - `cent_tax_rate = 0` (setting) : `additional_cent_tax = 0`, pas de régression ;
 - avoir (montants négatifs) : voir `05-proposition-avoirs-references.md` ;
 - taux additionnel > 10 % : garde-fou déclenché, pas d'absorption.
 
 ## 6. Critères d'acceptation
 
-- [ ] Les 5 tests ci-dessus passent, plus la suite `pytest -q`.
+- [ ] Les tests ci-dessus passent (`tests/test_sfec_centimes.py`), plus la suite `pytest -q`.
 - [ ] Sur la copie client : les 162 factures du cluster A **et** les 15 du cluster C (3 %) ne produisent plus d'`Incoherence totaux` ; C passe en `CERTIFIE`, ou en `A_SURVEILLER` si SFEC refuse le `tax_code` (jamais de rejeu).
 - [ ] Les 4 PDF de `WATCH/IN` (`25VFA3142`, `25VFA3141`, `25VFA3103`, `25VFA3104`) passent en certifié.
 - [ ] `check_sage_totals` signale exactement les **11** factures `TTC = HT` et, le cas échéant, `25VFA3134` — ni plus, ni moins.
