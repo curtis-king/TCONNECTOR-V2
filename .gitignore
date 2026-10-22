@@ -24,3 +24,7 @@ connecteur-python/data/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Donnees d'exploitation a la racine (extraites d'instance, logs, archives)
+/data/
+data.zip
