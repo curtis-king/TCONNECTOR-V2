@@ -251,6 +251,14 @@ SCHEMA = """
                 FOREIGN KEY (vendeur_id) REFERENCES vendeurs(id)
             );
 
+            -- Anti double-validation POS (PO-25/PO-63) : une cle d'idempotence
+            -- fournie par le client ne cree qu'un seul ticket.
+            CREATE TABLE IF NOT EXISTS pos_idempotency (
+                key TEXT PRIMARY KEY,
+                ticket_id INTEGER NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+
             CREATE TABLE IF NOT EXISTS pos_ticket_lines (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ticket_id INTEGER NOT NULL,
@@ -528,6 +536,29 @@ def _seed_default_settings():
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
                 (key, value)
             )
+    # CF-09 : au premier demarrage, la numerotation effective (settings) est
+    # initialisee depuis la config company si celle-ci la personnalise.
+    try:
+        from app.config.manager import get_config
+        company = get_config().get("company", {}) or {}
+        prefix = str(company.get("invoice_prefix") or "").strip()
+        next_no = company.get("invoice_next_number")
+        with get_cursor() as cur:
+            if prefix and prefix != "FA":
+                cur.execute("SELECT value FROM settings WHERE key = 'invoice_prefix'")
+                row = cur.fetchone()
+                if row and row["value"] == "FA":
+                    cur.execute("UPDATE settings SET value = ? WHERE key = 'invoice_prefix'", (prefix,))
+                    cur.execute("UPDATE settings SET value = ? WHERE key = 'invoice_format'",
+                                (prefix + "{:06d}",))
+            if next_no:
+                cur.execute("SELECT value FROM settings WHERE key = 'invoice_next_number'")
+                row = cur.fetchone()
+                if row and row["value"] == "1" and int(next_no) > 1:
+                    cur.execute("UPDATE settings SET value = ? WHERE key = 'invoice_next_number'",
+                                (str(int(next_no)),))
+    except Exception:
+        pass
 
 
 def get_setting(key, default=""):
@@ -543,6 +574,25 @@ def set_setting(key, value):
             "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))",
             (key, str(value))
         )
+
+
+def cent_tax_rate():
+    """Taux des centimes additionnels, en % (configurable, defaut 5)."""
+    try:
+        return float(get_setting("cent_tax_rate", "5") or 5)
+    except (TypeError, ValueError):
+        return 5.0
+
+
+def compute_cent_tax(tva_collectee):
+    """Centimes additionnels = taux % de la TVA COLLECTEE (toutes tranches).
+
+    Regle legale : decret n° 2023-1737, art. 22 — « la base d'imposition des
+    centimes additionnels est le montant de la TVA collectee. Le taux
+    applicable est de cinq pourcent (5 %). » La base inclut donc la TVA a 18 %
+    ET la TVA a taux reduit (5 %), pas seulement la tranche 18 %.
+    """
+    return round((tva_collectee or 0) * cent_tax_rate() / 100.0, 2)
 
 
 def update_invoice_sfec(invoice_id, sfec_id="", certification_number="",
@@ -666,14 +716,12 @@ def recalc_invoice_totals(invoice_id):
         row = cur.fetchone()
         if row:
             try:
-                cent_rate = float(get_setting("cent_tax_rate", "5") or 5)
-            except (TypeError, ValueError):
-                cent_rate = 5.0
-            try:
                 stamp_rate = float(get_setting("stamp_duty_rate", "0") or 0)
             except (TypeError, ValueError):
                 stamp_rate = 0.0
-            additional_cent_tax = round(row["tva_t"] * cent_rate / 100.0, 2)
+            # Centimes additionnels : 5 % de la TVA collectee (tva 18 % + tva
+            # reduite), decret n° 2023-1737 art. 22 — cf. compute_cent_tax().
+            additional_cent_tax = compute_cent_tax(row["tva_t"] + row["tva_r"])
             stamp_duty = round(row["total_ttc"] * stamp_rate / 100.0, 2) if stamp_rate else 0.0
             montant_ttc = round(row["total_ttc"] + additional_cent_tax + stamp_duty, 2)
             cur.execute("SELECT montant_ttc, montant_restant FROM invoices WHERE id = ?", (invoice_id,))

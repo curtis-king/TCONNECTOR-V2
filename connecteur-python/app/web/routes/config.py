@@ -17,6 +17,7 @@ import threading
 from flask import Blueprint, after_this_request, jsonify, render_template, request, send_file
 from app.config.manager import get_config, save_config
 from app.domain import invoices as invoice_engine, pos as pos_engine
+from app.storage import db as sqlite_db
 from app.integration.sage.database import fetch_tax_rates, list_all_tables, mark_to_monitor, ping_database
 from app.integration.sfec.client import SfecClient
 from app.integration.sfec.endpoints import certify_sqlite_invoice, check_health, preview_sfec_payload, validate_sfec_payload
@@ -129,8 +130,8 @@ def config_page():
         bank_account=_esc(company.get("bank_account", "")),
         bank_iban=_esc(company.get("bank_iban", "")),
         bank_swift=_esc(company.get("bank_swift", "")),
-        invoice_prefix=_esc(company.get("invoice_prefix", "INV-")),
-        invoice_next_number=_esc(company.get("invoice_next_number", 1)),
+        invoice_prefix=_esc(sqlite_db.get_setting("invoice_prefix", company.get("invoice_prefix", "INV-"))),
+        invoice_next_number=_esc(sqlite_db.get_setting("invoice_next_number", company.get("invoice_next_number", 1))),
         invoice_notes=_esc(company.get("invoice_notes", "")),
         invoice_footer=_esc(company.get("invoice_footer", "")),
         tax_regime=_esc(company.get("tax_regime", "")),
@@ -330,16 +331,24 @@ def api_config_db():
     for key in ("server", "database", "user", "password"):
         if key in data and not (key == "password" and data[key] == ""):
             db[key] = data[key]
-    for key in ("port", "polling_interval_ms", "pool_max", "pool_min",
-                "pool_idle_timeout_ms", "connection_timeout_ms", "request_timeout_ms"):
-        if key in data:
-            try:
-                db[key] = int(data[key])
-            except (ValueError, TypeError):
-                pass
+    # CF-13/CF-23 : plages numeriques validees (refus 400 au lieu d'ignorer).
+    errors = []
+    _apply_bounded(data, db, (
+        ("port", 1, 65535),
+        ("polling_interval_ms", 1000, 3600000),
+        ("pool_max", 1, 100),
+        ("pool_min", 0, 100),
+        ("pool_idle_timeout_ms", 1000, 86400000),
+        ("connection_timeout_ms", 1000, 600000),
+        ("request_timeout_ms", 1000, 3600000),
+    ), errors)
+    if db.get("pool_min", 0) > db.get("pool_max", 1):
+        errors.append("pool_min ne peut pas depasser pool_max")
     for key in ("trusted_connection", "encrypt", "trust_server_certificate", "polling_enabled"):
         if key in data:
             db[key] = _bool(data[key])
+    if errors:
+        return jsonify({"ok": False, "errors": errors}), 400
     cfg["db"] = db
     save_config(cfg)
     return jsonify({"ok": True})
@@ -380,6 +389,25 @@ def api_config_company():
             company["invoice_next_number"] = int(data["invoice_next_number"])
         except (ValueError, TypeError):
             pass
+    # CF-09 : la numerotation reelle lit la table settings (generate_invoice_number)
+    # — on y propage le prefixe et le prochain numero saisis dans /config,
+    # sinon ces champs n'avaient aucun effet.
+    try:
+        from app.storage.db import set_setting
+        if "invoice_prefix" in data:
+            prefix = str(data.get("invoice_prefix") or "").strip()
+            if prefix:
+                set_setting("invoice_prefix", prefix)
+                set_setting("invoice_format", prefix + "{:06d}")
+        if "invoice_next_number" in data:
+            try:
+                nxt = int(data["invoice_next_number"])
+                if nxt >= 1:
+                    set_setting("invoice_next_number", str(nxt))
+            except (ValueError, TypeError):
+                pass
+    except Exception:
+        pass
     for key in ("qrcode_enabled",):
         if key in data:
             company[key] = _bool(data[key])

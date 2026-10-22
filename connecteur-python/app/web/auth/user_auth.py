@@ -30,6 +30,10 @@ from app.config.manager import get_config, save_config
 
 ROLES = ["admin", "responsable", "caissiere", "financiere"]
 
+# Cache de la matrice de droits (AU-27) — TTL court, invalide a chaque ecriture.
+_MATRIX_CACHE = {"ts": 0.0, "data": None}
+_MATRIX_TTL = 60.0
+
 ROLE_LABELS = {
     "admin": "Administrateur",
     "responsable": "Responsable",
@@ -112,6 +116,14 @@ def save_auth_config(values):
     return get_auth_config()
 
 
+def _ensure_column(cur, table, column, ddl):
+    """Migration douce : ajoute la colonne si absente (bases existantes)."""
+    cols = [r["name"] for r in cur.execute(
+        "PRAGMA table_info({})".format(table)).fetchall()]
+    if column not in cols:
+        cur.execute("ALTER TABLE {} ADD COLUMN {} {}".format(table, column, ddl))
+
+
 def ensure_schema():
     with sqlite_db.get_cursor() as cur:
         cur.executescript("""
@@ -141,6 +153,13 @@ def ensure_schema():
             CREATE INDEX IF NOT EXISTS idx_utilisateurs_email_lower ON utilisateurs(lower(email));
             CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
         """)
+        # session_version : revoque les sessions apres changement de mot de
+        # passe (AU-13). must_change_pwd : force le changement a la prochaine
+        # connexion (AU-17 / AU-03).
+        _ensure_column(cur, "utilisateurs", "session_version",
+                       "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(cur, "utilisateurs", "must_change_pwd",
+                       "INTEGER NOT NULL DEFAULT 0")
 
 
 def migrate_admin_from_config():
@@ -155,8 +174,11 @@ def migrate_admin_from_config():
         if not email or not password:
             return None
         pwd_hash = generate_password_hash(password, method="pbkdf2:sha256", salt_length=16)
+        # must_change_pwd=1 : l'admin cree depuis la config DOIT changer son
+        # mot de passe a la premiere connexion (attenue AU-03).
         cur.execute(
-            "INSERT INTO utilisateurs (nom, prenom, email, mot_de_passe, role) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO utilisateurs (nom, prenom, email, mot_de_passe, role, must_change_pwd)"
+            " VALUES (?, ?, ?, ?, ?, 1)",
             ("Administrateur", "", email, pwd_hash, "admin")
         )
         audit("admin.migre", "Compte admin migre depuis config.json (mot de passe a changer)", email=email)
@@ -203,20 +225,32 @@ def has_perm(role, perm):
 
 
 def get_matrix():
+    now = time.time()
+    if _MATRIX_CACHE["data"] is not None and now - _MATRIX_CACHE["ts"] < _MATRIX_TTL:
+        return _MATRIX_CACHE["data"]
     stored = sqlite_db.get_setting("auth_matrix", "")
+    data = None
     if stored:
         try:
-            data = json.loads(stored)
-            if isinstance(data, dict):
-                return data
+            parsed = json.loads(stored)
+            if isinstance(parsed, dict):
+                data = parsed
         except Exception:
             pass
-    return {r: list(DEFAULT_MATRIX[r]) for r in ROLES}
+    if data is None:
+        data = {r: list(DEFAULT_MATRIX[r]) for r in ROLES}
+    # Cache court (AU-27) : evite de relire le reglage SQLite a chaque
+    # controle de permission ; invalide par set_matrix().
+    _MATRIX_CACHE["ts"] = now
+    _MATRIX_CACHE["data"] = data
+    return data
 
 
 def set_matrix(matrix):
     clean = {r: [p for p in perms if p in ALL_PERMS] for r, perms in matrix.items() if r in ROLES}
     sqlite_db.set_setting("auth_matrix", json.dumps(clean, ensure_ascii=False))
+    _MATRIX_CACHE["data"] = None
+    _MATRIX_CACHE["ts"] = 0.0
     return clean
 
 
@@ -229,6 +263,8 @@ def _user_row_to_dict(row):
         "role": row["role"] or "responsable",
         "role_label": ROLE_LABELS.get(row["role"], row["role"]),
         "est_actif": bool(row["est_actif"]),
+        "session_version": row["session_version"] if "session_version" in row.keys() else 0,
+        "must_change_pwd": bool(row["must_change_pwd"]) if "must_change_pwd" in row.keys() else False,
         "derniere_connexion": row["derniere_connexion"] or "",
         "created_at": row["created_at"] or "",
     }
@@ -249,7 +285,8 @@ def get_user(user_id):
     ensure_schema()
     with sqlite_db.get_cursor() as cur:
         cur.execute(
-            "SELECT id, nom, prenom, email, role, est_actif, derniere_connexion, created_at "
+            "SELECT id, nom, prenom, email, role, est_actif, derniere_connexion, created_at, "
+            "session_version, must_change_pwd "
             "FROM utilisateurs WHERE id = ?",
             (user_id,),
         )
@@ -263,7 +300,8 @@ def get_user_by_email(email):
     with sqlite_db.get_cursor() as cur:
         cur.execute(
             "SELECT id, nom, prenom, email, role, mot_de_passe, est_actif, failed_attempts, locked_until, "
-            "derniere_connexion, created_at FROM utilisateurs WHERE lower(email) = ?",
+            "derniere_connexion, created_at, session_version, must_change_pwd "
+            "FROM utilisateurs WHERE lower(email) = ?",
             (email,),
         )
         return cur.fetchone()
@@ -334,17 +372,20 @@ def update_user(user_id, nom=None, prenom=None, role=None, est_actif=None,
     return True
 
 
-def set_password(user_id, new_password, resetter=None):
+def set_password(user_id, new_password, resetter=None, must_change=False):
     ensure_schema()
     validate_password(new_password)
     cur_user = get_user(user_id)
     if not cur_user:
         raise ValueError("Compte introuvable")
     with sqlite_db.get_cursor() as cur:
+        # session_version + 1 : toutes les sessions existantes de ce compte
+        # sont revoquees (AU-13) — l'appelant remet a jour sa propre session.
         cur.execute(
             "UPDATE utilisateurs SET mot_de_passe = ?, failed_attempts = 0, locked_until = NULL, "
+            "session_version = session_version + 1, must_change_pwd = ?, "
             "updated_at = datetime('now') WHERE id = ?",
-            (hash_password(new_password), user_id),
+            (hash_password(new_password), 1 if must_change else 0, user_id),
         )
     who = resetter or cur_user["email"]
     audit("utilisateur.mot_de_passe", "Mot de passe reinitialise" + ("" if resetter else " (changement personnel)"),
@@ -464,6 +505,13 @@ def authenticate(email, password, ip=""):
     pwd_ok = None
     if provider == "sage":
         pwd_ok = _sage_verify_password(email, password)
+        if pwd_ok is None:
+            # Repli sur le hash local : trace explicitement — le mode
+            # d'authentification effectif differe de la config (AU-14).
+            audit("connexion.repli_local",
+                  "Provider sage indisponible/incomplet : verification du hash local",
+                  email=email, ip=ip)
+            logger.warning("Auth sage indisponible pour %s : repli sur le hash local", email)
     if pwd_ok is None:
         pwd_ok = check_password(row["mot_de_passe"], password)
     if pwd_ok:
@@ -475,7 +523,9 @@ def authenticate(email, password, ip=""):
             )
         audit("connexion.ok", "Connexion reussie", email=email, ip=ip)
         return {"id": row["id"], "email": email, "role": row["role"],
-                "nom": row["nom"] or "", "prenom": row["prenom"] or ""}, None
+                "nom": row["nom"] or "", "prenom": row["prenom"] or "",
+                "session_version": row["session_version"] if "session_version" in row.keys() else 0,
+                "must_change_pwd": bool(row["must_change_pwd"]) if "must_change_pwd" in row.keys() else False}, None
 
     attempts = (row["failed_attempts"] or 0) + 1
     with sqlite_db.get_cursor() as cur:

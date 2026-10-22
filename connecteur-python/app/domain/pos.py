@@ -7,7 +7,7 @@ from datetime import datetime
 from app.storage.db import (
     get_cursor, generate_ticket_number, generate_invoice_number,
     recalc_ticket_totals, calc_line_ticket_totals,
-    log_sync, row_to_dict, rows_to_list
+    log_sync, row_to_dict, rows_to_list, get_setting, compute_cent_tax
 )
 from app.config.manager import get_config
 
@@ -182,6 +182,33 @@ def create_ticket(data):
     if not isinstance(data, dict):
         return {"success": False, "error": "Donnees ticket invalides"}
 
+    # Idempotence (PO-25/PO-63) : un retry reseau ne duplique ni le ticket,
+    # ni la facture, ni la certification SFEC.
+    idem_key = str(data.get("idempotency_key") or "").strip()
+    if idem_key:
+        if not re.match(r"^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$", idem_key):
+            return {"success": False, "error": "Cle d'idempotence invalide"}
+        with get_cursor() as cur:
+            cur.execute(
+                "SELECT p.ticket_id AS tid, t.numero AS tnum, t.montant_ttc AS ttc,"
+                " t.monnaie_rendue AS monnaie, t.mode_paiement AS mode,"
+                " t.invoice_id AS iid, i.numero AS inum"
+                " FROM pos_idempotency p"
+                " JOIN pos_tickets t ON t.id = p.ticket_id"
+                " LEFT JOIN invoices i ON i.id = t.invoice_id"
+                " WHERE p.key = ?", (idem_key,))
+            dup = cur.fetchone()
+        if dup:
+            logger.info("Idempotence POS : cle %s deja traitee (ticket %s)",
+                        idem_key, dup["tnum"])
+            return {"success": True, "duplicate": True,
+                    "id": dup["tid"], "numero": dup["tnum"] or "",
+                    "mode_paiement": dup["mode"] or "",
+                    "montant_ttc": dup["ttc"] or 0,
+                    "monnaie_rendue": dup["monnaie"] or 0,
+                    "invoice_id": dup["iid"],
+                    "invoice_numero": dup["inum"] or ""}
+
     lignes, total_preview, err = _validate_ticket_lines(data.get("lignes"))
     if err:
         return {"success": False, "error": err}
@@ -289,6 +316,14 @@ def create_ticket(data):
               "mode_paiement": mode_paiement,
               "montant_ttc": montant_ttc, "monnaie_rendue": monnaie_rendue}
     result.update(invoice_result)
+    if idem_key:
+        try:
+            with get_cursor() as cur:
+                cur.execute(
+                    "INSERT OR IGNORE INTO pos_idempotency (key, ticket_id) VALUES (?, ?)",
+                    (idem_key, ticket_id))
+        except Exception as e:
+            logger.warning("Enregistrement idempotence impossible: %s", e)
     return result
 
 
@@ -414,7 +449,10 @@ def _create_invoice_for_ticket(ticket_id, data, totals):
         # des net_ht par ligne et le montant_ht final du ticket, deja reduit par
         # recalc_ticket_totals via remise_globale_pct / remise_globale_montant.
         discount_amount = round(max(sum_line_net_ht - totals.get("montant_ht", sum_line_net_ht), 0), 2)
-        additional_cent_tax = round(total_tax_t_amount * 0.05, 2)  # a verifier: 5% TVA 18% seulement ?
+        # Centimes additionnels : 5 % de la TVA COLLECTEE (toutes tranches,
+        # decret n° 2023-1737 art. 22 : « base = montant de la TVA collectee »).
+        # Taux configurable via le setting cent_tax_rate (defaut 5).
+        additional_cent_tax = compute_cent_tax(total_tax_t_amount + total_tax_r_amount)
 
         with get_cursor() as cur:
             cur.execute("""

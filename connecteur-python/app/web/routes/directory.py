@@ -407,8 +407,11 @@ def api_delete_compte(user_id):
 def api_reset_compte_password(user_id):
     data = request.get_json(silent=True) or {}
     try:
+        # must_change=True : l'utilisateur devra changer ce mot de passe
+        # provisoire a sa prochaine connexion (AU-17).
         user_auth.set_password(user_id, data.get("password", ""),
-                               resetter=(_current_identity() or {}).get("email", ""))
+                               resetter=(_current_identity() or {}).get("email", ""),
+                               must_change=True)
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400

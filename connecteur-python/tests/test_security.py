@@ -227,3 +227,178 @@ def test_directory_and_pos_escape_contact_fields(client):
         assert payload not in pos
     finally:
         _purge_contact(code)
+
+
+# ── Sessions & mots de passe (AU-13/17/18/15/26/27/31/07) ──────────────────
+
+def test_password_change_revokes_other_sessions(app_instance, temp_user):
+    """AU-13 : apres changement de mot de passe, les autres sessions du compte
+    sont revoquees ; la session qui a fait le changement reste valide."""
+    email, password = temp_user("responsable")
+    c1 = _login(app_instance, email, password)
+    c2 = _login(app_instance, email, password)
+    assert c2.get("/api/metrics").status_code == 200
+
+    token = _csrf(c1)
+    r = c1.post("/api/compte/password", json={
+        "current": password, "nouveau": "Nouveau-MDP-456",
+    }, headers={"X-CSRF-Token": token})
+    assert r.status_code == 200, r.get_json()
+
+    # c2 (ancienne session) est revoquee
+    assert c2.get("/api/metrics").status_code == 401
+    # c1 (session du changement) reste valide
+    t2 = _csrf(c1)
+    assert c1.get("/api/metrics").status_code == 200
+    assert t2, "un nouveau jeton CSRF doit etre disponible"
+
+
+def test_password_change_rotates_csrf_token(app_instance, temp_user):
+    """AU-18 : le jeton CSRF d'avant le changement est refuse ensuite."""
+    email, password = temp_user("responsable")
+    c = _login(app_instance, email, password)
+    old_token = _csrf(c)
+    r = c.post("/api/compte/password", json={
+        "current": password, "nouveau": "Autre-MDP-789",
+    }, headers={"X-CSRF-Token": old_token})
+    assert r.status_code == 200, r.get_json()
+
+    new_token = _csrf(c)
+    assert new_token != old_token
+    # L'ancien jeton est rejete par le hook global (400).
+    r2 = c.post("/api/compte/password", json={
+        "current": "Autre-MDP-789", "nouveau": "Encore-MDP-000",
+    }, headers={"X-CSRF-Token": old_token})
+    assert r2.status_code == 400
+    # Le nouveau fonctionne.
+    r3 = c.post("/api/compte/password", json={
+        "current": "Autre-MDP-789", "nouveau": "Encore-MDP-000",
+    }, headers={"X-CSRF-Token": new_token})
+    assert r3.status_code == 200, r3.get_json()
+
+
+def test_admin_reset_forces_password_change(app_instance, client, temp_user):
+    """AU-17 : un mot de passe reinitialise par un admin impose un changement
+    a la prochaine connexion ; seul /compte/mot-de-passe reste accessible."""
+    email, _old = temp_user("responsable")
+    with get_cursor() as cur:
+        cur.execute("SELECT id FROM utilisateurs WHERE lower(email) = lower(?)", (email,))
+        uid = cur.fetchone()["id"]
+
+    token = _csrf(client)
+    r = client.post("/api/utilisateurs/{}/password".format(uid), json={
+        "password": "Temporaire-123",
+    }, headers={"X-CSRF-Token": token})
+    assert r.status_code == 200, r.get_json()
+
+    c = _login(app_instance, email, "Temporaire-123")
+    # Toute page autre que le changement de mot de passe redirige.
+    r = c.get("/")
+    assert r.status_code in (302, 303)
+    assert "/compte/mot-de-passe" in (r.headers.get("Location") or "")
+    # Les APIs renvoient 403 explicite.
+    r = c.get("/api/metrics")
+    assert r.status_code == 403
+    assert r.get_json().get("must_change_password") is True
+    # La page de changement reste accessible.
+    assert c.get("/compte/mot-de-passe").status_code == 200
+    # Apres changement effectif, acces normal.
+    token = _csrf(c)
+    r = c.post("/api/compte/password", json={
+        "current": "Temporaire-123", "nouveau": "Definitif-456",
+    }, headers={"X-CSRF-Token": token})
+    assert r.status_code == 200, r.get_json()
+    assert c.get("/api/metrics").status_code == 200
+
+
+def test_sage_provider_blocks_local_password_change(app_instance, temp_user):
+    """AU-15 : en mode provider=sage, le changement local est refuse."""
+    from app.config.manager import get_config, save_config
+    email, password = temp_user("responsable")
+    c = _login(app_instance, email, password)
+    cfg = get_config()
+    old_provider = (cfg.get("auth") or {}).get("provider", "local")
+    try:
+        cfg.setdefault("auth", {})["provider"] = "sage"
+        save_config(cfg)
+        token = _csrf(c)
+        r = c.post("/api/compte/password", json={
+            "current": password, "nouveau": "Inutile-MDP-123",
+        }, headers={"X-CSRF-Token": token})
+        assert r.status_code == 400
+        assert "Sage" in (r.get_json().get("error") or "")
+    finally:
+        cfg.setdefault("auth", {})["provider"] = old_provider
+        save_config(cfg)
+
+
+def test_deny_is_audited(role_client):
+    """AU-26 : un refus de permission ecrit dans audit_log."""
+    caissiere = role_client("caissiere")
+    with get_cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS n FROM audit_log WHERE action = 'acces.refuse'")
+        before = cur.fetchone()["n"]
+    assert caissiere.get("/config").status_code == 403
+    with get_cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS n FROM audit_log WHERE action = 'acces.refuse'")
+        after = cur.fetchone()["n"]
+        cur.execute(
+            "SELECT detail FROM audit_log WHERE action = 'acces.refuse' ORDER BY id DESC LIMIT 1")
+        last = cur.fetchone()["detail"]
+    assert after == before + 1
+    assert "/config" in last
+
+
+def test_matrix_cache_is_invalidated_on_write():
+    """AU-27 : get_matrix() est mis en cache, mais set_matrix() invalide."""
+    role = "caissiere"
+    original = user_auth.role_permissions(role)
+    try:
+        matrix = user_auth.get_matrix()
+        perms = [p for p in matrix.get(role, []) if p != "config.gerer"]
+        matrix[role] = perms
+        user_auth.set_matrix(matrix)
+        assert not user_auth.has_perm(role, "config.gerer")
+    finally:
+        user_auth.set_matrix({r: sorted(user_auth.DEFAULT_MATRIX[r]) for r in user_auth.ROLES})
+    assert user_auth.role_permissions(role) == original
+
+
+def test_hsts_only_when_https_only(app_instance):
+    """AU-31 : HSTS present quand https_only est actif, absent sinon."""
+    from app.config.manager import get_config, save_config
+    cfg = get_config()
+    old = bool((cfg.get("auth") or {}).get("https_only", False))
+    c = app_instance.test_client()
+    try:
+        cfg.setdefault("auth", {})["https_only"] = True
+        save_config(cfg)
+        assert "Strict-Transport-Security" in c.get("/login").headers
+
+        cfg.setdefault("auth", {})["https_only"] = False
+        save_config(cfg)
+        assert "Strict-Transport-Security" not in c.get("/login").headers
+    finally:
+        cfg.setdefault("auth", {})["https_only"] = old
+        save_config(cfg)
+
+
+def test_vendeur_link_is_case_insensitive(app_instance):
+    """AU-07 : la liaison compte<->vendeur par email ignore la casse."""
+    from app.storage.db import get_cursor as _cur
+    email = "test-sec-vendeur@example.com"
+    user_auth.create_user(nom="Vendeur", prenom="Casse", email=email,
+                          password="Test-Password-123", role="caissiere")
+    with _cur() as cur:
+        cur.execute(
+            "INSERT INTO vendeurs (code, nom, prenom, email, pin, role, est_actif)"
+            " VALUES (?, ?, ?, ?, ?, ?, 1)",
+            ("TEST-SEC-V1", "Casse", "Vendeur", email.upper(), "", "vendeur"))
+    try:
+        c = _login(app_instance, email, "Test-Password-123")
+        with c.session_transaction() as s:
+            assert s.get("vendeur_id"), "vendeur_id devrait etre lie malgre la casse"
+    finally:
+        _purge_user(email)
+        with _cur() as cur:
+            cur.execute("DELETE FROM vendeurs WHERE code = ?", ("TEST-SEC-V1",))

@@ -177,3 +177,71 @@ def test_export_csv_filtre_et_injection(client, csrf):
     body = r.get_data(as_text=True)
     assert "numero" in body.split("\n")[0]
     assert PREFIX + "V-EX" in body
+
+
+# ── Centimes additionnels / QR SFEC / numérotation (P1) ─────────────────────
+
+def test_centime_additionnel_sur_tva_collectee(client, csrf):
+    """PO-44/BL-38 : le centime additionnel vaut 5 % de la TVA COLLECTEE
+    (toutes tranches, decret n° 2023-1737 art. 22), pas seulement la TVA 18 %."""
+    r = _post(client, csrf, {
+        "numero": PREFIX + "V-CENT", "tiers_nom": "X", "statut": "valide",
+        "lignes": [
+            {"designation": "TVA 18", "quantite": 1, "prix_unitaire": 10000, "taux_tva": 18},
+            {"designation": "TVA 5", "quantite": 1, "prix_unitaire": 10000, "taux_tva": 5},
+        ],
+    })
+    assert r.status_code == 200, r.get_json()
+    inv = invoice_engine.get_invoice(r.get_json()["id"])
+    tva_collectee = 1800.0 + 500.0
+    assert inv["additional_cent_tax"] == pytest.approx(round(tva_collectee * 0.05, 2), abs=0.01)
+    assert inv["montant_ttc"] == pytest.approx(20000 + tva_collectee + round(tva_collectee * 0.05, 2), abs=0.01)
+
+
+def test_qr_sfec_jamais_regenere(client, csrf, monkeypatch):
+    """BL-62 : si l'image QR SFEC n'est pas decodable, le PDF ne regenere
+    JAMAIS un QR local (non conforme) — il signale l'indisponibilite."""
+    def _boom(*args, **kwargs):
+        raise AssertionError("_generate_qr_image ne doit plus etre appele")
+    monkeypatch.setattr(pdf_generator, "_generate_qr_image", _boom)
+
+    r = _post(client, csrf, {"numero": PREFIX + "V-QR", "tiers_nom": "X",
+                             "statut": "valide", "lignes": LINE})
+    assert r.status_code == 200, r.get_json()
+    invoice_id = r.get_json()["id"]
+    with get_cursor() as cur:
+        cur.execute(
+            "UPDATE invoices SET sfec_statut = 'CERTIFIE', sfec_num_certif = ?, "
+            "sfec_date_certif = '2026-10-22 10:00:00', sfec_qr_code = ? WHERE id = ?",
+            ("NUM-CERTIF-TEST", "texte-brut-non-decodable", invoice_id))
+    inv = invoice_engine.get_invoice(invoice_id)
+    out = pdf_generator.generate_invoice_pdf(inv)  # ne doit ni appeler le repli ni planter
+    assert out, "PDF attendu malgre le QR indisponible"
+
+
+def test_config_company_pilote_numerotation(client, csrf):
+    """CF-09 : invoice_prefix / invoice_next_number de /config pilotent
+    generate_invoice_number() via la table settings."""
+    from app.storage.db import generate_invoice_number, get_setting, set_setting
+    old = {k: get_setting(k, "") for k in ("invoice_prefix", "invoice_format", "invoice_next_number")}
+    try:
+        r = client.post("/api/config/company", json={
+            "invoice_prefix": "ZZ-T", "invoice_next_number": 42,
+        }, headers={"X-CSRF-Token": csrf})
+        assert r.status_code == 200, r.get_json()
+        assert get_setting("invoice_prefix") == "ZZ-T"
+        assert get_setting("invoice_format") == "ZZ-T{:06d}"
+        assert get_setting("invoice_next_number") == "42"
+        numero = generate_invoice_number()
+        assert numero == "ZZ-T000042", numero
+        # La page /config affiche les valeurs effectives (settings).
+        page = client.get("/config").get_data(as_text=True)
+        assert "ZZ-T" in page
+    finally:
+        for key, value in old.items():
+            if value:
+                set_setting(key, value)
+        # La config company est restauree comme avant le test.
+        client.post("/api/config/company", json={
+            "invoice_prefix": old["invoice_prefix"] or "FA",
+        }, headers={"X-CSRF-Token": csrf})

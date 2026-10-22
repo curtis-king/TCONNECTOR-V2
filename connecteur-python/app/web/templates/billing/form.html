@@ -346,7 +346,7 @@ document.getElementById("is_recipient_taxable").value=(c.is_taxable===0||c.is_ta
     else if(t===0)exonere+=ht;
     else tva18+=tvaVal;
   });
-  var cent=round2(tva18*0.05);
+  var cent=round2((tva18+tva5)*0.05);
   var tt=round2(th+tva18+tva5+cent);
   document.getElementById("total-ht-brut").textContent=round2(thBrut).toLocaleString();
   document.getElementById("total-remises").textContent=round2(thBrut-th).toLocaleString();

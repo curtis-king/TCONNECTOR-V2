@@ -1,8 +1,61 @@
 # Suivi de remediation des 327 constats — TCONNECTOR V2
 
-**Derniere mise a jour** : 2026-10-20 (Vagues 1-2 quasi terminees, V3 quasi terminee, V4 en cours).
+**Derniere mise a jour** : 2026-10-22 (post-merge `fix/vue` → `main` ; Vague 7 auth en cours).
 **Source** : `docs/checking/all-vue/{dashboard,billing,pos,directory,config,auth}.md` (327 constats).
 **Regle** : pas de commit/push/redemarrage sans demande explicite.
+
+## 0. Revue post-merge (2026-10-22)
+
+Merge de `fix/vue` dans `main` verifie : les **332** constats ont ete revérifies
+contre le code fusionne — **177 corriges (53 %)**, 50 partiellement (15 %),
+105 toujours presents (32 %). Tous les constats 🔴 de l'audit sont resolus.
+Detail des verdicts (preuve fichier:ligne) disponible sur demande ; les vagues
+ci-dessous traitent les restes par priorite.
+
+**Tests** : `77 passed` apres vague 7-auth (1 echec pre-existant :
+`test_watcher_end_to_end_dry_run`, confirme identique sur main pre-merge).
+
+## 0.1 Vague 7 — Auth : les restes de l'audit (2026-10-22)
+
+| ID | Probleme | Correctif |
+|---|---|---|
+| AU-13 | Sessions non revoquees apres changement MdP | Colonne `utilisateurs.session_version` (migration douce), incrementee par `set_password()` ; `_auth_before_request` compare et revoque (`session.revoquee` auditee) ; la session du changement est re-synchronisee |
+| AU-18 | Jeton CSRF non renouvele apres changement MdP | `session["_csrf"]` regenere dans `/api/compte/password` ; le front le recupere via `/api/csrf` (retry automatique de `api()`) |
+| AU-17 | Reset admin sans changement force | `set_password(..., must_change=True)` sur `/api/utilisateurs/<id>/password` ; flag `must_change_pwd` : seules `/compte/mot-de-passe`, son API, `/logout`, `/api/csrf` restent accessibles (403 `must_change_password` sinon) |
+| AU-03 | Admin recree par defaut apres purge | Attenue : l'admin migre depuis config est cree avec `must_change_pwd=1` (changement impose a la 1re connexion) ; mot de passe en clair deja purge de config.json |
+| AU-14 | Repli silencieux Sage → hash local | `connexion.repli_local` auditee + `logger.warning` quand le provider sage est injoignable/incomplet |
+| AU-15 | Changement MdP inoperant en mode Sage | `/api/compte/password` refuse (400) quand `provider=sage` : « Mot de passe gere par Sage » |
+| AU-26 | Aucune trace des refus 403 | `_deny()` ecrit `acces.refuse` (methode, chemin, permission) dans `audit_log` |
+| AU-27 | Matrice relue a chaque requete | `get_matrix()` : cache TTL 60 s, invalide par `set_matrix()` |
+| AU-07 | Liaison vendeur par email stricte | `lower(email) = lower(?)` a la connexion (casse tolerante) |
+| AU-08 | Page login | `autocomplete="username"/"current-password"`, bouton afficher/masquer le mot de passe, © 2026 |
+| AU-25 | Admin ignore la matrice (voulu) | Note explicative ajoutee dans l'editeur de droits (`/utilisateurs`) |
+| AU-31 | Pas de HSTS | En-tete `Strict-Transport-Security` emis quand `https_only` est actif |
+| AU-34 | `_apply_session_security` mute `app.config` a chaque requete | Reecriture seulement si la signature (https_only, duree) a change |
+
+Non traites volontairement : AU-01 (canal temporel residuel, faible), AU-05
+(MFA/CAPTCHA : chantier produit), AU-30 (CSP `unsafe-inline` : exige la
+sortie des scripts inline des templates — V6), AU-32 (exclusion
+`/api/connectivity` de l'idle timeout : voulue pour le polling).
+
+Tests ajoutes (`tests/test_security.py`, 8) : revocation des autres sessions,
+rotation CSRF, reset admin → changement force, blocage provider sage, audit
+des 403, invalidation du cache matrice, HSTS conditionnel, liaison vendeur
+insensible a la casse. `tests/conftest.py` neutralise `must_change_pwd` pour
+l'admin de test.
+
+## 0.2 Vague 8 — P1 conformite metier (2026-10-22)
+
+| ID | Probleme | Correctif |
+|---|---|---|
+| BL-62 | PDF regenerait un QR local si l'image SFEC etait indecodable | Repli supprime (facture A4 **et** ticket) : le document affiche « QR SFEC original non disponible - verifier sur le portail SFEC ». Un QR non officiel ne peut plus JAMAIS figurer sur un document |
+| PO-44 | Centime additionnel calcule sur la TVA 18 % seule, doute en commentaire | Regle tranchee par la source legale (**decret n° 2023-1737, art. 22** : base = « montant de la TVA collectee », taux 5 %) : `compute_cent_tax(tva_18 + tva_reduite)` partage web (`recalc_invoice_totals`) et POS ; taux configurable (`cent_tax_rate`) ; JS formulaire aligne |
+| CF-09 | `invoice_prefix` / `invoice_next_number` de `/config` sans effet | La table `settings` (lue par `generate_invoice_number`) est desormais : seedee depuis la config au 1er demarrage, mise a jour a chaque sauvegarde company, et lue pour l'affichage de `/config` |
+| PO-01 | Pas d'annulation/remboursement POS | **Hors scope volontaire** : Sage gere les annulations pour l'instant (decision 2026-10-22) ; a reevaluer si le POS devient autonome |
+
+Tests ajoutes (`tests/test_billing_security.py`, 3) : centime sur TVA
+collectee (18 % + 5 %), QR jamais regenere (monkeypatch anti-appel),
+numerotation pilotee par `/config`.
 
 ## 1. Etat global
 

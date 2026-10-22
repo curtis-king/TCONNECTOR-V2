@@ -446,6 +446,7 @@ def _invoice_styles():
         "cell_r": ps("FcCellR", fontSize=7, alignment=TA_RIGHT),
         "head_c": ps("FcHeadC", fontSize=8, alignment=TA_CENTER),
         "txt": ps("FcTxt", fontSize=8),
+        "txt_c": ps("FcTxtC", fontSize=8, alignment=TA_CENTER),
         "txt_r": ps("FcTxtR", fontSize=8, alignment=TA_RIGHT),
         "txt_bold_c": ps("FcTxtBoldC", fontName="Helvetica-Bold", fontSize=8.5, alignment=TA_CENTER),
         "small": ps("FcSmall", fontSize=7),
@@ -765,9 +766,15 @@ def generate_invoice_pdf(invoice, output_path=None, non_conforme=False, mention=
         Paragraph("Numéro certification : <b>{}</b>".format(esc(sfec_num)), st["txt"]),
     ]
     qr_buf = _decode_qr_image(sfec_qr) if sfec_qr else None
-    if qr_buf is None and sfec_qr:
-        qr_buf = _generate_qr_image(sfec_qr)
-    qr_cell = Image(qr_buf, width=20*mm, height=20*mm) if qr_buf else ""
+    if qr_buf is not None:
+        qr_cell = Image(qr_buf, width=20*mm, height=20*mm)
+    elif sfec_qr:
+        # Ne JAMAIS regenerer un QR local a la place du QR SFEC officiel :
+        # le document afficherait un code non conforme (BL-62). On le signale.
+        qr_cell = Paragraph("QR SFEC original<br/>non disponible —<br/>verifier sur le<br/>portail SFEC",
+                            st["txt_c"])
+    else:
+        qr_cell = ""
     cert = Table([[cert_cell, Paragraph("Prix revisables en fonction<br/>des données économiques",
                                         st["txt_bold_c"]), qr_cell]],
                  colWidths=[W - 82*mm, 58*mm, 24*mm])
@@ -1229,12 +1236,14 @@ def generate_ticket_pdf(ticket, output_path=None):
         if v["sfec_date"]:
             el.append(p("Date : {}".format(v["sfec_date"]), "sans_c"))
         qr_buf = _decode_qr_image(v["sfec_qr"])
-        if qr_buf is None and v["sfec_qr"]:
-            qr_buf = _generate_qr_image(v["sfec_qr"])
-        if qr_buf:
+        if qr_buf is not None:
             qr_img = Image(qr_buf, width=20*mm, height=20*mm)
             qr_img.hAlign = "CENTER"
             el += [Spacer(1, 1*mm), qr_img]
+        elif v["sfec_qr"]:
+            # Ne JAMAIS regenerer un QR local a la place du QR SFEC officiel
+            # (BL-62) : on signale l'indisponibilite a la place.
+            el.append(p("QR SFEC original non disponible - verifier sur le portail SFEC", "sans_c"))
         el.append(Spacer(1, 2*mm))
 
     el.append(Paragraph("<br/>".join(_xml_escape(l) for l in v["message"].splitlines()), st["sans_c"]))

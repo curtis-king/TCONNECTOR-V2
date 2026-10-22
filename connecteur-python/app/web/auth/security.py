@@ -61,16 +61,24 @@ def _auth_enabled():
     return get_config().get("dashboard", {}).get("auth_enabled", True)
 
 
+_LAST_SESSION_CFG = {"sig": None}
+
+
 def _apply_session_security(app=None):
     """Applique la config de durcissement des cookies de session.
 
     Idempotent ; utiliser `current_app` si aucune app n'est passée (contexte
     de requête). Appelée par init_security() à la construction et par le
-    hook before_request (équivalent strict du comportement historique).
+    hook before_request — mais ne réécrit `app.config` que si la signature
+    des valeurs a changé (AU-34 : plus de mutation globale par requête).
     """
     target = app if app is not None else current_app
     from app.web.auth.user_auth import get_auth_config
     acfg = get_auth_config()
+    sig = (bool(acfg.get("https_only", False)),
+           int(acfg.get("session_max_age_hours", 24) or 24))
+    if _LAST_SESSION_CFG["sig"] == sig and target.config.get("SESSION_COOKIE_HTTPONLY"):
+        return
     target.config.update(
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
@@ -78,6 +86,7 @@ def _apply_session_security(app=None):
         PERMANENT_SESSION_LIFETIME=timedelta(hours=acfg.get("session_max_age_hours", 24)),
         SESSION_REFRESH_EACH_REQUEST=True,
     )
+    _LAST_SESSION_CFG["sig"] = sig
 
 
 def _get_csrf_token():
@@ -232,6 +241,13 @@ def _required_permission(path, method):
 
 
 def _deny(perm, label):
+    try:
+        user_auth.audit(
+            "acces.refuse",
+            "{} {} (permission requise: {})".format(request.method, request.path, perm or "-"),
+            email=session.get("user_email", ""))
+    except Exception:
+        pass
     if request.path.startswith("/api/"):
         payload = {"error": "Acces refuse (droits insuffisants)"}
         if perm and not str(perm).startswith("@"):
@@ -261,11 +277,34 @@ def _auth_before_request():
             if path.startswith("/api/"):
                 return jsonify({"error": "Non authentifie"}), 401
             return redirect(url_for("auth.login_page"))
+        # Révocation des sessions après changement/réinitialisation de mot de
+        # passe (AU-13) : la version posée au login doit correspondre à la base.
+        ver = live.get("session_version", 0)
+        if session.get("_pwd_ver") is None:
+            session["_pwd_ver"] = ver
+        elif ver != session.get("_pwd_ver"):
+            user_auth.audit("session.revoquee", "Session revoquee (mot de passe modifie)",
+                            email=live.get("email", ""))
+            session.clear()
+            if path.startswith("/api/"):
+                return jsonify({"error": "Session revoquee (mot de passe modifie)"}), 401
+            return redirect(url_for("auth.login_page"))
         session["user_email"] = live["email"]
         session["user_role"] = live["role"]
         session["user_nom"] = live["nom"]
         session["user_prenom"] = live["prenom"]
+        session["_must_change_pwd"] = bool(live.get("must_change_pwd"))
         session["_login_checked"] = True
+
+    # Changement de mot de passe obligatoire (AU-17) : seules la page de
+    # changement, l'API associée et la déconnexion restent accessibles.
+    if session.get("user_id") and session.get("_must_change_pwd"):
+        allowed = ("/compte/mot-de-passe", "/api/compte/password", "/logout", "/api/csrf")
+        if path not in allowed and not path.startswith("/static/"):
+            if path.startswith("/api/"):
+                return jsonify({"error": "Changement de mot de passe requis",
+                                "must_change_password": True}), 403
+            return redirect("/compte/mot-de-passe")
 
     if session.get("user_id") and not session.get("authenticated"):
         session["authenticated"] = True
@@ -329,6 +368,14 @@ def _security_headers(resp):
     resp.headers.setdefault("Content-Security-Policy",
         "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data:; connect-src 'self'; frame-ancestors 'self'")
+    try:
+        from app.web.auth.user_auth import get_auth_config
+        if get_auth_config().get("https_only"):
+            # HSTS seulement quand le HTTPS est réellement forcé (AU-31).
+            resp.headers.setdefault("Strict-Transport-Security",
+                                    "max-age=31536000; includeSubDomains")
+    except Exception:
+        pass
     if session.get("user_id"):
         resp.headers.setdefault("Cache-Control", "no-store")
     return resp

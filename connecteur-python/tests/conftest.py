@@ -77,6 +77,13 @@ def _init_sqlite():
 
     user_auth.ensure_schema()
     user_auth.migrate_admin_from_config()
+    # Environnement de test : neutralise le changement de mot de passe forcé
+    # (must_change_pwd=1 est posé sur l'admin migré depuis la config) — sinon
+    # toutes les fixtures authentifiées seraient bloquées sur /compte/mot-de-passe.
+    # Les tests dédiés (AU-17) créent leurs propres comptes avec le flag.
+    from app.storage.db import get_cursor
+    with get_cursor() as cur:
+        cur.execute("UPDATE utilisateurs SET must_change_pwd = 0")
 
 
 @pytest.fixture(scope="session")

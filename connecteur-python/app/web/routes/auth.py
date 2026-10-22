@@ -14,7 +14,7 @@ from datetime import timedelta
 from flask import Blueprint, current_app, jsonify, redirect, render_template, request, session
 from app.storage import db as sqlite_db
 from app.web.auth import user_auth
-from app.web.auth.security import _login_required, _apply_session_security, _auth_enabled, _csrf_valid, _current_identity, _get_csrf_token
+from app.web.auth.security import _login_required, _apply_session_security, _auth_enabled, _csrf_valid, _current_identity, _get_csrf_token, _is_sage_connected_user
 from app.web.common import _esc, _page
 
 
@@ -61,6 +61,8 @@ def login_page():
     session["user_prenom"] = user.get("prenom", "")
     session["authenticated"] = True
     session["_login_checked"] = True
+    session["_pwd_ver"] = user.get("session_version", 0)
+    session["_must_change_pwd"] = bool(user.get("must_change_pwd"))
     import time as _time
     session["_last_activity"] = _time.time()
     session.permanent = True
@@ -71,7 +73,10 @@ def login_page():
     session["vendeur_id"] = None
     try:
         with sqlite_db.get_cursor() as cur:
-            cur.execute("SELECT id FROM vendeurs WHERE email = ? AND est_actif = 1", (email_clean,))
+            # Comparaison insensible a la casse (AU-07) : un email saisi avec
+            # une casse differente dans l'annuaire vendeurs reste lie.
+            cur.execute("SELECT id FROM vendeurs WHERE lower(email) = lower(?) AND est_actif = 1 LIMIT 1",
+                        (email_clean,))
             row = cur.fetchone()
             session["vendeur_id"] = row["id"] if row else None
     except Exception:
@@ -98,6 +103,11 @@ def compte_password_page():
 def api_compte_password():
     ident = _current_identity() or {}
     data = request.get_json(silent=True) or {}
+    if _is_sage_connected_user():
+        # En mode provider=sage, le mot de passe de reference est gere par
+        # Sage : ecrire un hash local creerait deux secrets divergents (AU-15).
+        return jsonify({"success": False,
+                        "error": "Mot de passe gere par Sage : changement local desactive"}), 400
     try:
         user, err = user_auth.authenticate(
             ident.get("email", ""), data.get("current", ""),
@@ -105,6 +115,14 @@ def api_compte_password():
         if not user:
             return jsonify({"success": False, "error": "Mot de passe actuel incorrect"}), 400
         user_auth.set_password(user["id"], data.get("nouveau", ""))
+        # La session courante reste valide : on la re-synchronise avec la
+        # nouvelle version (les AUTRES sessions du compte sont revoquees).
+        fresh = user_auth.get_user(user["id"]) or {}
+        session["_pwd_ver"] = fresh.get("session_version", 0)
+        session["_must_change_pwd"] = bool(fresh.get("must_change_pwd"))
+        # Renouvellement du jeton CSRF (AU-18) : le frontend le recuperera
+        # via /api/csrf a la prochaine requete.
+        session["_csrf"] = secrets.token_urlsafe(32)
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400

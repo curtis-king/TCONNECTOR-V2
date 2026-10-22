@@ -178,6 +178,11 @@
 </div>
 <script>
 var posCart=[];
+/* Cle d'idempotence du ticket en cours (PO-25/PO-63) : conservee entre les
+   retries, regeneree seulement apres un succes — un retry reseau ne peut
+   plus dupliquer la vente. */
+function newTicketKey(){return (window.crypto&&crypto.randomUUID)?crypto.randomUUID():"k"+Date.now()+"-"+Math.random().toString(36).slice(2);}
+var posTicketKey=newTicketKey();
 var posLineIdx=0;
 var posSearchTimer=null;
 var posClients={{ pos_clients_data | tojson }};
@@ -326,7 +331,8 @@ function validerTicket(){
             contact_id:pcd.id||null,
             mode_paiement:document.getElementById("pos-paiement").value,
             montant_recu:parseFloat(document.getElementById("pos-recu").value)||0,
-            vendeur_id:vid?parseInt(vid):null,lignes:lignes};
+            vendeur_id:vid?parseInt(vid):null,lignes:lignes,
+            idempotency_key:posTicketKey};
   var btn=document.getElementById("pos-validate");
   btn.disabled=true;btn.textContent="Validation...";
   api("POST","/api/pos/ticket",data).then(function(d){
@@ -339,6 +345,8 @@ function validerTicket(){
       if(d.sage_ok){msg+=" - ecrite dans Sage"}
       else if(d.sage_error){msg+=" - Sage: "+String(d.sage_error).slice(0,40)}
       showToast(msg,(d.sfec_ok&&d.sage_ok)?"ok":"warn");
+      if(d.duplicate){showToast("Doublon evite : ce ticket existait deja","info");}
+      posTicketKey=newTicketKey();
       clearCart();
       document.getElementById("pos-recu").value=0;
       document.getElementById("pos-client").selectedIndex=0;
