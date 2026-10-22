@@ -2,12 +2,9 @@ import os
 import sys
 import json
 import logging
-import functools
 import secrets
 import hmac
 import time
-from datetime import datetime, timedelta
-
 logger = logging.getLogger("t-connector.auth")
 
 try:
@@ -29,7 +26,7 @@ except Exception:  # pragma: no cover
             return False
 
 from app.storage import db as sqlite_db
-from app.config.manager import get_config
+from app.config.manager import get_config, save_config
 
 ROLES = ["admin", "responsable", "caissiere", "financiere"]
 
@@ -70,17 +67,6 @@ DEFAULT_MATRIX = {
     ],
 }
 
-_TS_FORMAT = "%Y-%m-%d %H:%M:%S"
-
-
-def _now():
-    return datetime.now()
-
-
-def _ts(dt):
-    return dt.strftime(_TS_FORMAT)
-
-
 def get_auth_config():
     cfg = get_config()
     auth = cfg.get("auth", {}) or {}
@@ -98,6 +84,25 @@ def get_auth_config():
 def save_auth_config(values):
     cfg = get_config()
     auth = cfg.get("auth", {}) or {}
+    if "provider" in values and values["provider"] not in ("local", "sage"):
+        raise ValueError("Provider d'authentification invalide")
+    bounds = {
+        "max_attempts": (1, 20),
+        "lock_minutes": (1, 1440),
+        "session_max_age_hours": (1, 720),
+        "session_idle_minutes": (0, 720),
+    }
+    for key, (low, high) in bounds.items():
+        if key in values:
+            try:
+                number = int(values[key])
+            except (TypeError, ValueError):
+                raise ValueError("{} invalide".format(key))
+            if number < low or number > high:
+                raise ValueError("{} hors bornes ({}-{})".format(key, low, high))
+            values[key] = number
+    if "https_only" in values:
+        values["https_only"] = bool(values["https_only"])
     for k in ("provider", "max_attempts", "lock_minutes", "session_max_age_hours", "session_idle_minutes", "https_only"):
         if k in values:
             auth[k] = values[k]
@@ -156,7 +161,25 @@ def migrate_admin_from_config():
         )
         audit("admin.migre", "Compte admin migre depuis config.json (mot de passe a changer)", email=email)
         logger.info("Compte admin migre depuis la config: %s", email)
-        return email
+    # Le mot de passe est desormais hache en base : ne jamais conserver la
+    # copie en clair dans config.json (audit DI-39).
+    try:
+        full_cfg = get_config()
+        if (full_cfg.get("dashboard") or {}).get("login_password"):
+            full_cfg.setdefault("dashboard", {})["login_password"] = ""
+            save_config(full_cfg)
+    except Exception as exc:
+        logger.warning("Impossible de purger le mot de passe en clair de config.json: %s", exc)
+    return email
+
+
+def validate_password(password):
+    """Politique minimale : 10 caracteres, au moins une lettre et un chiffre."""
+    password = password or ""
+    if len(password) < 10:
+        raise ValueError("Mot de passe trop court (minimum 10 caracteres)")
+    if not any(c.isalpha() for c in password) or not any(c.isdigit() for c in password):
+        raise ValueError("Le mot de passe doit contenir au moins une lettre et un chiffre")
 
 
 def hash_password(password):
@@ -251,8 +274,7 @@ def create_user(nom, prenom, email, password, role="responsable"):
     email = (email or "").strip().lower()
     if not email or "@" not in email:
         raise ValueError("Adresse email invalide")
-    if len(password or "") < 8:
-        raise ValueError("Mot de passe trop court (minimum 8 caracteres)")
+    validate_password(password)
     if role not in ROLES:
         raise ValueError("Role invalide")
     with sqlite_db.get_cursor() as cur:
@@ -269,11 +291,24 @@ def create_user(nom, prenom, email, password, role="responsable"):
     return new_id
 
 
-def update_user(user_id, nom=None, prenom=None, role=None, est_actif=None):
+def update_user(user_id, nom=None, prenom=None, role=None, est_actif=None,
+                acting_user_id=None):
     ensure_schema()
     cur_user = get_user(user_id)
     if not cur_user:
         return False
+    if acting_user_id is not None and user_id == acting_user_id:
+        if role is not None and role != cur_user.get("role"):
+            raise ValueError("Impossible de modifier votre propre role")
+        if est_actif is not None and not est_actif:
+            raise ValueError("Impossible de desactiver votre propre compte")
+    if cur_user.get("role") == "admin" and (
+            (role is not None and role != "admin") or est_actif is False):
+        with sqlite_db.get_cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS c FROM utilisateurs "
+                        "WHERE role = 'admin' AND est_actif = 1")
+            if cur.fetchone()["c"] <= 1:
+                raise ValueError("Impossible de retirer le dernier administrateur actif")
     fields, params = [], []
     if nom is not None:
         fields.append("nom = ?")
@@ -301,8 +336,7 @@ def update_user(user_id, nom=None, prenom=None, role=None, est_actif=None):
 
 def set_password(user_id, new_password, resetter=None):
     ensure_schema()
-    if len(new_password or "") < 8:
-        raise ValueError("Mot de passe trop court (minimum 8 caracteres)")
+    validate_password(new_password)
     cur_user = get_user(user_id)
     if not cur_user:
         raise ValueError("Compte introuvable")
@@ -383,29 +417,49 @@ def _sage_verify_password(email, password):
         return None
 
 
+def _recent_failures(email, ip, minutes):
+    """Nombre d'échecs récents pour ce couple email+IP.
+
+    Le verrouillage est volontairement PAR IP : un attaquant ne peut plus
+    verrouiller le compte admin d'un utilisateur légitime (DoS, audit AU-02).
+    """
+    if not ip:
+        return 0
+    ensure_schema()
+    with sqlite_db.get_cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) AS c FROM audit_log "
+            "WHERE action = 'connexion.echec' AND lower(utilisateur) = lower(?) "
+            "AND ip = ? AND ts >= datetime('now', ?)",
+            (email, ip, "-{} minutes".format(max(1, int(minutes)))),
+        )
+        return int(cur.fetchone()["c"] or 0)
+
+
 def authenticate(email, password, ip=""):
     ensure_schema()
     migrate_admin_from_config()
     email = (email or "").strip().lower()
-    row = get_user_by_email(email)
     generic = "Identifiants incorrects"
+    cfg = get_auth_config()
+    max_attempts = max(1, int(cfg.get("max_attempts", 5) or 5))
+    lock_minutes = max(1, int(cfg.get("lock_minutes", 15) or 15))
+
+    # Throttle par email+IP : pas de verrou global du compte.
+    if _recent_failures(email, ip, lock_minutes) >= max_attempts:
+        audit("connexion.verrouille", "Trop de tentatives depuis cette IP",
+              email=email, ip=ip)
+        return None, generic
+
+    row = get_user_by_email(email)
     if row is None:
         time.sleep(0.4)
         audit("connexion.echec", "Email inconnu", email=email, ip=ip)
         return None, generic
     if not row["est_actif"]:
         audit("connexion.refusee", "Compte desactive", email=email, ip=ip)
-        return None, "Compte desactive - contactez l'administrateur"
-    locked = row["locked_until"]
-    if locked:
-        try:
-            locked_dt = datetime.strptime(locked, _TS_FORMAT)
-            if locked_dt > _now():
-                mine = ""
-                return None, "Compte temporairement verrouille (trop de tentatives)"
-        except Exception:
-            pass
-    cfg = get_auth_config()
+        return None, generic
+
     provider = cfg.get("provider", "local")
     pwd_ok = None
     if provider == "sage":
@@ -422,26 +476,28 @@ def authenticate(email, password, ip=""):
         audit("connexion.ok", "Connexion reussie", email=email, ip=ip)
         return {"id": row["id"], "email": email, "role": row["role"],
                 "nom": row["nom"] or "", "prenom": row["prenom"] or ""}, None
+
     attempts = (row["failed_attempts"] or 0) + 1
-    lock_until = None
-    if attempts >= cfg.get("max_attempts", 5):
-        lock_until = _ts(_now() + timedelta(minutes=cfg.get("lock_minutes", 15)))
-        audit("connexion.verrouille", "Compte verrouille apres {} echecs".format(attempts),
-              email=email, ip=ip)
     with sqlite_db.get_cursor() as cur:
         cur.execute(
-            "UPDATE utilisateurs SET failed_attempts = ?, locked_until = ? WHERE id = ?",
-            (attempts, lock_until, row["id"]),
+            "UPDATE utilisateurs SET failed_attempts = ?, locked_until = NULL WHERE id = ?",
+            (attempts, row["id"]),
         )
     audit("connexion.echec", "Mot de passe invalide (tentative {})".format(attempts),
           email=email, ip=ip)
-    if lock_until:
-        return None, "Compte verrouille pendant {} minutes".format(cfg.get("lock_minutes", 15))
+    # Message strictement générique : pas d'indice sur l'existence/état du compte.
     return None, generic
 
 
 def audit(action, detail="", email="", actor=None, ip=""):
     try:
+        if not ip:
+            try:
+                from flask import has_request_context, request
+                if has_request_context():
+                    ip = request.remote_addr or ""
+            except Exception:
+                pass
         ensure_schema()
         with sqlite_db.get_cursor() as cur:
             cur.execute(
@@ -452,12 +508,27 @@ def audit(action, detail="", email="", actor=None, ip=""):
         logger.warning("Audit log impossible: %s", e)
 
 
-def list_audit(limit=200):
+def list_audit(limit=200, offset=0):
     ensure_schema()
+    try:
+        limit = max(1, min(int(limit), 500))
+    except (TypeError, ValueError):
+        limit = 200
+    try:
+        offset = max(0, int(offset))
+    except (TypeError, ValueError):
+        offset = 0
     with sqlite_db.get_cursor() as cur:
         cur.execute(
             "SELECT id, ts, utilisateur, action, detail, ip FROM audit_log "
-            "ORDER BY ts DESC, id DESC LIMIT ?",
-            (int(limit),),
+            "ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?",
+            (limit, offset),
         )
         return [dict(r) for r in cur.fetchall()]
+
+
+def count_audit():
+    ensure_schema()
+    with sqlite_db.get_cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS n FROM audit_log")
+        return int(cur.fetchone()["n"])

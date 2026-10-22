@@ -8,4 +8,12 @@
 </div>
 <table><thead><tr><th>Numero</th><th>Date</th><th>Tiers</th><th>Type</th>
 <th style="text-align:right">Montant TTC</th><th>Statut</th><th>Valide</th><th>SFEC</th><th>N Certif</th></tr></thead>
-<tbody>{{ rows | safe }}{{ empty | safe }}</tbody></table></div>
+<tbody>{{ rows | safe }}{{ empty | safe }}</tbody></table>
+{% if total > 100 %}
+<div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px">
+<div>{% if has_prev %}<a class="btn btn-sm" href="{{ url_for('dashboard.invoices_page', type=inv_type, page=page - 1) }}">Precedent</a>{% endif %}</div>
+<div style="color:#94a3b8">{{ offset + 1 }}-{{ offset + shown }} sur {{ total }} &middot; page {{ page }}/{{ pages }}</div>
+<div>{% if has_next %}<a class="btn btn-sm" href="{{ url_for('dashboard.invoices_page', type=inv_type, page=page + 1) }}">Suivant</a>{% endif %}</div>
+</div>
+{% endif %}
+</div>

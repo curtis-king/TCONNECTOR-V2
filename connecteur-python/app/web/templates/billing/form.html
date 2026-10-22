@@ -27,19 +27,19 @@
           <div>
             <label>Mode de paiement</label
             ><select name="payment_method">
-              <option value="bank_transfer">Virement</option>
-              <option value="cash">Especes</option>
-              <option value="card">Carte</option>
-              <option value="mobile_money">Mobile Money</option>
-              <option value="cheque">Cheque</option>
+              <option value="bank_transfer" {{ p_bank }}>Virement</option>
+              <option value="cash" {{ p_cash }}>Especes</option>
+              <option value="card" {{ p_card }}>Carte</option>
+              <option value="mobile_money" {{ p_mobile }}>Mobile Money</option>
+              <option value="cheque" {{ p_cheque }}>Cheque</option>
             </select>
           </div>
           <div>
             <label>Devise</label
             ><select name="devise">
-              <option value="XAF" selected>XAF</option>
-              <option value="USD">USD</option>
-              <option value="EUR">EUR</option>
+              <option value="XAF" {{ dev_xaf }}>XAF</option>
+              <option value="USD" {{ dev_usd }}>USD</option>
+              <option value="EUR" {{ dev_eur }}>EUR</option>
             </select>
           </div>
           <div id="ref-invoice-field" style="display: none">
@@ -91,6 +91,8 @@
               <option value="a_comptabiliser" {{ s_acompt }}>
                 A comptabiliser
               </option>
+              <option value="a_comptabilise" {{ s_acomptise }}>A comptabilise</option>
+              <option value="comptabilise" {{ s_comptabilise }}>Comptabilise</option>
             </select>
           </div>
           <div>
@@ -229,9 +231,7 @@
             font-family: inherit;
             resize: vertical;
           "
-        >
-{{ notes | safe }}</textarea
-        >
+        >{{ notes | safe }}</textarea>
       </div>
 
       <!-- Actions -->
@@ -279,11 +279,11 @@
 </form>
 <script>
   window.NATIVE_ALERTS = true;
-  var contacts={{ contacts_json | safe }};
-  var products={{ products_json | safe }};
-  var taxRates={{ tax_rates_json | safe }};
-  var existingLines={{ lignes_json | safe }};
-  var certifiedSales={{ certified_sales_json | safe }};
+  var contacts={{ contacts | tojson }};
+  var products={{ products | tojson }};
+  var taxRates={{ tax_rates | tojson }};
+  var existingLines={{ lignes | tojson }};
+  var certifiedSales={{ certified_sales | tojson }};
   var currentRef={{ reference_invoice_id | tojson }};
   var isEdit={{ is_edit_js }};
   var invoiceId={{ inv_id_js }};
@@ -306,10 +306,11 @@ document.getElementById("is_recipient_taxable").value=(c.is_taxable===0||c.is_ta
 
   function validateTiersNiu(){var t=document.querySelector("select[name='tiers_type']").value;var niu=document.getElementById("tiers_niu").value.trim();if(t==="business"||t==="government"){if(!niu){showToast("NIU obligatoire pour la certification SFEC (type: "+t+")","err");document.getElementById("tiers_niu").focus();return false}}return true}
 
-  function addLine(data){lineCounter++;var idx=lineCounter;var html='<div class="line-item" id="line-'+idx+'"><div class="line-item-header"><span class="line-item-title">Ligne #'+idx+'</span><div class="line-item-actions"><button type="button" class="btn btn-sm btn-danger" onclick="removeLine('+idx+')">Supprimer</button></div></div><div class="line-item-grid"><div><label>Designation</label><input type="text" required name="l_design_'+idx+'" value="'+(data?data.designation:"")+'" list="products-list"></div><div><label>Qte</label><input type="number" name="l_qte_'+idx+'" value="'+(data?data.quantite:1)+'" step="0.01" min="0" onchange="calcLine('+idx+')"></div><div><label>Prix unitaire</label><input type="number" name="l_prix_'+idx+'" value="'+(data?data.prix_unitaire:0)+'" step="0.01" min="0" onchange="calcLine('+idx+')"></div><div><label>TVA %</label><select name="l_tva_'+idx+'" onchange="calcLine('+idx+')"></select></div><div><label>Remise %</label><input type="number" name="l_remise_pct_'+idx+'" value="'+(data&&data.remise_pct?data.remise_pct:0)+'" step="0.01" min="0" max="100" onchange="calcLine('+idx+')"></div>'
-  +'<div><label>Type</label><select name="l_type_article_'+idx+'"><option value="product">Produit</option><option value="service">Service</option></select></div>' +'<div><label>HT</label><input type="text" id="l_ht_'+idx+'" readonly value="'+(data?data.montant_ht:0)+'"></div><div><label>TTC</label><input type="text" id="l_ttc_'+idx+'" readonly value="'+(data?data.montant_ttc:0)+'"></div></div><input type="hidden" name="l_code_article_'+idx+'" value="'+(data?data.code_article:"")+'"><input type="hidden" name="l_famille_'+idx+'" value="'+(data?data.famille:"")+'"><input type="hidden" id="l_subtotal_'+idx+'" name="l_subtotal_'+idx+'" value="0"><input type="hidden" name="l_discount_type_'+idx+'" value="fixed"></div>';
+  function escHtml(v){return String(v==null?"":v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;")}
+  function addLine(data){lineCounter++;var idx=lineCounter;var html='<div class="line-item" id="line-'+idx+'"><div class="line-item-header"><span class="line-item-title">Ligne #'+idx+'</span><div class="line-item-actions"><button type="button" class="btn btn-sm btn-danger" onclick="removeLine('+idx+')">Supprimer</button></div></div><div class="line-item-grid"><div><label>Designation</label><input type="text" required name="l_design_'+idx+'" value="'+escHtml(data?data.designation:"")+'" list="products-list"></div><div><label>Qte</label><input type="number" name="l_qte_'+idx+'" value="'+escHtml(data?data.quantite:1)+'" step="0.01" min="0" onchange="calcLine('+idx+')"></div><div><label>Prix unitaire</label><input type="number" name="l_prix_'+idx+'" value="'+escHtml(data?data.prix_unitaire:0)+'" step="0.01" min="0" onchange="calcLine('+idx+')"></div><div><label>TVA %</label><select name="l_tva_'+idx+'" onchange="calcLine('+idx+')"></select></div><div><label>Remise %</label><input type="number" name="l_remise_pct_'+idx+'" value="'+escHtml(data&&data.remise_pct?data.remise_pct:0)+'" step="0.01" min="0" max="100" onchange="calcLine('+idx+')"></div>'
+  +'<div><label>Type</label><select name="l_type_article_'+idx+'"><option value="product">Produit</option><option value="service">Service</option></select></div>' +'<div><label>HT</label><input type="text" id="l_ht_'+idx+'" readonly value="'+escHtml(data?data.montant_ht:0)+'"></div><div><label>TTC</label><input type="text" id="l_ttc_'+idx+'" readonly value="'+escHtml(data?data.montant_ttc:0)+'"></div></div><input type="hidden" name="l_code_article_'+idx+'" value="'+escHtml(data?data.code_article:"")+'"><input type="hidden" name="l_famille_'+idx+'" value="'+escHtml(data?data.famille:"")+'"><input type="hidden" id="l_subtotal_'+idx+'" name="l_subtotal_'+idx+'" value="0"><input type="hidden" name="l_discount_type_'+idx+'" value="fixed"></div>';
   document.getElementById("lines-container").insertAdjacentHTML("beforeend",html);
-  var sel=document.querySelector("select[name='l_tva_"+idx+"']");taxRates.forEach(function(t){sel.innerHTML+='<option value="'+t.taux+'"'+(data&&data.taux_tva==t.taux?" selected":"")+'>'+t.code+' ('+t.taux+'%)</option>'});
+  var sel=document.querySelector("select[name='l_tva_"+idx+"']");taxRates.forEach(function(t){var selected=!!(data&&data.taux_tva==t.taux);sel.appendChild(new Option((t.code||"")+" ("+t.taux+"%)",t.taux,false,selected))});
   if(data&&data.type_article)document.querySelector("select[name='l_type_article_"+idx+"']").value=data.type_article;
   if(data)calcLine(idx)}
 
@@ -320,6 +321,7 @@ document.getElementById("is_recipient_taxable").value=(c.is_taxable===0||c.is_ta
   var p=parseFloat(document.querySelector("input[name='l_prix_"+idx+"']").value)||0;
   var t=parseFloat(document.querySelector("select[name='l_tva_"+idx+"']").value)||0;
   var remisePct=parseFloat(document.querySelector("input[name='l_remise_pct_"+idx+"']").value)||0;
+  if(q<0)q=0;if(p<0)p=0;if(remisePct<0)remisePct=0;if(remisePct>100)remisePct=100;
   var subtotal=round2(q*p);
   var remiseMontant=round2(subtotal*remisePct/100);
   var ht=round2(subtotal-remiseMontant);
@@ -369,9 +371,9 @@ ligne.type_article=document.querySelector("select[name='l_type_article_"+idx+"']
 ligne.discount_type=document.querySelector("input[name='l_discount_type_"+idx+"']").value;
 ligne.subtotal=parseFloat(document.getElementById("l_subtotal_"+idx).value)||0;if(ligne.designation)d.lignes.push(ligne)});return d}
 
-  document.getElementById("form-invoice").onsubmit=function(e){e.preventDefault();if(!validateTiersNiu())return;if(document.getElementById("type_doc").value==="avoir"&&!document.getElementById("reference_invoice_id").value){showToast("Reference de la facture d'origine requise pour un avoir","err");return}; var d=gatherData();var url=isEdit?"/api/invoices/"+invoiceId:"/api/invoices";var method=isEdit?"PUT":"POST";api(method,url,d).then(function(r){if(r.success||r.id){showToast("Facture sauvegardee","ok");setTimeout(function(){location.href="/billing/invoice/"+(r.id||invoiceId)},1000)}else{showToast("Erreur: "+(r.error||"inconnue"),"err")}}).catch(function(e){showToast("Erreur reseau: "+e,"err")})}
+  document.getElementById("form-invoice").onsubmit=function(e){e.preventDefault();if(!validateTiersNiu())return;if(document.getElementById("type_doc").value==="avoir"&&!document.getElementById("reference_invoice_id").value){showToast("Reference de la facture d'origine requise pour un avoir","err");return}; var d=gatherData();if(!d.lignes.length){showToast("Ajoutez au moins une ligne","err");return}var url=isEdit?"/api/invoices/"+invoiceId:"/api/invoices";var method=isEdit?"PUT":"POST";api(method,url,d).then(function(r){if(r.success||r.id){showToast("Facture sauvegardee","ok");setTimeout(function(){location.href="/billing/invoice/"+(r.id||invoiceId)},1000)}else{showToast("Erreur: "+(r.error||"inconnue"),"err")}}).catch(function(e){showToast("Erreur reseau: "+e,"err")})}
 
-  function saveAndCertify(){if(!validateTiersNiu())return;if(document.getElementById("type_doc").value==="avoir"&&!document.getElementById("reference_invoice_id").value){showToast("Reference de la facture d'origine requise pour un avoir","err");return};var d=gatherData();d._certify=true;var url=isEdit?"/api/invoices/"+invoiceId:"/api/invoices";var method=isEdit?"PUT":"POST";api(method,url,d).then(function(r){if(r.id){api("POST","/api/sfec/certify",{invoice_id:"INV-"+r.id}).then(function(c){if(c.success){showToast("Certifie: "+c.certification_number,"ok")}else{showToast("Certification: "+c.error,"warn")}setTimeout(function(){location.href="/billing/invoice/"+r.id},1500)})}})}
+  function saveAndCertify(){if(!validateTiersNiu())return;var st=document.querySelector("select[name='statut']");if(st&&st.value==="brouillon")st.value="valide";if(document.getElementById("type_doc").value==="avoir"&&!document.getElementById("reference_invoice_id").value){showToast("Reference de la facture d'origine requise pour un avoir","err");return};var d=gatherData();if(!d.lignes.length){showToast("Ajoutez au moins une ligne","err");return}d._certify=true;var url=isEdit?"/api/invoices/"+invoiceId:"/api/invoices";var method=isEdit?"PUT":"POST";api(method,url,d).then(function(r){if(!r.id){showToast("Erreur: "+(r.error||"inconnue"),"err");return}api("POST","/api/sfec/certify",{invoice_id:"INV-"+r.id}).then(function(c){if(c.success){showToast("Certifie: "+c.certification_number,"ok")}else{showToast("Certification: "+c.error,"warn")}setTimeout(function(){location.href="/billing/invoice/"+r.id},1500)}).catch(function(e){showToast("Erreur certification: "+e,"err")})}).catch(function(e){showToast("Erreur reseau: "+e,"err")})}
 
   if(existingLines.length>0){existingLines.forEach(function(l){addLine(l)})}
   else{addLine()}

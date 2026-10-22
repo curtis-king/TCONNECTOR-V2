@@ -694,14 +694,35 @@ def certify_single(invoice_id):
         return {"success": False, "error": "SFEC non configuree"}
 
     invoice = None
+    snapshot = []
     with _lock:
-        for inv in _cache["sales_invoices"]:
+        snapshot = list(_cache["sales_invoices"])
+        for inv in snapshot:
             if inv["id"] == invoice_id:
                 invoice = inv
                 break
 
     if not invoice:
         return {"success": False, "error": "Facture {} non trouvee".format(invoice_id)}
+
+    # Memes regles qu'en auto-certification pour les avoirs (DB-30).
+    if invoice.get("type_doc") == "avoir":
+        ref = invoice.get("reference_invoice_id") or invoice.get("reference", "")
+        if not ref:
+            return {"success": False, "error": "Avoir sans reference facture d'origine"}
+        ref_invoice = next((x for x in snapshot if x.get("numero") == ref), None)
+        if not ref_invoice or ref_invoice.get("sfec_statut") not in ("CERTIFIE", "DEJA_CERTIFIE"):
+            return {"success": False,
+                    "error": "Facture d'origine '{}' non certifiee".format(ref)}
+        deja_avoir = any(
+            x.get("type_doc") == "avoir" and x.get("reference") == ref
+            and x.get("id") != invoice.get("id")
+            and x.get("sfec_statut") in ("CERTIFIE", "DEJA_CERTIFIE")
+            for x in snapshot
+        )
+        if deja_avoir:
+            return {"success": False,
+                    "error": "Un avoir deja certifie existe pour '{}'".format(ref)}
 
     if not is_online():
         _enqueue_for_retry(invoice)
@@ -861,18 +882,40 @@ def apply_config():
     return {"ok": True, "message": "Configuration appliquee. Pool DB reinitialise."}
 
 
-def get_metrics():
-    real_certified = 0
-    try:
-        real_certified = len(fetch_certified_invoices())
-    except Exception:
-        real_certified = _cache["certified_count"]
+def mark_invoice_to_monitor(invoice_id):
+    """Marque a surveiller dans Sage ET dans le cache (sinon /pending reste inchange)."""
+    mark_to_monitor(invoice_id)
+    with _lock:
+        for inv in _cache["sales_invoices"]:
+            if inv.get("id") == invoice_id:
+                inv["sfec_statut"] = "A_SURVEILLER"
+                break
 
-    conn_status = get_status()
+
+def polling_active():
+    """Indique si le polling est active par config ET si le thread tourne."""
+    enabled = get_config().get("db", {}).get("polling_enabled", True)
+    return bool(enabled and _polling_thread is not None and _polling_thread.is_alive())
+
+
+def get_metrics():
+    # DB-07 : utiliser le compteur maintenu par sync_sfec_invoices au lieu
+    # de relire Sage a chaque affichage (la sync complete recalcule).
+    real_certified = _cache["certified_count"]
+
+    # DB-04 : pas de test reseau depuis une vue serveur ; le thread de fond
+    # maintient l'etat de connectivite, get_status(refresh=False) est_cache.
+    conn_status = get_status(refresh=False)
     retry_count = len(get_retry_queue())
+    sales = _cache["sales_invoices"]
+    sales_only = [i for i in sales if i.get("type_doc", "vente") != "avoir"]
+    credit_notes = len(sales) - len(sales_only)
+    pending_accounting = sum(1 for i in sales_only if i.get("statut_code") == 2)
 
     return {
-        "sales_invoices": len(_cache["sales_invoices"]),
+        "sales_invoices": len(sales_only),
+        "credit_notes": credit_notes,
+        "pending_accounting": pending_accounting,
         "purchase_invoices": len(_cache["purchase_invoices"]),
         "contacts": len(_cache["contacts"]),
         "tax_rates": len(_cache["tax_rates"]),

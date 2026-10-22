@@ -13,7 +13,8 @@ logger = logging.getLogger("t-connector.sqlite")
 from app.core.paths import data_dir as _uses_data_dir  # noqa: F401
 
 DATA_DIR = _uses_data_dir()
-DB_PATH = os.path.join(DATA_DIR, "tconnector.db")
+# Chemin surchargeable pour les tests isolés (jamais la base de dev).
+DB_PATH = os.environ.get("TCONNECTOR_DB_PATH") or os.path.join(DATA_DIR, "tconnector.db")
 
 _lock = threading.Lock()
 _conn = None
@@ -675,6 +676,12 @@ def recalc_invoice_totals(invoice_id):
             additional_cent_tax = round(row["tva_t"] * cent_rate / 100.0, 2)
             stamp_duty = round(row["total_ttc"] * stamp_rate / 100.0, 2) if stamp_rate else 0.0
             montant_ttc = round(row["total_ttc"] + additional_cent_tax + stamp_duty, 2)
+            cur.execute("SELECT montant_ttc, montant_restant FROM invoices WHERE id = ?", (invoice_id,))
+            ancien = cur.fetchone()
+            deja_paye = 0.0
+            if ancien:
+                deja_paye = max(round((ancien["montant_ttc"] or 0) - (ancien["montant_restant"] or 0), 2), 0.0)
+            montant_restant = max(round(montant_ttc - deja_paye, 2), 0.0)
             cur.execute("""
                 UPDATE invoices SET
                     montant_ht = ?, montant_tva = ?, montant_ttc = ?,
@@ -690,7 +697,7 @@ def recalc_invoice_totals(invoice_id):
                 WHERE id = ?
             """, (
                 row["total_ht"], row["total_tva"], montant_ttc,
-                montant_ttc,
+                montant_restant,
                 row["total_brut"],
                 row["total_remise_lignes"],
                 row["tva_t"],

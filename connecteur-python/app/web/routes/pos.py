@@ -15,7 +15,8 @@ from app.config.manager import get_config, save_config
 from app.domain import invoices as invoice_engine, pdf as pdf_generator, pos as pos_engine
 from app.storage import db as sqlite_db
 from app.web.common import _esc, _page
-from app.web.auth.security import _login_required
+from app.web.auth.security import _login_required, _current_identity
+from app.web.auth import user_auth
 
 logger = logging.getLogger("t-connector.web.pos")
 
@@ -104,21 +105,23 @@ def pos_page():
     for v in vendeurs:
         label = "{} {}".format(v.get("prenom", "") or "", v.get("nom", "") or "").strip()
         sel = ' selected' if current_vendeur_id and v["id"] == current_vendeur_id else ""
-        vendeur_opts_html += '<option value="{}"{}>{}</option>'.format(v["id"], sel, label)
+        vendeur_opts_html += '<option value="{}"{}>{}</option>'.format(
+            v["id"], sel, _esc(label))
 
     with sqlite_db.get_cursor() as cur:
         cur.execute("SELECT id, code, nom, niu, rccm, is_taxable, type FROM contacts WHERE type = 'client' AND est_actif = 1 ORDER BY nom LIMIT 1000")
         pos_clients = sqlite_db.rows_to_list(cur.fetchall())
-        pos_clients_js = json.dumps([
-        {"id": c["id"], "code": c["code"], "nom": c["nom"],
-         "niu": c.get("niu", ""), "rccm": c.get("rccm", ""),
-         "is_taxable": c.get("is_taxable", 1)} for c in pos_clients
-    ], ensure_ascii=False)
+        pos_clients_data = [
+            {"id": c["id"], "code": c["code"], "nom": c["nom"],
+             "niu": c.get("niu", ""), "rccm": c.get("rccm", ""),
+             "type": c.get("type", ""), "type_raw": c.get("type_raw", ""),
+             "is_taxable": c.get("is_taxable", 1)} for c in pos_clients
+        ]
 
-    pos_clients_html = '<option value="|CLI-CPT|Client comptoir" selected>Client comptoir</option>'
+    pos_clients_html = '<option value="CLI-CPT" selected>Client comptoir</option>'
     for c in pos_clients:
-        pos_clients_html += '<option value="|{}|{}">{}</option>'.format(
-            _esc(c["code"]), _esc(c["nom"]), _esc("{} - {}".format(c["code"], c["nom"])))
+        pos_clients_html += '<option value="{}">{}</option>'.format(
+            _esc(c["code"]), _esc("{} - {}".format(c["code"], c["nom"])))
 
     stats_html = ('<div class="pos-stat-pill"><b>{tj}</b><span>Tickets aujourd&#39;hui</span></div>'
                   '<div class="pos-stat-pill"><b>{cj} FCFA</b><span>CA du jour</span></div>'
@@ -132,7 +135,7 @@ def pos_page():
         top10_tiles=top10_tiles,
         vendeur_opts_html=vendeur_opts_html,
         pos_clients_html=pos_clients_html,
-        pos_clients_js=pos_clients_js,
+        pos_clients_data=pos_clients_data,
         ticket_rows_html=ticket_rows_html,
         stock_ctl_js="true" if pos_engine.stock_control_enabled() else "false",
     )
@@ -233,6 +236,9 @@ def api_pos_config():
             pos["stock_control"] = bool(data["stock_control"])
         cfg["pos"] = pos
         save_config(cfg)
+        user_auth.audit("pos.stock_control", "Controle de stock: {}".format(
+            "actif" if pos.get("stock_control", True) else "inactif"),
+            email=(_current_identity() or {}).get("email", ""))
         return jsonify({"success": True, "stock_control": bool(pos.get("stock_control", True))})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
@@ -244,20 +250,34 @@ def api_create_ticket():
     data = request.get_json(silent=True) or {}
     try:
         result = pos_engine.create_ticket(data)
+        if result.get("success"):
+            user_auth.audit("pos.ticket", "Ticket {} cree ({} FCFA)".format(
+                result.get("numero", ""), result.get("montant_ttc", 0)),
+                email=(_current_identity() or {}).get("email", ""))
         return jsonify(result)
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 400
+    except Exception:
+        import logging
+        logging.getLogger("t-connector.pos").exception("Creation ticket route echouee")
+        return jsonify({"success": False, "error": "Erreur interne de creation du ticket"}), 400
 
 
 @bp.route("/api/pos/tickets")
 @_login_required
 def api_list_tickets():
+    try:
+        limit = max(1, min(int(request.args.get("limit", 100)), 500))
+    except (TypeError, ValueError):
+        limit = 100
+    try:
+        offset = max(0, int(request.args.get("offset", 0)))
+    except (TypeError, ValueError):
+        offset = 0
     result = pos_engine.list_tickets(
         date_from=request.args.get("date_from"),
         date_to=request.args.get("date_to"),
         vendeur_id=request.args.get("vendeur_id"),
         search=request.args.get("search"),
-        limit=min(int(request.args.get("limit", 100)), 500)
+        limit=limit, offset=offset
     )
     return jsonify(result)
 

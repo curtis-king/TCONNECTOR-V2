@@ -1,15 +1,16 @@
 <div class="card"><h2>Facturation</h2><div class="stat-grid">
-<div class="stat"><div class="value">{{ total }}</div><div class="label">Total factures</div></div>
-<div class="stat"><div class="value">{{ brouillons }}</div><div class="label">Brouillons</div></div>
-<div class="stat"><div class="value">{{ validees }}</div><div class="label">Validees</div></div>
-<div class="stat"><div class="value">{{ certifiees }}</div><div class="label">Certifiees SFEC</div></div>
-<div class="stat"><div class="value">{{ certif_en_cours }}</div><div class="label">Certif en attente</div></div>
-<div class="stat"><div class="value">{{ certif_erreur }}</div><div class="label">Certif en erreur</div></div>
-<div class="stat"><div class="value">{{ "{:,.0f}".format(ca) }}</div><div class="label">CA Total TTC</div></div>
-<div class="stat"><div class="value">{{ "{:,.0f}".format(nb_imp) }}</div><div class="label">Impayes (FCFA)</div></div>
-<div class="stat"><div class="value">{{ pending_sage }}</div><div class="label">A pousser Sage</div></div>
+<div class="stat"><div class="value" id="stat-total">{{ total }}</div><div class="label">Total factures</div></div>
+<div class="stat"><div class="value" id="stat-brouillons">{{ brouillons }}</div><div class="label">Brouillons</div></div>
+<div class="stat"><div class="value" id="stat-validees">{{ validees }}</div><div class="label">Validees</div></div>
+<div class="stat"><div class="value" id="stat-certifiees">{{ certifiees }}</div><div class="label">Certifiees SFEC</div></div>
+<div class="stat"><div class="value" id="stat-en-cours">{{ certif_en_cours }}</div><div class="label">Certif en attente</div></div>
+<div class="stat"><div class="value" id="stat-erreur">{{ certif_erreur }}</div><div class="label">Certif en erreur</div></div>
+<div class="stat"><div class="value" id="stat-ca">{{ "{:,.2f}".format(ca) }}</div><div class="label">CA Total TTC</div></div>
+<div class="stat"><div class="value" id="stat-impayes">{{ "{:,.2f}".format(nb_imp) }}</div><div class="label">Impayes (FCFA)</div></div>
+<div class="stat"><div class="value" id="stat-pending">{{ pending_sage }}</div><div class="label">A pousser Sage</div></div>
 <div class="stat"><div class="value">{{ pushed }}</div><div class="label">Sync Sage OK</div></div>
-</div><div class="card"><h2>Mois en cours</h2><div class="stat-grid">
+</div><div id="stats-scope" style="font-size:12px;color:#64748b;margin:-6px 0 12px">Statistiques globales, independantes des filtres ci-dessous.</div>
+<div style="font-size:11px;color:#94a3b8;margin:-8px 0 12px">Sync Sage OK = compteur global ({{ pushed }})</div><div class="card"><h2>Mois en cours</h2><div class="stat-grid">
 <div class="stat"><div class="value">{{ mois_nb }}</div><div class="label">Factures du mois</div></div>
 <div class="stat"><div class="value">{{ "{:,.0f}".format(mois_ht) }}</div><div class="label">HT (FCFA)</div></div>
 <div class="stat"><div class="value">{{ "{:,.0f}".format(mois_tva) }}</div><div class="label">TVA (FCFA)</div></div>
@@ -24,9 +25,10 @@
 <div><label>N facture</label><input type="text" id="f_search" placeholder="FA000002..." style="min-width:150px"></div>
 <div><button type="submit" class="btn btn-primary">Filtrer</button></div>
 <div><button type="button" class="btn btn-sm" onclick="resetFilters()">Reinitialiser</button></div>
+<div><a class="btn btn-sm" id="btn-export" href="/api/invoices/export" target="_blank" rel="noopener">Exporter CSV</a></div>
 </form></div><div class="card no-print"><h2>Actions</h2>
 <a href="/billing/invoice/new" class="btn btn-primary">Nouvelle Facture</a>
-<button class="btn btn-success" onclick="syncBi()" style="margin-left:8px">Sync Sage</button>
+<button class="btn btn-success" onclick="syncBi(this)" style="margin-left:8px">Sync Sage</button>
 <span style="margin-left:8px;font-size:12px;color:#64748b">Derniere sync: {{ last_sync }}</span>
 </div><div class="card"><h2>Factures (<span id="inv-count">0</span>)</h2>
 <table><thead><tr>
@@ -46,7 +48,7 @@
 window.NATIVE_ALERTS = true;
 var bs={page:1,limit:25,sort_by:"date_facture",sort_dir:"DESC"};
 function esc(x){var d=document.createElement("div");d.textContent=(x==null?"":String(x));return d.innerHTML;}
-function fmt(x){return Number(x||0).toLocaleString("fr-FR",{maximumFractionDigits:0});}
+function fmt(x){var n=Number(x);if(!isFinite(n))return "0";return n.toLocaleString("fr-FR",{maximumFractionDigits:0});}
 function buildQ(){
 var q=[],a=function(k,v){if(v!==null&&v!==""){q.push(k+"="+encodeURIComponent(v));}};
 a("type_doc",document.getElementById("f_type_doc").value);
@@ -63,6 +65,7 @@ var ss=t.sfec_statut||"",cb=' <button class="btn btn-sm" onclick="certifyBilling
 if(ss==="CERTIFIE"||ss==="DEJA_CERTIFIE"){return '<span class="badge badge-ok" title="'+esc((t.sfec_num_certif||"").slice(0,25))+'">'+(ss==="CERTIFIE"?"Certifie":"Deja certifie")+"</span>";}
 if(ss==="EN_COURS"){return '<span class="badge badge-warn">En attente</span>'+cb;}
 if(ss==="ERREUR"){return '<span class="badge badge-err">Erreur</span>'+cb;}
+if(t.statut==="brouillon"){return '<span class="badge badge-info">A valider</span>';}
 return '<span class="badge badge-info">A certifier</span>'+cb;}
 function sageCell(t){
 if(t.synced_sage){return '<span class="badge badge-ok" title="'+esc(t.sage_piece||"")+'">Dans Sage</span>';}
@@ -71,7 +74,7 @@ var pushable=(t.statut!=="brouillon")&&(t.source!=="pos"||(t.sfec_num_certif||""
 return '<span class="badge badge-warn">En attente</span>'+(pushable?' <button class="btn btn-sm" onclick="pushInvoice('+t.id+')">Pousser</button>':"");}
 function invRow(t){
 var s=t.statut||"";
-var sb=(s==="valide"||s==="a_comptabilise")?"badge-ok":(s==="a_comptabiliser")?"badge-warn":(s==="brouillon")?"badge-info":"";
+var sb=(s==="valide"||s==="a_comptabilise"||s==="comptabilise")?"badge-ok":(s==="a_comptabiliser")?"badge-warn":(s==="brouillon")?"badge-info":"badge-err";
 var rest=t.montant_restant||0,u="/billing/invoice/"+t.id;
 return '<tr><td><a href="'+u+'" style="color:#38bdf8;text-decoration:none">'+esc(t.numero)+'</a></td>'
 +'<td>'+esc(t.date_facture)+'</td><td>'+esc(t.tiers_nom)+'</td>'
@@ -81,7 +84,7 @@ return '<tr><td><a href="'+u+'" style="color:#38bdf8;text-decoration:none">'+esc
 +'<td><span class="badge badge-info">'+esc(t.source)+'</span></td>'
 +'<td><span class="badge '+(t.type_doc==="avoir"?"badge-warn":"badge-info")+'" title="'+(t.type_doc==="avoir"?esc(t.reference_invoice_id||""):"")+'">'+(t.type_doc==="avoir"?"Avoir":"Vente")+'</span></td>'
 +'<td>'+sfecCell(t)+'</td><td>'+sageCell(t)+'</td>'
-+'<td><a class="btn btn-sm" href="'+u+'" target="_blank" style="text-decoration:none">Voir</a></td></tr>';}
++'<td><a class="btn btn-sm" href="'+u+'" rel="noopener" style="text-decoration:none">Voir</a></td></tr>';}
 function setArrows(){
 var k=["numero","date_facture","tiers_nom","statut","source"],i,el;
 for(i=0;i<k.length;i++){el=document.getElementById("sort_"+k[i]);if(el){el.textContent=(bs.sort_by===k[i])?(bs.sort_dir==="ASC"?String.fromCharCode(0x25B2):String.fromCharCode(0x25BC)):"";}}}
@@ -104,15 +107,53 @@ api("GET","/api/invoices/list?"+buildQ()).then(function(d){
 var tb=document.getElementById("inv-body");tb.innerHTML="";
 if(!d.invoices.length){tb.innerHTML='<tr><td colspan="13" style="text-align:center;color:#64748b">Aucune facture</td></tr>';}
 else{for(var i=0;i<d.invoices.length;i++){tb.innerHTML+=invRow(d.invoices[i]);}}
-document.getElementById("inv-count").textContent=d.total;paginate(d);
+document.getElementById("inv-count").textContent=d.total;
+if(d.stats){updateStats(d.stats);}
+updateExportLink();
+paginate(d);
 }).catch(function(e){showToast("Erreur: "+e,"err");});}
+function buildExportUrl(){
+  var p=new URLSearchParams();
+  var fm=document.getElementById("f_type_doc");
+  if(fm&&fm.value)p.set("type_doc",fm.value);
+  [["f_statut","statut"],["f_source","source"],["f_search","search"],
+   ["f_date_from","date_from"],["f_date_to","date_to"]].forEach(function(pair){
+    var el=document.getElementById(pair[0]);
+    if(el&&el.value)p.set(pair[1],el.value);
+  });
+  return "/api/invoices/export?"+p.toString();
+}
+function updateExportLink(){
+  var a=document.getElementById("btn-export");
+  if(a)a.href=buildExportUrl();
+}
+function updateStats(st){
+  var m={ "stat-total":"total","stat-brouillons":"brouillons","stat-validees":"validees",
+    "stat-certifiees":"certifiees","stat-en-cours":"certif_en_cours","stat-erreur":"certif_erreur",
+    "stat-ca":"ca","stat-impayes":"impayes","stat-pending":"pending_sage"};
+  Object.keys(m).forEach(function(id){
+    var el=document.getElementById(id);
+    if(!el)return;
+    var v=st[m[id]];
+    if(id==="stat-ca"||id==="stat-impayes"){
+      el.textContent=Number(v||0).toLocaleString("fr-FR",{minimumFractionDigits:2,maximumFractionDigits:2});
+    } else {
+      el.textContent=v||0;
+    }
+  });
+  var active=(document.getElementById("f_type_doc").value||document.getElementById("f_statut").value||
+    document.getElementById("f_source").value||document.getElementById("f_search").value||
+    document.getElementById("f_date_from").value||document.getElementById("f_date_to").value);
+  var scope=document.getElementById("stats-scope");
+  if(scope)scope.textContent=active?"Statistiques recalculées sur le périmètre filtré.":"Statistiques globales, independantes des filtres ci-dessous.";
+}
 function go(n){bs.page=n;render();}
 function setLimit(n){bs.limit=Number(n);bs.page=1;render();}
 function toggleSort(k){if(bs.sort_by===k){bs.sort_dir=bs.sort_dir==="DESC"?"ASC":"DESC";}else{bs.sort_by=k;bs.sort_dir="DESC";}bs.page=1;render();}
 function resetFilters(){["f_statut","f_source","f_search","f_date_from","f_date_to", "f_type_doc"].forEach(function(id){document.getElementById(id).value="";});bs.page=1;render();}
-function syncBi(){api("POST","/api/sync/bi",{}).then(function(d){showToast("Sync: "+d.pushed+" poussees, "+d.pull_new+" tirees","ok");render()}).catch(function(e){showToast("Erreur: "+e,"err")});}
-function certifyBilling(id){api("POST","/api/sfec/certify",{invoice_id:"INV-"+id}).then(function(r){if(r.success&&r.certification_number){showToast("Certifiee SFEC: "+r.certification_number,"ok");render();}else if(r.success){showToast("Certification envoyee, en attente...","warn");render();}else{showToast("Certification: "+(r.error||"echec"),"err");}})}
-function pushInvoice(id){api("POST","/api/invoices/"+id+"/push-sage").then(function(r){if(r.success){showToast("Facture poussee vers Sage","ok");render();}else{showToast("Push Sage: "+(r.error||"echec"),"err");}})}
+function syncBi(btn){if(btn){btn.disabled=true;btn.textContent="Sync en cours...";}api("POST","/api/sync/bi",{}).then(function(d){if(d&&d.success===false){showToast("Sync: "+(d.error||"echec"),"err");return}showToast("Sync: "+(d.pushed||0)+" poussees, "+(d.pull_new||0)+" tirees","ok");render()}).catch(function(e){showToast("Erreur sync: "+e,"err")}).finally(function(){if(btn){btn.disabled=false;btn.textContent="Sync Sage";}});}
+function certifyBilling(id){api("POST","/api/sfec/certify",{invoice_id:"INV-"+id}).then(function(r){if(r.success&&r.certification_number){showToast("Certifiee SFEC: "+r.certification_number,"ok");render();}else if(r.success){showToast("Certification envoyee, en attente...","warn");render();}else{showToast("Certification: "+(r.error||"echec"),"err");}}).catch(function(e){showToast("Erreur certification: "+e,"err")})}
+function pushInvoice(id){api("POST","/api/invoices/"+id+"/push-sage").then(function(r){if(r.success){showToast("Facture poussee vers Sage","ok");render();}else{showToast("Push Sage: "+(r.error||"echec"),"err");}}).catch(function(e){showToast("Erreur push Sage: "+e,"err")})}
 document.getElementById("f_search").addEventListener("input",(function(){var t;return function(){clearTimeout(t);t=setTimeout(function(){bs.page=1;render();},250);};})());
 document.getElementById("filters-form").addEventListener("submit",function(e){e.preventDefault();bs.page=1;render();});
 ["f_statut","f_source","f_date_from","f_date_to", "f_type_doc"].forEach(function(id){document.getElementById(id).addEventListener("change",function(){bs.page=1;render();});});

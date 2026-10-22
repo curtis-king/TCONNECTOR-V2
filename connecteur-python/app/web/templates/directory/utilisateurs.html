@@ -10,7 +10,7 @@
 <div class="card"><h2>Liste des comptes</h2>
 <table><thead><tr><th>Nom</th><th>Email</th><th>Role</th><th>Statut</th><th>Derniere connexion</th><th>Actions</th></tr></thead>
 <tbody>{{ rows | safe }}</tbody></table>
-<div style="font-size:12px;color:#64748b;margin-top:8px">Provider d'authentification : <b>{{ provider | safe }}</b> (sage = comptes verifies depuis la base Sage si elle expose des utilisateurs)</div>
+<div style="font-size:12px;color:#64748b;margin-top:8px">Provider d'authentification : <b>{{ provider }}</b> (sage = comptes verifies depuis la base Sage si elle expose des utilisateurs)</div>
 </div>
 <div class="card"><h2>Droits d'acces par role</h2>
 {{ matrix | safe }}
@@ -27,11 +27,11 @@
 <div><label><input type="checkbox" id="sec-https"> HTTPS / Secure cookie</label></div>
 <div><button class="btn btn-primary" onclick="saveSec()">Enregistrer</button></div>
 </div>
-<div style="font-size:12px;color:#64748b;margin-top:8px">Un compte est verrouille apres trop d'echecs. Redemarrez le dashboard pour appliquer <b>https_only</b>.</div>
+<div style="font-size:12px;color:#64748b;margin-top:8px">Un compte est verrouille apres trop d'echecs. Les parametres de session sont appliques a la requete suivante.</div>
 </div>
 <div class="card no-print"><h2>Journal d'audit</h2>
 <table><thead><tr><th>Heure</th><th>Compte</th><th>Action</th><th>Detail</th><th>IP</th></tr></thead>
-<tbody>{{ audit | safe }}</tbody></table></div>
+<tbody>{{ audit | safe }}</tbody></table>{{ audit_nav | safe }}</div>
 
 <div id="user-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:100;align-items:center;justify-content:center">
 <div class="card" style="width:440px;max-width:95vw">
@@ -47,7 +47,7 @@
 <div><label>Role</label><select id="u-role">{{ role_opts | safe }}</select></div>
 <div><label>Actif</label><select id="u-actif"><option value="1">Oui</option><option value="0">Non</option></select></div>
 </div>
-<div><label id="u-pwd-label">Mot de passe provisoire * (min 8 char.)</label><input type="password" id="u-pwd"></div>
+<div><label id="u-pwd-label">Mot de passe provisoire * (min 10 char.)</label><input type="password" id="u-pwd"></div>
 <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
 <button type="button" class="btn btn-sm btn-ghost" onclick="hideUserModal()">Annuler</button>
 <button type="submit" class="btn btn-primary">Enregistrer</button>
@@ -56,8 +56,18 @@
 </div>
 </div>
 
+<div id="resetPwdModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;align-items:center;justify-content:center">
+<div class="card" style="width:380px;max-width:95vw">
+<h2>Reinitialiser le mot de passe</h2>
+<input type="hidden" id="resetPwdId">
+<label>Nouveau mot de passe (min 10 caracteres)</label>
+<input type="password" id="resetPwdValue" autocomplete="new-password">
+<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+<button class="btn" type="button" onclick="hideResetPwd()">Annuler</button>
+<button class="btn btn-primary" type="button" onclick="submitResetPwd()">Enregistrer</button>
+</div></div></div>
 <script>
-function visible(){var ids=["u-id","u-nom","u-prenom","u-email","u-role","u-actif"].concat(["u-pwd"]);for(var i=0;i<ids.length;i++){var el=document.getElementById(ids[i]);if(el)el.value="";}document.getElementById("u-pwd").style.display="";document.getElementById("u-pwd").required=true;}
+function visible(){var ids=["u-id","u-nom","u-prenom","u-email","u-role","u-actif"].concat(["u-pwd"]);for(var i=0;i<ids.length;i++){var el=document.getElementById(ids[i]);if(el)el.value="";}document.getElementById("u-role").value="responsable";document.getElementById("u-actif").value="1";document.getElementById("u-pwd").style.display="";document.getElementById("u-pwd").required=true;}
 function showNewUser(){
 visible();
 document.getElementById("u-actif").value="1";
@@ -105,13 +115,20 @@ setTimeout(function(){location.reload()},900);
 });
 };
 function resetPwd(id){
-var p=prompt("Nouveau mot de passe (min 8 caracteres) :");
-if(!p)return;
-if(p.length<8){showToast("Minimum 8 caracteres","err");return;}
+document.getElementById("resetPwdId").value=id;
+document.getElementById("resetPwdValue").value="";
+document.getElementById("resetPwdModal").style.display="flex";
+setTimeout(function(){document.getElementById("resetPwdValue").focus()},50);
+}
+function hideResetPwd(){document.getElementById("resetPwdModal").style.display="none";}
+function submitResetPwd(){
+var id=document.getElementById("resetPwdId").value;
+var p=document.getElementById("resetPwdValue").value||"";
+if(p.length<10){showToast("Minimum 10 caracteres","err");return;}
 api("POST","/api/utilisateurs/"+id+"/password",{password:p}).then(function(r){
 if(r.success==false){showToast(r.error||"Erreur","err");return;}
-showToast("Mot de passe reinitialise","ok");
-});
+hideResetPwd();showToast("Mot de passe reinitialise","ok");
+}).catch(function(e){showToast("Erreur: "+e,"err")});
 }
 function toggleActif(id){
 api("PUT","/api/utilisateurs/"+id,{toggle_actif:true}).then(function(r){
@@ -128,8 +145,8 @@ showToast("Compte supprime","ok");setTimeout(function(){location.reload()},700);
 }
 function saveMatrix(){
 var matrix={};
-["admin","responsable","caissiere","financiere"].forEach(function(r){matrix[r]=[];});
 document.querySelectorAll("#matrix input[type=checkbox]").forEach(function(cb){
+if(!matrix[cb.dataset.role])matrix[cb.dataset.role]=[];
 if(cb.checked)matrix[cb.dataset.role].push(cb.dataset.perm);
 });
 api("POST","/api/auth/permissions",{matrix:matrix}).then(function(r){

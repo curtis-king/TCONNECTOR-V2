@@ -1,0 +1,241 @@
+' Modele metier — connecteur custom (sans Sage BIJOU, sans la vue)
+' 1. Classes  2. Sequence full_sync  3. Activite ticket->facture->certif  4. Composants
+
+' ================= 1. DIAGRAMME DE CLASSES =================
+@startuml classes-metier
+skinparam classAttributeIconSize 0
+title Metier backend — entites (SQLite)
+
+entity "contacts\n<<table>>" as contacts {
+  *id : INTEGER PK
+  --
+  *code : TEXT UNIQUE
+  nom : TEXT
+  type : client|fournisseur
+  niu : TEXT (unique si <> '')
+  email / telephone / adresse / ville : TEXT
+  pays : TEXT = CG
+  rccm : TEXT
+  is_taxable : INT = 1
+  synced_backend : INT = 0
+  backend_key : TEXT
+}
+
+entity "products\n<<table>>" as products {
+  *id : INTEGER PK
+  --
+  *ref : TEXT UNIQUE
+  barcode / designation / famille : TEXT
+  prix_vente / prix_achat : REAL
+  tva_code : TEXT = 18
+  unite : TEXT = U
+  stock_reel : REAL = 0
+  est_actif : INT = 1
+  backend_key : TEXT
+}
+
+entity "vendeurs\n<<table>>" as vendeurs {
+  *id : INTEGER PK
+  --
+  *code : TEXT UNIQUE
+  nom / prenom / email / telephone : TEXT
+  role : TEXT = vendeur
+  est_actif : INT = 1
+}
+
+entity "tax_rates\n<<table>>" as tax_rates {
+  *id : INTEGER PK
+  --
+  *code : TEXT UNIQUE
+  libelle : TEXT
+  taux : REAL (18 / 5 / 0)
+}
+
+entity "invoices\n<<table>>" as invoices {
+  *id : INTEGER PK
+  --
+  *numero : TEXT UNIQUE (FA|AV + 6 chiffres)
+  date_facture : TEXT
+  type_doc : vente|avoir
+  statut : brouillon|valide|a_comptabiliser
+  sfec_statut : ''|EN_COURS|CERTIFIE|DEJA_CERTIFIE|ERREUR
+  montant_ht / tva / ttc / restant : REAL
+  total_tax_t (18%) / total_tax_r (5%) : REAL
+  additional_cent_tax : REAL (=5% TVA 18%)
+  electronic_stamp_duty : REAL = 0
+  tiers_* (snapshot client) : TEXT
+  reference_invoice_id : TEXT (avoir -> origine)
+  payment_method / devise : TEXT
+  recipient_rccm / is_recipient_taxable : TEXT|INT
+  sfec_num_certif / signature / qr_code / date_certif : TEXT
+  synced_backend : INT = 0
+}
+
+entity "invoice_lines\n<<table>>" as invoice_lines {
+  *id : INTEGER PK
+  --
+  *invoice_id : FK CASCADE
+  numero_ligne : INT
+  designation : TEXT
+  quantite / prix_unitaire : REAL
+  remise_pct / remise_montant / montant_ht : REAL
+  taux_tva : REAL = 18
+  montant_tva / montant_ttc : REAL
+  type_article : product|service
+}
+
+entity "pos_tickets\n<<table>>" as pos_tickets {
+  *id : INTEGER PK
+  --
+  *numero : TEXT UNIQUE (TK + 6 chiffres)
+  date_ticket : TEXT
+  tiers_nom : TEXT = Client comptoir
+  montant_ttc : REAL
+  mode_paiement : especes|carte|cheque|virement|mobile_money
+  montant_recu / monnaie_rendue : REAL
+  statut : TEXT = valide
+  invoice_id : FK NULL (facture miroir)
+  remise_globale_pct / montant : REAL
+}
+
+entity "pos_ticket_lines\n<<table>>" as pos_ticket_lines {
+  *id : INTEGER PK
+  --
+  *ticket_id : FK CASCADE
+  numero_ligne : INT
+  designation / quantite / prix_unitaire : ...
+  montant_ht / taux_tva / montant_tva / montant_ttc : REAL
+  remise_pct / remise_montant : REAL
+}
+
+entity "settings\n<<technique>>" as settings {
+  *key : TEXT PK
+  value : TEXT
+  ' compteurs FA/AV/TK + formats + auth_matrix JSON
+}
+
+entity "sync_log\n<<technique>>" as sync_log {
+  *id : INTEGER PK
+  table_name / action / direction / status : TEXT
+}
+
+entity "utilisateurs\n<<technique>>" as utilisateurs {
+  *id : INTEGER PK
+  --
+  *email : TEXT UNIQUE
+  mot_de_passe : TEXT (pbkdf2)
+  role : admin|responsable|caissiere|financiere
+}
+
+entity "audit_log\n<<technique>>" as audit_log {
+  *id : INTEGER PK
+  ts / utilisateur / action / detail / ip : TEXT
+}
+
+invoices }|--|| contacts : contact_id
+invoices }|--|| vendeurs : vendeur_id
+invoice_lines }|--|| invoices : CASCADE
+invoice_lines }|--o| products : product_id
+pos_tickets }|--o| contacts
+pos_tickets }|--o| invoices : conversion
+pos_tickets }|--o| vendeurs
+pos_ticket_lines }|--|| pos_tickets : CASCADE
+pos_ticket_lines }|--o| products
+
+note right of invoices
+  OCL :
+  avoir => reference_invoice_id <> ''
+    and origine.sfec_statut in (CERTIFIE, DEJA_CERTIFIE)
+    and count(avoir|origine) = 1
+  additional_cent_tax = round(total_tax_t * 0.05, 2)
+  electronic_stamp_duty = 0
+end note
+@enduml
+
+' ================= 2. SEQUENCE full_sync =================
+@startuml sequence-sync
+title full_sync — certifier > pousser contacts > pousser factures > tirer
+actor Scheduler
+participant "MoteurSync" as Engine
+participant "BillingSystemAdapter\n(a implementer)" as Adapter
+participant "SQLite local" as DB
+participant "SFEC API" as SFEC
+
+Scheduler -> Engine : full_sync()
+Engine -> SFEC : certifier attente POS (EN_COURS exclus)
+Engine -> Adapter : write_contact(contacts non synchronises)
+note right : REGLE D'ORDRE : contacts AVANT factures
+Engine -> Adapter : write_invoice(factures non brouillon, POS si certifiee)
+Engine -> Adapter : fetch_invoices() / fetch_contacts()
+Engine -> DB : upsert miroir + sfec_* si changé
+Engine -> SFEC : lookup paginé (TTL 300s) + réconciliation
+Engine --> Scheduler : {pushed, pulled, certified, errors}
+@enduml
+
+' ================= 3. ACTIVITE ticket -> facture -> certif =================
+@startuml activite-ticket
+title Pipeline caisse : ticket -> facture miroir -> certification
+start
+:Ticket >= 1 ligne ?;
+if (vide) then (non)
+  :rejeter "Aucune ligne";
+  stop
+endif
+:Controle stock (si actif);
+if (rupture) then (oui)
+  :bloquer + detail (stock X, demande Y);
+  stop
+endif
+:INSERT ticket + lignes;
+:Recalcul prorata + monnaie = max(recu - TTC, 0);
+:Décrémenter stock MAX(stock - qte, 0);
+:Créer facture miroir\n(a_comptabiliser, source=pos, restant=0);
+if (SFEC actif + en ligne ?) then (oui)
+  :certify (POST, polling 12x2s si besoin);
+  if (certifié ?) then (oui)
+    :marquer CERTIFIE + preuve (n°, signature, QR);
+  else (non)
+    :marquer EN_COURS / ERREUR;
+  endif
+else (non)
+  :marquer EN_COURS + note d'attente;
+endif
+:log_sync;
+stop
+@enduml
+
+' ================= 4. COMPOSANTS =================
+@startuml composants
+title Connecteur custom — decoupage (frontiere ex-BIJOU)
+package "Domaine (garde)" {
+  [facturation\ninvoices + avoirs R1-R3]
+  [caisse\ntickets + stock + vendeurs]
+  [edition PDF\nfacture A4 + ticket + QR exact]
+  [referentiels\ncontacts + produits + TVA]
+}
+package "Sync generique (garde)" {
+  [moteur full_sync + retry + polling]
+  [regles avoir/certif/eligibilite]
+}
+package "Adaptateur (A IMPLEMENTER)" as ADAPT {
+  [BillingSystemAdapter\nfetch_* / write_* / mark_*]
+}
+package "Externe (garde)" {
+  [SFEC API\ncontrat inchange]
+  [config JSON + SQLite + auth]
+}
+package "JETE (ex-BIJOU)" as JETE {
+  [tables F_* + triggers 82019]
+  [DO_Type 6/7 + CodeTaxe C18/C05]
+  [ODBC + lock global]
+}
+[facturation] --> ADAPT
+[caisse] --> ADAPT
+[moteur full_sync + retry + polling] --> ADAPT
+ADAPT -[dashed]-> JETE : remplace
+[edition PDF] --> [SFEC API] : QR image exacte
+note bottom of ADAPT
+  contacts AVANT factures (ordre impératif)
+  jamais d'écrasement SFEC si CERTIFIE
+end note
+@enduml

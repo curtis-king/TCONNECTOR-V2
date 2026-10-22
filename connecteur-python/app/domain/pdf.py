@@ -8,6 +8,12 @@ from app.config.manager import get_config
 
 logger = logging.getLogger("t-connector.pdf")
 
+
+def _xml(value):
+    """Echappe les donnees utilisateur pour le mini-XML ReportLab."""
+    from xml.sax.saxutils import escape
+    return escape(str(value if value is not None else ""))
+
 try:
     import qrcode
     HAS_QRCODE = True
@@ -86,14 +92,21 @@ def _centaines_en_lettres(n):
     return " ".join(parts)
 
 
-def _montant_en_lettres(amount):
-    """Convertit un montant en toutes lettres (francais), sans decimales (XAF)."""
+def _montant_en_lettres(amount, devise="XAF"):
+    """Convertit un montant en toutes lettres (francais), sans decimales."""
     try:
         n = int(round(amount))
     except (TypeError, ValueError):
         return ""
+    labels = {
+        "XAF": ("franc CFA", "francs CFA"),
+        "XOF": ("franc CFA", "francs CFA"),
+        "USD": ("dollar US", "dollars US"),
+        "EUR": ("euro", "euros"),
+    }
+    singulier, pluriel = labels.get((devise or "XAF").upper(), (devise or "XAF", devise or "XAF"))
     if n == 0:
-        return "Zero franc CFA"
+        return "Zero {}".format(singulier)
     negatif = n < 0
     n = abs(n)
 
@@ -119,7 +132,7 @@ def _montant_en_lettres(amount):
     texte = " ".join(p for p in parts if p)
     if negatif:
         texte = "moins " + texte
-    return (texte[0].upper() + texte[1:] + " francs CFA") if texte else ""
+    return (texte[0].upper() + texte[1:] + " " + pluriel) if texte else ""
 
 
 def _generate_qr_image(data, box_size=4):
