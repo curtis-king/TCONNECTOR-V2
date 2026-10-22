@@ -88,9 +88,9 @@ C'est le correctif minimal. Deux améliorations recommandées dans le même lot 
 ```python
     except Exception as e:
         logger.error("Sync articles: ecriture SQLite echouee: %s (prepares=%d)",
-                     e, len(normed))
+                     e, len(articles))
         return {"ok": False, "error": str(e), "inserted": 0, "updated": 0,
-                "total": len(articles), "prepared": len(normed)}
+                "total": len(articles), "prepared": len(articles)}
 ```
 
 ### 3.2 Nettoyer les articles de démonstration après une sync réussie
@@ -104,21 +104,37 @@ Tant que la sync échouait, `main.py:52-58` seedait 129 produits de démo. Aprè
 
 A lancer UNE FOIS apres une synchronisation articles reussie.
 Refuse de supprimer un article reference par une ligne de facture.
+
+Usage :
+    python scripts/purge_seed_products.py           # dry-run
+    python scripts/purge_seed_products.py --apply   # suppression
 """
+import argparse
 from app.storage.db import get_cursor
 
+_WHERE = """
+    synced_sage = 0
+    AND id NOT IN (SELECT DISTINCT product_id FROM invoice_lines
+                   WHERE product_id IS NOT NULL)
+    AND id NOT IN (SELECT DISTINCT product_id FROM pos_ticket_lines
+                   WHERE product_id IS NOT NULL)
+"""
+
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--apply", action="store_true")
+    args = parser.parse_args()
     with get_cursor() as cur:
-        cur.execute("""
-            DELETE FROM products
-            WHERE synced_sage = 0
-              AND id NOT IN (SELECT DISTINCT product_id FROM invoice_lines
-                             WHERE product_id IS NOT NULL)
-        """)
-        print("Articles de demonstration supprimes:", cur.rowcount)
+        cur.execute("SELECT COUNT(*) AS c FROM products WHERE " + _WHERE)
+        print("Articles de demonstration supprimables:", cur.fetchone()["c"])
+        if not args.apply:
+            print("Dry-run : aucune suppression. Relancer avec --apply.")
+        else:
+            cur.execute("DELETE FROM products WHERE " + _WHERE)
+            print("Articles de demonstration supprimes:", cur.rowcount)
 ```
 
-> Ne pas supprimer sur le simple critère `synced_sage = 0` : une facture locale peut référencer un article créé à la main.
+> Ne pas supprimer sur le simple critère `synced_sage = 0` : une facture locale ou un ticket POS peut référencer un article créé à la main.
 
 ### 3.3 Garde-fou au démarrage
 
@@ -137,12 +153,7 @@ if __name__ == "__main__":
 `tests/test_article_sync.py` :
 
 ```python
-import os
-import tempfile
 import pytest
-
-os.environ.setdefault("TCONNECTOR_DB_PATH",
-                      os.path.join(tempfile.mkdtemp(), "test.db"))
 
 from app.storage import db
 from app.sync import article_sync

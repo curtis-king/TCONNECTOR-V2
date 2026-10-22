@@ -36,7 +36,10 @@ def _init_sqlite_and_seed(logger):
         try:
             from app.sync.article_sync import sync_articles_from_sage
             result = sync_articles_from_sage()
-            logger.info("Sync articles Sage au demarrage: %s", result)
+            if not result.get("ok"):
+                logger.error("Referentiel article NON synchronise: %s", result.get("error"))
+            else:
+                logger.info("Sync articles Sage au demarrage: %s", result)
         except Exception as e:
             logger.warning("Sync articles au demarrage: %s", e)
         try:

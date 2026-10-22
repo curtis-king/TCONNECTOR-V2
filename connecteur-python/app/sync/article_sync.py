@@ -69,7 +69,10 @@ def _upsert_products(articles):
             if ref in existing:
                 to_update.append((n[1], n[2], n[3], n[4], n[5], n[6], n[7], n[8], n[9], n[10], ref, existing[ref]))
             else:
-                to_insert.append((ref,) + n[1:])
+                # 12e parametre : sage_ar_ref (reference article Sage). Sans
+                # lui, executemany leve "uses 12, and there are 11 supplied"
+                # et aucun article n'est insere (audit 2026-10-21).
+                to_insert.append((ref,) + n[1:] + (ref,))
         updated = inserted = 0
         if to_update:
             cur.executemany("""
@@ -110,8 +113,10 @@ def sync_articles_from_sage():
     try:
         inserted, updated = _upsert_products(articles)
     except Exception as e:
-        logger.error("Sync articles: ecriture SQLite echouee: %s", e)
-        return {"ok": False, "error": str(e), "inserted": 0, "updated": 0, "total": len(articles)}
+        logger.error("Sync articles: ecriture SQLite echouee: %s (prepares=%d)",
+                     e, len(articles))
+        return {"ok": False, "error": str(e), "inserted": 0, "updated": 0,
+                "total": len(articles), "prepared": len(articles)}
 
     logger.info("Sync articles terminee: %d inseres, %d mis a jour (sur %d)",
                 inserted, updated, len(articles))
