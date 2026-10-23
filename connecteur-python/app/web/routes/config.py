@@ -166,7 +166,7 @@ def config_page():
         auth_t=_s(dash.get("auth_enabled"), True),
         login_email=_esc(dash.get("login_email", "")),
         session_max_hours=_esc(dash.get("session_max_age_hours", 24)),
-        host=_esc(dash.get("host", "0.0.0.0")),
+        host=_esc(dash.get("host", "127.0.0.1")),
     )
 
     return _page(body)

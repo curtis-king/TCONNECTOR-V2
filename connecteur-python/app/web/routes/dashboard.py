@@ -758,10 +758,14 @@ def _sqlite_alive():
 
 @bp.route("/health", methods=["GET"])
 def health():
-    db_ok = _sqlite_alive()
-    payload = {"status": "ok" if db_ok else "error",
-               "checks": {"sqlite": "up" if db_ok else "down"}}
-    return jsonify(payload), 200 if db_ok else 503
+    """Supervision locale : detail reserve a la boucle locale (proposition 09)."""
+    from app.core.health import collect_health, is_loopback
+
+    allow_remote = os.environ.get("TCONNECTOR_HEALTH_ALLOW_REMOTE") == "1"
+    if not allow_remote and not is_loopback(request.remote_addr):
+        return jsonify({"error": "not found"}), 404
+    payload = collect_health()
+    return jsonify(payload), 200 if payload.get("ok") else 503
 
 
 @bp.route("/ready", methods=["GET"])

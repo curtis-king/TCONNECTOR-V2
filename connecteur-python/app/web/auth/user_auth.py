@@ -162,11 +162,28 @@ def ensure_schema():
                        "INTEGER NOT NULL DEFAULT 0")
 
 
+def _allow_seed_admin():
+    """Le compte de bootstrap n'est cree que sur autorisation explicite.
+
+    Une base vierge ne doit plus produire automatiquement un administrateur
+    des qu'un config.json existe (proposition 09). En production, creer les
+    comptes nominatifs depuis l'interface puis desactiver cette variable.
+    """
+    return os.environ.get("TCONNECTOR_ALLOW_SEED_ADMIN") == "1"
+
+
 def migrate_admin_from_config():
     ensure_schema()
     with sqlite_db.get_cursor() as cur:
         cur.execute("SELECT COUNT(*) AS c FROM utilisateurs")
         if cur.fetchone()["c"] > 0:
+            return None
+        if not _allow_seed_admin():
+            logger.warning(
+                "Aucun utilisateur en base : creation automatique de l'admin "
+                "desactivee. Definir TCONNECTOR_ALLOW_SEED_ADMIN=1 pour le "
+                "bootstrap initial, puis creer des comptes nominatifs."
+            )
             return None
         cfg = get_config().get("dashboard", {}) or {}
         email = (cfg.get("login_email") or "").strip().lower()

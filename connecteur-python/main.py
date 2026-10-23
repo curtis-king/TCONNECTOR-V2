@@ -7,7 +7,7 @@ import subprocess
 
 from app.core.paths import base_dir, data_dir
 from app.core.logging_setup import setup_logging
-from app.config.manager import load_config, get_config
+from app.config.manager import load_config, get_config, validate_security_settings
 from app.integration.sage.database import close_pool
 from app.storage.db import init_database, get_cursor, close_all_connections
 from app.sync.connectivity import check_now, start_background_check, stop_background_check
@@ -68,6 +68,13 @@ def main():
     logger.info("=" * 60)
 
     try:
+        for warning in validate_security_settings(get_config()):
+            logger.warning("SECURITE: %s", warning)
+    except RuntimeError as e:
+        logger.error("SECURITE: %s", e)
+        raise SystemExit(1)
+
+    try:
         from app.core.bootstrap import ensure_runtime_dependencies
         ensure_runtime_dependencies()
     except Exception as e:  # noqa: BLE001
@@ -87,7 +94,7 @@ def main():
     cfg = get_config()
     dash_cfg = cfg.get("dashboard", {})
     dash_port = dash_cfg.get("port", 3000)
-    dash_host = dash_cfg.get("host", "0.0.0.0")
+    dash_host = dash_cfg.get("host", "127.0.0.1")
 
     def shutdown_handler(signum, frame):
         logger.info("Signal recu (%s) - Arret en cours...", signum)

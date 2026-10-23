@@ -29,6 +29,19 @@ CONFIG_FILE = os.environ.get("TCONNECTOR_CONFIG_FILE") or CONFIG_FILE
 _lock = threading.RLock()
 _config = None
 
+# Valeurs d'exemple qui ne doivent jamais signer une session en production.
+INSECURE_SESSION_SECRETS = {
+    "", "CHANGE-ME", "CHANGE-ME-IN-PRODUCTION", "change-me", "secret",
+}
+
+
+def _restrict_permissions(path):
+    """Les secrets de config.json ne doivent pas etre lisibles par tous."""
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
 
 def _defaults():
     return {
@@ -112,7 +125,9 @@ def _defaults():
         },
         "dashboard": {
             "port": 3000,
-            "host": "0.0.0.0",
+            # Ecoute locale par defaut : un acces distant doit passer par un
+            # tunnel SSH ou un reverse-proxy authentifie (proposition 09).
+            "host": "127.0.0.1",
             "auth_enabled": True,
             "session_secret": "CHANGE-ME-IN-PRODUCTION",
             "login_email": "admin@example.com",
@@ -181,7 +196,88 @@ def load_config():
         env_key = os.environ.get("SFEC_API_KEY", "").strip()
         if env_key:
             _config.setdefault("sfec", {})["api_key"] = env_key
+        _apply_env_security_overrides(_config)
+        if os.path.exists(CONFIG_FILE):
+            _restrict_permissions(CONFIG_FILE)
     return _config
+
+
+def _apply_env_security_overrides(cfg):
+    """Surcharges d'environnement : jamais persistees dans config.json.
+
+    Permet de sortir les secrets du fichier (ou de la sauvegarde) sans
+    casser les installations existantes qui utilisent encore config.json.
+    """
+    dash = cfg.setdefault("dashboard", {})
+    for env_name, key in (
+        ("TCONNECTOR_SESSION_SECRET", "session_secret"),
+        ("TCONNECTOR_LOGIN_EMAIL", "login_email"),
+        ("TCONNECTOR_LOGIN_PASSWORD", "login_password"),
+    ):
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            dash[key] = value
+
+    db_password = os.environ.get("TCONNECTOR_DB_PASSWORD", "").strip()
+    if db_password:
+        cfg.setdefault("db", {})["password"] = db_password
+    return cfg
+
+
+def validate_security_settings(cfg):
+    """Refuse une configuration d'authentification evidente en production.
+
+    Les valeurs d'exemple sont bloquees ; un secret court reste accepte mais
+    un avertissement est retourne (la securite web genere deja un secret
+    ephemere dans ce cas).
+    """
+    dash = (cfg or {}).get("dashboard", {}) or {}
+    warnings = []
+    if not dash.get("auth_enabled", True):
+        raise RuntimeError(
+            "dashboard.auth_enabled=false interdit : activer l'authentification"
+        )
+    secret = str(dash.get("session_secret") or "")
+    if secret in INSECURE_SESSION_SECRETS:
+        raise RuntimeError(
+            "dashboard.session_secret non configure : definir "
+            "TCONNECTOR_SESSION_SECRET ou une valeur d'au moins 32 caracteres"
+        )
+    if len(secret) < 32:
+        warnings.append(
+            "dashboard.session_secret court (<32 caracteres) : definir "
+            "TCONNECTOR_SESSION_SECRET"
+        )
+    host = str(dash.get("host") or "127.0.0.1")
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        warnings.append(
+            "dashboard.host={} : acces distant expose, utiliser un tunnel "
+            "SSH ou un reverse-proxy authentifie".format(host)
+        )
+    return warnings
+
+
+def _restore_persisted_security_values(clean):
+    """Ne jamais ecrire dans config.json une valeur venue de l'environnement."""
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            persisted = json.load(f)
+    except Exception:
+        persisted = {}
+    for env_name, section, key in (
+        ("TCONNECTOR_SESSION_SECRET", "dashboard", "session_secret"),
+        ("TCONNECTOR_LOGIN_EMAIL", "dashboard", "login_email"),
+        ("TCONNECTOR_LOGIN_PASSWORD", "dashboard", "login_password"),
+        ("TCONNECTOR_DB_PASSWORD", "db", "password"),
+    ):
+        env_value = os.environ.get(env_name, "").strip()
+        if not env_value:
+            continue
+        target = clean.setdefault(section, {})
+        if target.get(key) != env_value:
+            continue
+        previous = (persisted.get(section) or {}).get(key)
+        target[key] = previous if previous is not None else ""
 
 
 def save_config(cfg):
@@ -193,6 +289,7 @@ def save_config(cfg):
         env_key = os.environ.get("SFEC_API_KEY", "").strip()
         if env_key and clean.get("sfec", {}).get("api_key") == env_key:
             clean.setdefault("sfec", {})["api_key"] = ""
+        _restore_persisted_security_values(clean)
 
         directory = os.path.dirname(CONFIG_FILE) or "."
         os.makedirs(directory, exist_ok=True)
@@ -216,6 +313,12 @@ def save_config(cfg):
                 except OSError:
                     pass
         _config = copy.deepcopy(clean)
+        # Les surcharges d'environnement restent effectives en memoire apres
+        # une sauvegarde, sans avoir ete ecrites dans le fichier.
+        env_key = os.environ.get("SFEC_API_KEY", "").strip()
+        if env_key:
+            _config.setdefault("sfec", {})["api_key"] = env_key
+        _apply_env_security_overrides(_config)
 
 
 def get_config():

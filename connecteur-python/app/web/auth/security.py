@@ -231,6 +231,10 @@ def _required_permission(path, method):
     if p.startswith("/api/vendeurs"):
         return "vendeurs.gerer" if mutate else "vendeurs.voir", None
 
+    # Impression : le kill-switch et la reprise relevent de l'exploitation.
+    if p.startswith("/api/print/"):
+        return "config.gerer", None
+
     # Dashboard / synchronisation / SFEC.
     if p == "/" or p == "/api/metrics":
         return "dashboard.voir", None

@@ -278,3 +278,14 @@ def api_kill_switch():
     )
     logger.info("Kill-switch mis a jour: %s", result)
     return jsonify({"success": True, **result})
+
+
+@bp.route("/api/print/reprocess/<numero>", methods=["POST"])
+@_login_required
+def api_reprocess_print(numero):
+    """Force la reprise d'un PDF bloque en ATTENTE_CERTIF (support)."""
+    from app.print_hijack import auto_printer
+
+    cleared = auto_printer.clear_attente_certif(numero)
+    logger.info("Reprise impression demandee pour %s (%d ligne(s))", numero, cleared)
+    return jsonify({"ok": True, "numero": numero, "cleared": cleared})

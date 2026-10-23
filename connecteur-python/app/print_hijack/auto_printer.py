@@ -151,6 +151,44 @@ def get_print_record(file_hash):
         return None
 
 
+def count_attente_certif():
+    """Nombre de PDF actuellement bloques en attente de certification."""
+    try:
+        with get_cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) AS n FROM processed_pdf_prints "
+                "WHERE status = 'ATTENTE_CERTIF'"
+            )
+            row = cur.fetchone()
+            return int(row["n"] or 0) if row else 0
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Comptage impressions en attente impossible: %s", e)
+        return 0
+
+
+def clear_attente_certif(numero):
+    """Force la reprise du watcher pour un numero bloque en ATTENTE_CERTIF.
+
+    Le fichier reste dans WATCH/IN : le prochain scan le reprend. On remet
+    seulement le statut a NULL (jamais IMPRIME) pour ne pas fausser la
+    deduplication. Retourne le nombre de lignes remises en attente de scan.
+    """
+    numero = (numero or "").strip()
+    if not numero:
+        return 0
+    try:
+        with get_cursor() as cur:
+            cur.execute(
+                "UPDATE processed_pdf_prints SET status = NULL, error = '' "
+                "WHERE numero = ? AND status = 'ATTENTE_CERTIF'",
+                (numero,),
+            )
+            return cur.rowcount or 0
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Reprise impression impossible pour %s: %s", numero, e)
+        return 0
+
+
 def numero_printed_recently(numero, window_min):
     if not numero or window_min <= 0:
         return False

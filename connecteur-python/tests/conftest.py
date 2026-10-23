@@ -43,6 +43,9 @@ _TEST_CONFIG = os.path.join(_TEST_ROOT, "config.json")
 _TEST_DB = os.path.join(_TEST_ROOT, "tconnector.db")
 os.environ["TCONNECTOR_CONFIG_FILE"] = _TEST_CONFIG
 os.environ["TCONNECTOR_DB_PATH"] = _TEST_DB
+# La creation automatique de l'admin de bootstrap est desormais explicite
+# (proposition 09). Les tests reproduisent un poste deja initialise.
+os.environ["TCONNECTOR_ALLOW_SEED_ADMIN"] = "1"
 
 if not os.path.exists(_TEST_CONFIG):
     _src_cfg = os.path.join(PROJECT_ROOT, "config.json")
