@@ -42,6 +42,23 @@ _db_lock = threading.Lock()
 _pool_queue = None
 _pool_size = 0
 
+# Erreurs ODBC transitoires : un retry court evite de bloquer un worker et de
+# transformer un timeout reseau isole en "Configuration base de donnees
+# incomplete" (audit 2026-10-21 : 704 Login timeout, 19 le 21/10).
+_TRANSIENT_MARKERS = (
+    "timeout expired", "hyt00", "08001", "08s01",
+    "communication link failure", "en cours d'utilisation",
+    "80003", "server is unavailable",
+    "configuration base de donnees incomplete",
+)
+
+
+def _is_transient(exc):
+    """Vrai pour une erreur ODBC/reseau qui peut reussir apres retry."""
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _TRANSIENT_MARKERS)
+
+
 def _pool_capacity():
     try:
         cfg = get_db_config()
@@ -68,6 +85,32 @@ def _connect():
     return conn
 
 
+def _connect_with_retry(attempts=3):
+    """Ouvre une connexion ODBC en retentant les erreurs transitoires.
+
+    Backoff 1/3 s (la troisieme tentative n'attend pas apres son echec).
+    Une erreur definitive (42000 hors verrou, config invalide autre) remonte
+    immediatement sans retry.
+    """
+    last = None
+    for i in range(max(1, attempts)):
+        try:
+            return _connect()
+        except Exception as e:  # noqa: BLE001
+            last = e
+            if not _is_transient(e):
+                raise
+            if i >= attempts - 1:
+                break
+            delay = (1, 3, 7)[min(i, 2)]
+            logger.warning(
+                "Pool Sage: connexion %d/%d echouee (%s), retry dans %ds",
+                i + 1, attempts, e, delay,
+            )
+            time.sleep(delay)
+    raise last
+
+
 def _ensure_pool():
     global _pool_queue, _pool_size
     lo, hi = _pool_capacity()
@@ -79,7 +122,8 @@ def _ensure_pool():
                     _pool_queue.put(_connect())
                     _pool_size += 1
                 except Exception as e:
-                    logger.error("Pool Sage: connexion initiale echouee: %s", e)
+                    level = logging.WARNING if _is_transient(e) else logging.ERROR
+                    logger.log(level, "Pool Sage: connexion initiale echouee: %s", e)
                     break
             logger.info("Pool Sage initialise: %d connexion(s)", _pool_size)
     return hi
@@ -105,18 +149,18 @@ def _checkout(hi):
         except Exception:
             pass
         with _pool_lock:
-            
             _pool_size = max(0, _pool_size - 1)
         conn = None
     if conn is None:
         with _pool_lock:
-            
             if _pool_size < hi:
                 try:
-                    conn = _connect()
+                    conn = _connect_with_retry()
                     _pool_size += 1
                 except Exception as e:
-                    logger.error("Pool Sage: connexion a la demande echouee: %s", e)
+                    level = logging.WARNING if _is_transient(e) else logging.ERROR
+                    logger.log(level,
+                               "Pool Sage: connexion a la demande echouee: %s", e)
     if conn is None:
         try:
             conn = _pool_queue.get(block=True, timeout=30)
@@ -125,6 +169,8 @@ def _checkout(hi):
                     conn.close()
                 except Exception:
                     pass
+                with _pool_lock:
+                    _pool_size = max(0, _pool_size - 1)
                 conn = None
         except queue.Empty:
             conn = None
@@ -371,10 +417,7 @@ def get_pool():
         if not cfg.get("server") or not cfg.get("database"):
             raise ValueError("Configuration base de donnees incomplete")
 
-        conn_str = _build_conn_string(cfg)
-        timeout = cfg.get("connection_timeout_ms", 15000) // 1000
-
-        _pool = pyodbc.connect(conn_str, timeout=timeout, autocommit=True)
+        _pool = _connect_with_retry()
         logger.info("Connexion SQL Server etablie: %s/%s", cfg["server"], cfg["database"])
         return _pool
 

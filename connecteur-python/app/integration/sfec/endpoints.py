@@ -721,6 +721,80 @@ def _extract_cert_data(sfec_inv):
     return cert_number, sig, qr, cert_date
 
 
+def record_certified_invoice(sage_invoice_id, sfec_inv):
+    """Persiste une certification recuperee par GET (ex. apres un 409).
+
+    `invoice_number` est conserve : c'est le numero SFEC de la facture
+    d'origine, utilise comme `original_sfec_invoice_number` pour un avoir.
+    Une fiche deja presente pour le meme `sage_invoice_id` est mise a jour
+    au lieu d'etre dupliquee. Ne leve pas en cas d'echec d'ecriture JSON.
+    """
+    if not sage_invoice_id or not isinstance(sfec_inv, dict):
+        return False
+
+    cert_number, sig, qr, cert_date = _extract_cert_data(sfec_inv)
+    invoice_number = str(sfec_inv.get("invoice_number") or "").strip()
+    if not invoice_number and not cert_number:
+        return False
+
+    sfec_id = str(
+        sfec_inv.get("sfec_id")
+        or sfec_inv.get("identifier")
+        or sfec_inv.get("id")
+        or ""
+    ).strip()
+    now = datetime.utcnow().isoformat() + "Z"
+
+    with _certified_lock:
+        existing = _load_certified()
+        target = None
+        for item in existing:
+            if not isinstance(item, dict):
+                continue
+            if item.get("sage_invoice_id") == sage_invoice_id:
+                target = item
+                break
+        if target is None and invoice_number:
+            for item in existing:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("invoice_number") == invoice_number:
+                    target = item
+                    break
+        if target is None:
+            target = {
+                "sage_invoice_id": sage_invoice_id,
+                "certified_at": now,
+            }
+            existing.append(target)
+
+        if sfec_id:
+            target["sfec_id"] = sfec_id
+        if invoice_number:
+            target["invoice_number"] = invoice_number
+        if cert_number:
+            target["certification_number"] = cert_number
+            target["short_signature"] = cert_number[:50]
+        if sig:
+            target["signature"] = sig
+        if qr:
+            target["qr_code"] = qr
+        if cert_date:
+            target["certification_date"] = cert_date
+        target.setdefault("certified_at", now)
+        try:
+            _save_certified(existing)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Ecriture sfec-certified.json echouee: %s", e)
+            return False
+
+    logger.info(
+        "Certification SFEC memorisee pour %s (numero SFEC %s, certif %s)",
+        sage_invoice_id, invoice_number or "-", (cert_number or "-")[:30],
+    )
+    return True
+
+
 def certify_invoice(invoice):
     client = SfecClient()
     sfec_req = db_invoice_to_sfec(invoice)

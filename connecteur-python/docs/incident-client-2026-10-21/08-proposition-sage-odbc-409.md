@@ -341,3 +341,94 @@ Un timeout de connexion plus court (8 s) évite de bloquer un worker 15 s, puisq
 | Table locale oubliée dans les sauvegardes | Elle est recréée par `init_pending_table()` au démarrage |
 
 **Rollback** : revert de `engine.py` et `database.py` ; la table `sfec_pending_writes` peut rester (inutilisée) ou être supprimée.
+
+---
+
+## 9. État d'implémentation — 2026-10-23
+
+### 9.1 Connexions Sage : retry transitoire et classification
+
+`app/integration/sage/database.py` :
+
+- `_TRANSIENT_MARKERS` et `_is_transient()` classent les erreurs `HYT00`, `08001`, `08S01`, `Communication link failure`, `80003`, `Cet élément est en cours d'utilisation`, `server is unavailable` et `Configuration base de donnees incomplete` comme transitoires. Un `42000` de syntaxe/permission reste définitif.
+- `_connect_with_retry(attempts=3)` retente uniquement les erreurs transitoires, avec un backoff de **1 s puis 3 s** (aucune attente après le dernier échec). Une erreur définitive remonte immédiatement.
+- `_checkout()` et `get_pool()` utilisent `_connect_with_retry()` au lieu d'un `_connect()`/`pyodbc.connect()` unique. Une connexion initiale en échec est désormais retentée à la demande.
+- Le log est un `WARNING` pour une erreur transitoire et un `ERROR` pour une erreur définitive. Le cas `Configuration base de donnees incomplete` ne produit donc plus une trace `ERROR` en régime nominal.
+- Une connexion trouvée dans la file mais devenue malsaine décrémente aussi `_pool_size`, afin de ne pas bloquer le pool sur un compteur faussé.
+
+### 9.2 409 : aucune certification sans preuve
+
+`app/sync/engine.py` :
+
+- `_invalidate_sfec_lookup()` remet `_sfec_lookup_cache` à `None` et `_sfec_lookup_ts` à `0`. Il est appelé avant le GET direct de `_handle_already_certified()` quand le cache ne contient pas la facture, et après un 409.
+- `_handle_already_certified()` retourne `True` uniquement si une preuve (`certification_short_signature` ou QR code) a été trouvée. Sans GET exploitable, la facture **n'est plus marquée** `DEJA_CERTIFIE` : elle reste en attente et sera revérifiée au cycle suivant.
+- Les branches `else` qui appelaient `mark_certified(..., "DEJA_CERTIFIE")` sans numéro ont été supprimées. `certify_single()` ne marque plus avant la récupération.
+- Le champ `invoice_number` renvoyé par SFEC est conservé en mémoire (`invoice["sfec_invoice_number"]`) et persisté dans `data/sfec-certified.json` par la nouvelle fonction `record_certified_invoice()` (`app/integration/sfec/endpoints.py`). Cette fonction met à jour une fiche existante au lieu de créer un doublon ; `get_certified_by_sage_id()` peut donc fournir `original_sfec_invoice_number` à un avoir.
+- Les anciens `DEJA_CERTIFIE` sans `SFEC_NUM_CERTIF` (trace des 22 × 409) ne sont plus ignorés : `_needs_certification_recovery()` les fait repasser par la récupération SFEC si le lookup les contient, ou par une certification/409 sinon. Un `DEJA_CERTIFIE` avec numéro reste ignoré. La file de retry ne considère plus une certification sans numéro comme valide.
+
+### 9.3 File d'écriture différée
+
+Nouveau module `app/integration/sfec/pending_writes.py` et table `sfec_pending_writes` (également créée par `init_database()`) :
+
+- `enqueue()` mémorise `invoice_id`, `certification_number`, `signature`, `qr_code`, `certification_date`, `attempts`, `last_error`.
+- `flush(limit=20)` rejoue les écritures Sage non abouties. Une ligne réussie est supprimée ; un échec incrémente `attempts`. À **10 échecs**, `mark_to_monitor()` est appelé une fois, la ligne reste pour l'audit mais n'est plus rejouée (`WHERE attempts < MAX_ATTEMPTS`).
+- `flush()` accepte un callback `on_success` ; le moteur l'utilise pour remettre `sfec_statut = CERTIFIE` et `sfec_num_certif` dans le cache sans import circulaire.
+- `_flush_pending_writes()` est appelé au début de chaque passe d'auto-certification, avant les contrôles SFEC : l'écriture Sage ne dépend pas d'Internet et une certification obtenue hors ligne n'est pas perdue.
+- Les trois chemins d'écriture (`_certify_single_worker`, `_process_retry_queue`, `certify_single`) mettent désormais la certification en file si l'écriture Sage échoue. Le cache passe en `EN_COURS` jusqu'au prochain `flush` réussi. Si même SQLite échoue, l'erreur d'origine est propagée et le retry normal est conservé.
+- `write_sfec_to_invoice()` n'est pas modifié : l'écriture reste idempotente et ne touche que les colonnes `SFEC_*`.
+
+### 9.4 Retry du GET SFEC
+
+`app/integration/sfec/client.py` :
+
+- `verify_by_invoice_number()` fait **3 tentatives** avec 2 s puis 5 s sur `NetworkOfflineError`, timeout, erreur réseau et 5xx.
+- Un **404 retourne `None` immédiatement** (la certification n'existe pas encore), sans retry.
+- Un 400/401/403 retourne `None` immédiatement. Après épuisement, `None` est retourné et l'appelant ne marque pas la facture.
+- La pagination existante est conservée dans `_verify_by_invoice_number_once()`.
+
+### 9.5 Tests
+
+`tests/test_sage_odbc_409.py` — **28 tests** :
+
+1. classification `_is_transient` (transitoires, verrou, `42000` définitif) ;
+2. `_connect_with_retry` : 2 échecs puis succès, 3 appels, attentes 1/3 s ;
+3. `_connect_with_retry` : `42000` non retenté ;
+4. `get_pool()` et `_checkout()` passent par `_connect_with_retry()` ;
+5. `enqueue` + `flush` : 2 échecs Sage puis succès, ligne supprimée, callback appelé ;
+6. `flush` après 10 échecs : `mark_to_monitor` appelé une fois, ligne conservée, plus de rejeu ;
+7. callback `_pending_write_done` : cache passé à `CERTIFIE` ;
+8. 409 sans GET : `mark_certified` non appelé, lookup invalidé, aucun marquage ;
+9. 409 avec GET : écriture Sage, `DEJA_CERTIFIE`, numéro SFEC mémorisé ;
+10. 409 avec écriture Sage verrouillée : mise en file, cache `EN_COURS` ;
+11. 409 dans `_certify_single_worker` et dans `certify_single` : aucun marquage sans preuve ;
+12. certification fraîche dont l'écriture Sage échoue : mise en file ;
+13. persistance de `invoice_number` dans `sfec-certified.json`, sans doublon ;
+14. GET SFEC : 5xx retenté (2/5 s), 404 immédiat, offline épuisé, 400 non retenté ;
+15. invalidation du lookup ;
+16. ancien `DEJA_CERTIFIE` sans numéro rejoué, avec numéro non rejoué.
+
+Commande exécutée :
+
+```text
+pytest tests/test_sfec_avoirs.py tests/test_sfec_centimes.py \
+  tests/test_certification_retry.py tests/test_article_sync.py \
+  tests/test_sqlite_concurrency.py tests/test_avoirs.py \
+  tests/test_billing_security.py tests/test_dashboard_security.py \
+  tests/test_directory_security.py tests/test_smoke.py \
+  tests/test_bootstrap.py tests/test_sfec_anomalies.py \
+  tests/test_mirror_totals.py tests/test_sage_odbc_409.py -q
+→ 151 tests OK
+```
+
+### 9.6 Critères d'acceptation restant à vérifier en exploitation
+
+Les critères de la §6 ne peuvent pas être validés uniquement en local : ils nécessitent Sage et SFEC réels.
+
+- [ ] 0 `Configuration base de donnees incomplete` en régime nominal.
+- [ ] Une facture certifiée SFEC mais non écrite dans Sage est rejouée au cycle suivant et finit `CERTIFIE`.
+- [ ] 0 `DEJA_CERTIFIE` sans `SFEC_NUM_CERTIF` après la première passe de récupération.
+- [ ] Les 22 factures du 21/10 passent `CERTIFIE` (contrôle dans `sfec-certified.json` et dans `F_DOCENTETE`).
+- [ ] `error.log` ne contient plus de trace `409` non suivie d'une récupération.
+- [ ] `sfec_pending_writes` est vide en régime nominal ; toute ligne restante est soit en cours de retry, soit abandonnée après 10 essais et visible dans `/pending` avec un motif.
+
+Aucun `config.json` n'a été modifié : les valeurs recommandées (`connection_timeout_ms: 8000`, `pool_min: 2`, `pool_max: 6`) restent à appliquer sur le poste client si elles ne le sont pas déjà.

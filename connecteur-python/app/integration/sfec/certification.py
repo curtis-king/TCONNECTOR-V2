@@ -11,4 +11,5 @@ from app.integration.sfec.endpoints import (  # noqa: F401
     get_certified_by_sage_id,
     get_all_certified,
     clear_failed_certifications,
+    record_certified_invoice,
 )

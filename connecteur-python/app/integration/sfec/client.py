@@ -1,10 +1,29 @@
 import json
 import logging
+import time
 import requests
 from app.config.manager import get_sfec_config
 from app.sync.connectivity import is_online, check_now
 
 logger = logging.getLogger("t-connector.sfec")
+
+_VERIFY_RETRY_DELAYS = (2, 5)
+
+
+def _is_retryable_verify_error(exc):
+    """Erreurs qui justifient de relire SFEC (reseau, timeout, 5xx)."""
+    if isinstance(exc, NetworkOfflineError):
+        return True
+    try:
+        status_code = int(getattr(exc, "status_code", 0) or 0)
+    except (TypeError, ValueError):
+        status_code = 0
+    if 500 <= status_code < 600:
+        return True
+    msg = str(exc).lower()
+    return any(marker in msg for marker in (
+        "timeout", "timed out", "connexion", "connection", "reseau", "network",
+    ))
 
 
 class NetworkOfflineError(Exception):
@@ -126,29 +145,63 @@ class SfecClient:
             logger.warning("SFEC verification error pour %s: %s", identifier, e)
             return False
 
+    def _verify_by_invoice_number_once(self, invoice_number):
+        page = 1
+        while True:
+            result = self.list_invoices(page=page, page_size=500)
+            invoices = result.get("invoices", [])
+            if not invoices:
+                break
+            for inv in invoices:
+                seller_num = inv.get("seller_invoice_number", "")
+                inv_num = inv.get("invoice_number", "")
+                if seller_num == invoice_number or inv_num == invoice_number:
+                    return inv
+            total = result.get("total", result.get("total_count", 0))
+            if page * 500 >= total:
+                break
+            page += 1
+        return None
+
     def verify_by_invoice_number(self, invoice_number):
-        try:
-            page = 1
-            while True:
-                result = self.list_invoices(page=page, page_size=500)
-                invoices = result.get("invoices", [])
-                if not invoices:
-                    break
-                for inv in invoices:
-                    seller_num = inv.get("seller_invoice_number", "")
-                    inv_num = inv.get("invoice_number", "")
-                    if seller_num == invoice_number or inv_num == invoice_number:
-                        return inv
-                total = result.get("total", result.get("total_count", 0))
-                if page * 500 >= total:
-                    break
-                page += 1
+        """Retrouve une facture SFEC par numero Sage/SFEC.
+
+        3 tentatives (2 s puis 5 s) sur erreur reseau, timeout et 5xx.
+        Un 404 signifie que la certification n'existe pas encore : retour
+        immediat a None, sans retry. Apres epuisement, None est retourne
+        pour que l'appelant NE marque PAS la facture comme certifiee.
+        """
+        invoice_number = str(invoice_number or "").strip()
+        if not invoice_number:
             return None
-        except Exception as e:
-            if isinstance(e, NetworkOfflineError):
-                return None
-            logger.warning("SFEC verification par numero error pour %s: %s", invoice_number, e)
-            return None
+
+        for attempt in range(3):
+            try:
+                return self._verify_by_invoice_number_once(invoice_number)
+            except Exception as e:  # noqa: BLE001
+                try:
+                    status_code = int(getattr(e, "status_code", 0) or 0)
+                except (TypeError, ValueError):
+                    status_code = 0
+                if status_code == 404:
+                    logger.warning(
+                        "SFEC verification: facture %s non trouvee (404)",
+                        invoice_number,
+                    )
+                    return None
+                if not _is_retryable_verify_error(e) or attempt >= 2:
+                    logger.warning(
+                        "SFEC verification par numero error pour %s: %s",
+                        invoice_number, e,
+                    )
+                    return None
+                delay = _VERIFY_RETRY_DELAYS[attempt]
+                logger.warning(
+                    "SFEC verification %s: %s - retry dans %ds",
+                    invoice_number, e, delay,
+                )
+                time.sleep(delay)
+        return None
 
     def ping(self):
         try:

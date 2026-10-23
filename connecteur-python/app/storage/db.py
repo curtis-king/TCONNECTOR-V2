@@ -261,6 +261,19 @@ SCHEMA = """
             CREATE INDEX IF NOT EXISTS idx_sfec_anomalies_detected
                 ON sfec_anomalies(detected_at DESC);
 
+            CREATE TABLE IF NOT EXISTS sfec_pending_writes (
+                invoice_id TEXT PRIMARY KEY,
+                certification_number TEXT,
+                signature TEXT,
+                qr_code TEXT,
+                certification_date TEXT,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT DEFAULT '',
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_sfec_pending_writes_created
+                ON sfec_pending_writes(created_at);
+
             CREATE TABLE IF NOT EXISTS invoice_lines (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 invoice_id INTEGER NOT NULL,

@@ -13,9 +13,11 @@ from app.integration.sage.database import (
 )
 from app.integration.sfec.endpoints import (
     certify_invoice, resolve_invoice_number, get_certified_by_sage_id,
+    record_certified_invoice,
     _extract_cert_data as _extract_sfec_cert_data,
 )
 from app.integration.sfec.client import SfecClient, NetworkOfflineError
+from app.integration.sfec.pending_writes import enqueue, flush
 from app.storage.db import fetch_sfec_invoice_links
 from app.sync.connectivity import is_online, check_now, get_status
 
@@ -66,6 +68,19 @@ def _should_retry(numero):
     return time.time() >= _retry_after.get(numero, 0)
 
 
+def _has_certification_proof(invoice):
+    """Vrai si Sage contient deja un numero de certification SFEC."""
+    return bool(str(invoice.get("sfec_num_certif") or "").strip())
+
+
+def _needs_certification_recovery(invoice):
+    """Un DEJA_CERTIFIE sans numero est une trace du bug 409 a reparer."""
+    return (
+        invoice.get("sfec_statut") == "DEJA_CERTIFIE"
+        and not _has_certification_proof(invoice)
+    )
+
+
 def _schedule_retry(numero):
     n = _retry_attempts.get(numero, 0)
     delay = _RETRY_BACKOFF_S[min(n, len(_RETRY_BACKOFF_S) - 1)]
@@ -77,6 +92,61 @@ def _schedule_retry(numero):
 def _reset_retry(numero):
     _retry_attempts.pop(numero, None)
     _retry_after.pop(numero, None)
+
+
+def _invalidate_sfec_lookup():
+    """Force un rechargement du lookup SFEC au prochain appel.
+
+    Un 409 prouve que la copie en cache est obsolete : la facture existe
+    cote SFEC alors que le cache l'ignorait.
+    """
+    global _sfec_lookup_cache, _sfec_lookup_ts
+    _sfec_lookup_cache = None
+    _sfec_lookup_ts = 0
+
+
+def _queue_pending_write(invoice, cert_number, sig, qr, cert_date, error):
+    """Met une certification en file si l'ecriture Sage echoue.
+
+    Retourne False si meme SQLite est indisponible : l'appelant doit alors
+    conserver son chemin d'erreur normal (retry) pour ne rien perdre.
+    """
+    invoice_id = invoice.get("id", "") if isinstance(invoice, dict) else ""
+    try:
+        enqueue(invoice_id, cert_number, sig, qr, cert_date, str(error))
+    except Exception as e:  # noqa: BLE001
+        logger.error("Mise en file SFEC impossible pour %s: %s", invoice_id, e)
+        return False
+    if isinstance(invoice, dict):
+        with _lock:
+            invoice["sfec_statut"] = "EN_COURS"
+    logger.warning(
+        "Ecriture Sage differee pour %s (certification SFEC conservee): %s",
+        invoice_id, error,
+    )
+    return True
+
+
+def _pending_write_done(invoice_id, cert_number=""):
+    """Callback appele par pending_writes.flush apres une ecriture reussie."""
+    with _lock:
+        for inv in _cache["sales_invoices"]:
+            if inv.get("id") == invoice_id:
+                inv["sfec_statut"] = "CERTIFIE"
+                if cert_number:
+                    inv["sfec_num_certif"] = cert_number
+                break
+    logger.info("Ecriture Sage en attente terminee: %s (certif: %s)",
+                invoice_id, cert_number or "-")
+
+
+def _flush_pending_writes():
+    """Rejoue les certifications qui n'avaient pas pu etre ecrites dans Sage."""
+    try:
+        return flush(limit=20, on_success=_pending_write_done)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Rejeu des ecritures SFEC en attente echoue: %s", e)
+        return 0
 
 
 def _log_certify_error(numero, message):
@@ -325,7 +395,10 @@ def _process_retry_queue():
         certified_in_db = fetch_certified_invoices()
     except Exception:
         pass
-    certified_ids = {c["id"] for c in certified_in_db}
+    certified_ids = {
+        c["id"] for c in certified_in_db
+        if str(c.get("certif_num") or "").strip()
+    }
 
     sfec_lookup = _build_sfec_lookup()
 
@@ -408,13 +481,25 @@ def _process_retry_queue():
                 invoice["sfec_invoice_number"] = sfec_invoice_number
             cert_number, sig, qr, cert_date = _extract_sfec_cert_data(result)
 
-            write_sfec_to_invoice(
-                invoice_id=invoice_id,
-                certification_number=cert_number,
-                signature=sig,
-                qr_code=qr,
-                certification_date=cert_date,
-            )
+            try:
+                write_sfec_to_invoice(
+                    invoice_id=invoice_id,
+                    certification_number=cert_number,
+                    signature=sig,
+                    qr_code=qr,
+                    certification_date=cert_date,
+                )
+            except Exception as ex:  # noqa: BLE001
+                if not _queue_pending_write(
+                        invoice, cert_number, sig, qr, cert_date, ex):
+                    raise
+                _reset_retry(numero)
+                success += 1
+                logger.warning(
+                    "Retry queue: certification SFEC %s conservee, ecriture Sage differee",
+                    numero,
+                )
+                continue
 
             with _lock:
                 invoice["sfec_statut"] = "CERTIFIE"
@@ -636,50 +721,76 @@ def _build_sfec_lookup():
 
 
 def _handle_already_certified(invoice, sfec_lookup=None):
+    """Ecrit dans Sage une certification deja existante cote SFEC.
+
+    Retourne True uniquement si une preuve de certification a ete trouvee.
+    Ne marque JAMAIS la facture DEJA_CERTIFIE sans numero/signature : cela
+    la rendrait invisible alors que Sage n'aurait aucune preuve (audit
+    2026-10-21 : 22 x 409 sans recuperation).
+    """
     numero = invoice.get("numero", "")
     sfec_inv = None
     if sfec_lookup and numero in sfec_lookup:
         sfec_inv = sfec_lookup[numero]
 
     if not sfec_inv and numero:
+        # Le cache vient d'etre contredit par un 409 (ou ne contenait pas la
+        # facture) : il ne doit pas resservir une reponse perimee.
+        _invalidate_sfec_lookup()
         try:
             client = SfecClient()
             sfec_inv = client.verify_by_invoice_number(numero)
         except Exception as ex:
-            logger.debug("GET SFEC direct echoue pour %s: %s", numero, ex)
+            logger.warning("GET SFEC direct echoue pour %s: %s", numero, ex)
 
-    if sfec_inv:
-        cert_number, sig, qr, cert_date = _extract_sfec_cert_data(sfec_inv)
-        sfec_invoice_number = str(sfec_inv.get("invoice_number") or "").strip()
-        if sfec_invoice_number:
-            invoice["sfec_invoice_number"] = sfec_invoice_number
-        if cert_number or qr:
-            try:
-                write_sfec_to_invoice(
-                    invoice_id=invoice["id"],
-                    certification_number=cert_number,
-                    signature=sig,
-                    qr_code=qr,
-                    certification_date=cert_date,
-                )
-                with _lock:
-                    invoice["sfec_statut"] = "DEJA_CERTIFIE"
-                    invoice["sfec_num_certif"] = cert_number
-                logger.info("Certif SFEC recuperee et ecrite dans Sage: %s (certif: %s)",
-                            numero, cert_number)
-            except Exception as ex:
-                logger.error("Ecriture SFEC echouee (deja certifiee) pour %s: %s", numero, ex)
-        else:
-            try:
-                mark_certified(invoice["id"], "DEJA_CERTIFIE")
-            except Exception:
-                pass
-            logger.debug("Facture %s deja certifiee SFEC (pas de donnees certif dans GET)", numero)
-    else:
-        try:
-            mark_certified(invoice["id"], "DEJA_CERTIFIE")
-        except Exception:
-            pass
+    if not sfec_inv:
+        logger.warning(
+            "409 pour %s mais certification SFEC illisible: facture laissee "
+            "en attente et verification replanifiee", numero,
+        )
+        return False
+
+    # Persiste le numero SFEC d'origine (utile pour original_sfec_invoice_number
+    # d'un avoir), sans le confondre avec la signature de certification.
+    sfec_invoice_number = str(sfec_inv.get("invoice_number") or "").strip()
+    if sfec_invoice_number:
+        invoice["sfec_invoice_number"] = sfec_invoice_number
+    try:
+        record_certified_invoice(invoice.get("id", ""), sfec_inv)
+    except Exception as ex:  # noqa: BLE001
+        logger.warning("Persistance certification SFEC %s echouee: %s", numero, ex)
+
+    cert_number, sig, qr, cert_date = _extract_sfec_cert_data(sfec_inv)
+    if not (cert_number or qr):
+        logger.warning(
+            "Facture %s presente sur SFEC mais sans donnee de certification "
+            "exploitable: aucun marquage, nouvelle verification planifiee",
+            numero,
+        )
+        return False
+
+    try:
+        write_sfec_to_invoice(
+            invoice_id=invoice["id"],
+            certification_number=cert_number,
+            signature=sig,
+            qr_code=qr,
+            certification_date=cert_date,
+        )
+    except Exception as ex:  # noqa: BLE001
+        # Sage est verrouille/indisponible : la certification est conservee
+        # localement et sera rejouee au prochain cycle.
+        if not _queue_pending_write(
+                invoice, cert_number, sig, qr, cert_date, ex):
+            return False
+        return True
+
+    with _lock:
+        invoice["sfec_statut"] = "DEJA_CERTIFIE"
+        invoice["sfec_num_certif"] = cert_number
+    logger.info("Certif SFEC recuperee et ecrite dans Sage: %s (certif: %s)",
+                numero, cert_number)
+    return True
 
 
 def reconcile_sfec_status():
@@ -750,13 +861,20 @@ def _certify_single_worker(invoice, sfec_lookup):
             invoice["sfec_invoice_number"] = sfec_invoice_number
         cert_number, sig, qr, cert_date = _extract_sfec_cert_data(result)
 
-        write_sfec_to_invoice(
-            invoice_id=invoice["id"],
-            certification_number=cert_number,
-            signature=sig,
-            qr_code=qr,
-            certification_date=cert_date,
-        )
+        try:
+            write_sfec_to_invoice(
+                invoice_id=invoice["id"],
+                certification_number=cert_number,
+                signature=sig,
+                qr_code=qr,
+                certification_date=cert_date,
+            )
+        except Exception as ex:  # noqa: BLE001
+            if not _queue_pending_write(
+                    invoice, cert_number, sig, qr, cert_date, ex):
+                raise
+            _reset_retry(numero)
+            return ("queued", numero, cert_number)
 
         with _lock:
             invoice["sfec_statut"] = "CERTIFIE"
@@ -825,6 +943,13 @@ def auto_certify_invoices():
 
 def _auto_certify_invoices_locked():
     global _startup_reset_done
+
+    # Une certification peut avoir ete obtenue alors que Sage etait verrouille.
+    # On rejoue ces ecritures avant toute nouvelle certification, meme si
+    # SFEC est desactive ou internet indisponible : l'ecriture Sage ne depend
+    # pas du reseau.
+    _flush_pending_writes()
+
     config = get_config()
     sfec_cfg = config.get("sfec", {})
 
@@ -895,16 +1020,21 @@ def _auto_certify_invoices_locked():
 
         if numero in sfec_lookup:
             sfec_matched += 1
-            if sfec_statut not in ("DEJA_CERTIFIE", "CERTIFIE"):
+            if (sfec_statut not in ("DEJA_CERTIFIE", "CERTIFIE")
+                    or _needs_certification_recovery(inv)):
+                # Un DEJA_CERTIFIE sans numero est une trace du bug 409 :
+                # on reecrit la preuve des que SFEC la fournit.
                 try:
                     _handle_already_certified(inv, sfec_lookup)
                 except Exception:
                     pass
             continue
 
-        # Ne jamais recertifier une facture deja certifiee : si elle n'est
-        # pas dans le lookup SFEC, ce sera traite par la reconciliation/08.
-        if sfec_statut in ("CERTIFIE", "DEJA_CERTIFIE"):
+        # Ne recertifier que si Sage contient deja une preuve. Un
+        # DEJA_CERTIFIE sans SFEC_NUM_CERTIF doit repasser par la
+        # recuperation/409 au lieu de rester invisible a vie.
+        if (sfec_statut in ("CERTIFIE", "DEJA_CERTIFIE")
+                and not _needs_certification_recovery(inv)):
             continue
 
         if _has_zero_amount(inv):
@@ -966,7 +1096,7 @@ def _auto_certify_invoices_locked():
                 inv = futures[future]
                 processed_ids.add(inv["id"])
                 status = result[0]
-                if status == "ok":
+                if status in ("ok", "queued"):
                     newly_certified += 1
                 elif status == "offline":
                     offline_detected = True
@@ -984,7 +1114,7 @@ def _auto_certify_invoices_locked():
             try:
                 result = _certify_single_worker(invoice, sfec_lookup)
                 status = result[0]
-                if status == "ok":
+                if status in ("ok", "queued"):
                     newly_certified += 1
                 elif status == "offline":
                     for remaining in to_certify[idx + 1:]:
@@ -1089,13 +1219,26 @@ def certify_single(invoice_id):
             invoice["sfec_invoice_number"] = sfec_invoice_number
         cert_number, sig, qr, cert_date = _extract_sfec_cert_data(result)
 
-        write_sfec_to_invoice(
-            invoice_id=invoice_id,
-            certification_number=cert_number,
-            signature=sig,
-            qr_code=qr,
-            certification_date=cert_date,
-        )
+        try:
+            write_sfec_to_invoice(
+                invoice_id=invoice_id,
+                certification_number=cert_number,
+                signature=sig,
+                qr_code=qr,
+                certification_date=cert_date,
+            )
+        except Exception as ex:  # noqa: BLE001
+            if not _queue_pending_write(
+                    invoice, cert_number, sig, qr, cert_date, ex):
+                raise
+            _reset_retry(numero)
+            return {
+                "success": True,
+                "queued": True,
+                "certification_number": cert_number,
+                "qr_code": qr,
+                "note": "Certification SFEC conservee, ecriture Sage en attente",
+            }
 
         with _lock:
             invoice["sfec_statut"] = "CERTIFIE"
@@ -1115,30 +1258,21 @@ def certify_single(invoice_id):
     except Exception as e:
         status_code = getattr(e, "status_code", None)
         if status_code == 409:
-            try:
-                mark_certified(invoice_id, "DEJA_CERTIFIE")
-            except Exception:
-                pass
-            try:
-                sfec_lookup = _build_sfec_lookup()
-                sfec_inv = sfec_lookup.get(numero) if sfec_lookup else None
-                if sfec_inv:
-                    cert_number, sig, qr, cert_date = _extract_sfec_cert_data(sfec_inv)
-                    if cert_number or qr:
-                        write_sfec_to_invoice(
-                            invoice_id=invoice_id,
-                            certification_number=cert_number,
-                            signature=sig,
-                            qr_code=qr,
-                            certification_date=cert_date,
-                        )
-                        with _lock:
-                            invoice["sfec_statut"] = "DEJA_CERTIFIE"
-                            invoice["sfec_num_certif"] = cert_number
-            except Exception as ex:
-                logger.error("Ecriture SFEC echouee (manuel deja certifiee) pour %s: %s", invoice_id, ex)
+            # Ne jamais marquer DEJA_CERTIFIE sans preuve : on relit SFEC et
+            # on n'ecrit dans Sage que si un numero/signature est disponible.
+            recovered = _handle_already_certified(invoice)
             _reset_retry(numero)
-            return {"success": True, "certification_number": "DEJA_CERTIFIE", "note": "Facture deja certifiee sur SFEC"}
+            if recovered:
+                return {
+                    "success": True,
+                    "certification_number": invoice.get("sfec_num_certif", ""),
+                    "note": "Facture deja certifiee sur SFEC",
+                }
+            return {
+                "success": False,
+                "pending": True,
+                "error": "Certification SFEC existante mais illisible: verification replanifiee",
+            }
         if status_code == 502:
             try:
                 mark_to_monitor(invoice_id, "SFEC 502: {}".format(str(e)[:180]))
