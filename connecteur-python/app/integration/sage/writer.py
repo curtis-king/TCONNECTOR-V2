@@ -345,6 +345,31 @@ def read_invoices_from_sage():
                     inv["valide"] = 0
                 invoices.append(inv)
 
+            # La ventilation fiscale du miroir a besoin des lignes (TVA
+            # reelle, remises, centimes). Sans elles, on retomberait sur le
+            # delta TTC-HT, qui melange TVA et taxes additionnelles.
+            try:
+                from app.integration.sage.database import fetch_doc_lines_batch
+                keys = []
+                for inv in invoices:
+                    try:
+                        do_type = int(float(inv.get("sage_type") or 6))
+                    except (TypeError, ValueError):
+                        do_type = 6
+                    keys.append((do_type, inv.get("numero", "")))
+                lines_map = fetch_doc_lines_batch(0, keys, cursor=cur)
+                for inv in invoices:
+                    try:
+                        do_type = int(float(inv.get("sage_type") or 6))
+                    except (TypeError, ValueError):
+                        do_type = 6
+                    inv["lignes"] = lines_map.get(
+                        (do_type, inv.get("numero", "")), [])
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Lignes Sage indisponibles pour le miroir: %s", exc)
+                for inv in invoices:
+                    inv.setdefault("lignes", [])
+
             logger.info(
                 "Factures/avoirs Sage lus: %d (SFEC cols detectees: %s)",
                 len(invoices), sorted(sfec_cols_present) or "aucune"
@@ -360,23 +385,19 @@ def sync_sage_invoice_to_sqlite(sage_inv):
     if not numero:
         return None
 
+    # Import local : bidirectional importe deja ce module au niveau global.
+    from app.sync.bidirectional import _mirror_fields
+
     montant_ht = sage_inv.get("montant_ht", 0) or 0
     montant_ttc = sage_inv.get("montant_ttc", 0) or 0
-    montant_tva = round(float(montant_ttc) - float(montant_ht), 2)
-    try:
-        sage_type = int(float(sage_inv.get("sage_type", 6) or 6))
-    except (TypeError, ValueError):
-        sage_type = 6
-    try:
-        sage_domaine = int(float(sage_inv.get("sage_domaine", 0) or 0))
-    except (TypeError, ValueError):
-        sage_domaine = 0
-    sage_piece = sage_inv.get("sage_piece") or numero
-    type_doc = "avoir" if (
-        sage_type == 7
-        or sage_inv.get("type_doc") == "avoir"
-        or float(montant_ttc) < 0
-    ) else "vente"
+    m = _mirror_fields(sage_inv)
+    if m.get("_suspect_reason"):
+        logger.debug("Miroir fiscal non fiable pour %s: %s",
+                     numero, m["_suspect_reason"])
+    type_doc = m["type_doc"]
+    sage_type = m["sage_type"]
+    sage_domaine = m["sage_domaine"]
+    sage_piece = m["sage_piece"]
 
     with get_sqlite_cursor() as cur:
         cur.execute("SELECT id FROM invoices WHERE numero = ? AND source = 'sage'", (numero,))
@@ -386,7 +407,11 @@ def sync_sage_invoice_to_sqlite(sage_inv):
             cur.execute("""
                 UPDATE invoices SET
                     tiers_code = ?, montant_ht = ?, montant_tva = ?,
-                    montant_ttc = ?, montant_restant = ?,
+                    montant_ttc = ?, montant_restant = ?, montant_ht_brut = ?,
+                    total_tax_t_amount = ?, total_tax_r_amount = ?,
+                    total_exempt_amount = ?, discount_amount = ?,
+                    total_line_discount_amount = ?, additional_cent_tax = ?,
+                    electronic_stamp_duty = ?,
                     type_doc = ?, sage_domaine = ?, sage_type = ?, sage_piece = ?,
                     tiers_nom = CASE WHEN ? <> '' THEN ? ELSE tiers_nom END,
                     tiers_niu = CASE WHEN ? <> '' THEN ? ELSE tiers_niu END,
@@ -399,8 +424,12 @@ def sync_sage_invoice_to_sqlite(sage_inv):
                 WHERE id = ?
             """, (
                 sage_inv.get("tiers_code", ""),
-                montant_ht, montant_tva, montant_ttc,
-                sage_inv.get("montant_restant", 0),
+                montant_ht, m["montant_tva"], montant_ttc,
+                sage_inv.get("montant_restant", 0), m["montant_ht_brut"],
+                m["total_tax_t_amount"], m["total_tax_r_amount"],
+                m["total_exempt_amount"], m["discount_amount"],
+                m["total_line_discount_amount"], m["additional_cent_tax"],
+                m["electronic_stamp_duty"],
                 type_doc, sage_domaine, sage_type, sage_piece,
                 sage_inv.get("tiers_nom", ""), sage_inv.get("tiers_nom", ""),
                 sage_inv.get("tiers_niu", ""), sage_inv.get("tiers_niu", ""),
@@ -428,18 +457,26 @@ def sync_sage_invoice_to_sqlite(sage_inv):
                     numero, date_facture, tiers_code, reference,
                     tiers_nom, tiers_niu, tiers_adresse, tiers_telephone, tiers_email,
                     montant_ht, montant_tva, montant_ttc, montant_restant,
+                    montant_ht_brut, total_tax_t_amount, total_tax_r_amount,
+                    total_exempt_amount, discount_amount, total_line_discount_amount,
+                    additional_cent_tax, electronic_stamp_duty,
                     type_doc, statut, valide, source, sfec_statut, sfec_num_certif,
                     sfec_signature, sfec_qr_code, synced_sage,
                     sage_domaine, sage_type, sage_piece
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sage', ?, ?, ?, ?, 1, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                          ?, ?, ?, ?, ?, 'sage', ?, ?, ?, ?, 1, ?, ?, ?)
             """, (
                 numero, sage_inv.get("date_facture", ""),
                 sage_inv.get("tiers_code", ""), sage_inv.get("reference", ""),
                 sage_inv.get("tiers_nom", ""), sage_inv.get("tiers_niu", ""),
                 sage_inv.get("tiers_adresse", ""), sage_inv.get("tiers_telephone", ""),
                 sage_inv.get("tiers_email", ""),
-                montant_ht, montant_tva, montant_ttc,
-                sage_inv.get("montant_restant", 0),
+                montant_ht, m["montant_tva"], montant_ttc,
+                sage_inv.get("montant_restant", 0), m["montant_ht_brut"],
+                m["total_tax_t_amount"], m["total_tax_r_amount"],
+                m["total_exempt_amount"], m["discount_amount"],
+                m["total_line_discount_amount"], m["additional_cent_tax"],
+                m["electronic_stamp_duty"],
                 type_doc, statut,
                 1 if sage_inv.get("valide") else 0,
                 sage_inv.get("sfec_statut", ""), sage_inv.get("sfec_num_certif", ""),

@@ -5,7 +5,7 @@ import pyodbc
 import logging
 import time
 from datetime import datetime
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from app.config.manager import get_db_config
 
 
@@ -1087,11 +1087,15 @@ def fetch_doc_lines(domaine, type_doc, piece):
     except Exception:
         return []
 
-def fetch_doc_lines_batch(domaine, keys, chunk_size=200):
+def fetch_doc_lines_batch(domaine, keys, chunk_size=200, cursor=None):
     """Lignes de N pieces en 1 requete par chunk (anti N+1).
 
     keys : liste de (do_type, numero). Retour : {(do_type, numero): [lignes]}.
     Meme SELECT que fetch_doc_lines. Chunks de 200 cles (600 params < limite 2100 pyodbc).
+
+    `cursor` permet de reutiliser un curseur Sage deja ouvert. C'est
+    necessaire dans read_invoices_from_sage() pour eviter une connexion
+    imbriquee (deadlock avec le repli mono-connexion).
     """
     t = get_table_map()
     if not t["document_lines"] or not keys:
@@ -1107,7 +1111,8 @@ def fetch_doc_lines_batch(domaine, keys, chunk_size=200):
         for dt, piece in chunk:
             params.extend([domaine, dt, piece])
         try:
-            with get_cursor() as cur:
+            ctx = nullcontext(cursor) if cursor is not None else get_cursor()
+            with ctx as cur:
                 cur.execute("""
                     SELECT
                         CAST(l.DO_Domaine AS VARCHAR) + '-' + CAST(l.DO_Type AS VARCHAR) + '-' + l.DO_Piece + '-' + CAST(l.DL_Ligne AS VARCHAR) AS id,

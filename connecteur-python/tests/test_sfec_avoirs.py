@@ -355,7 +355,8 @@ def test_miroir_avoir_ecrit_type_et_sage():
         assert row["sage_type"] == 7
         assert row["sage_domaine"] == 0
         assert row["sage_piece"] == numero
-        assert row["montant_tva"] == -189
+        assert row["montant_tva"] == -180
+        assert row["additional_cent_tax"] == -9
     finally:
         _purge()
 
@@ -395,7 +396,8 @@ def test_pull_corrige_une_ligne_existante_en_avoir():
             ).fetchone()
         assert row["type_doc"] == "avoir"
         assert row["sage_type"] == 7
-        assert row["montant_tva"] == -189
+        assert row["montant_tva"] == -180
+        assert row["additional_cent_tax"] == -9
     finally:
         _purge()
 

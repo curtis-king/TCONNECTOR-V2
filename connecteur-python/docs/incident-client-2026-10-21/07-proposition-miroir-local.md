@@ -358,3 +358,91 @@ Attendu : TVA non nulle sur ~177 000 lignes, ~5 585 avoirs, écart résiduel < 1
 | `sage_type` écrasé à tort | Utiliser `do_type_raw` fourni par Sage, jamais une valeur devinée |
 
 **Rollback** : restaurer la copie de `tconnector.db` ; revert de `bidirectional.py` et `writer.py`.
+
+---
+
+## 9. État d'implémentation — 2026-10-22
+
+### 9.1 Ventilation conservatrice dans `_mirror_fields()`
+
+`app/sync/bidirectional.py` contient désormais `_mirror_fields()`, avec trois niveaux de confiance :
+
+1. **Lignes cohérentes avec l'en-tête** : la TVA est la somme des `montant_tva` de lignes, répartie entre `total_tax_t_amount` (taux ≥ 18 %) et `total_tax_r_amount` (taux 5 %), `total_exempt_amount` pour les lignes à 0 %, et `additional_cent_tax = compute_cent_tax(TVA T + TVA R)`. C'est le cas nominal du modèle Congo.
+2. **Ratio connu sans lignes** : `1,000`, `1,0525`, `1,189`, `1,219`. Le 3 % éventuel du ratio `1,219` est calculé comme résidu et **signalé**, jamais absorbé dans `additional_cent_tax`.
+3. **Ratio inconnu ou lignes incohérentes** : `montant_tva` reprend le delta historique `TTC - HT`, les centimes restent à 0 et un motif `_suspect_reason` est produit. Le backfill n'écrit pas ces lignes.
+
+Deux garde-fous ont été ajoutés par rapport au texte initial :
+
+- les ratios **sans centime** `1,05`, `1,18` et `1,20` (base BIJOU à 20 %, ou 18 % sans centime) sont reconnus pour écrire la TVA exacte **sans inventer de centimes**. Ils restent `_reliable=False` et sont exportés en suspects ;
+- les taux non standard (`3 %`, `0,25 %`, etc.) ne sont **ni** de la TVA réduite **ni** des centimes : ils sont exclus de `montant_tva`, de `total_tax_r_amount` et de `compute_cent_tax()`, puis signalés. Le miroir ne stocke pas encore `additional_taxes` ; le 3 % n'est donc pas persisté.
+
+La sémantique des lignes reste celle de la proposition 01 : `montant_ht_brut` = brut avant remise, `discount_amount` / `total_line_discount_amount` = remise de ligne, `montant_tva` = TVA réelle hors centimes et taxes additionnelles.
+
+### 9.2 Chargement des lignes et écriture du miroir
+
+`app/integration/sage/writer.py` :
+
+- `read_invoices_from_sage()` charge désormais les lignes en lot via `fetch_doc_lines_batch(0, keys)`. Sans cela, le pull principal retombait toujours sur le delta `TTC - HT` ;
+- `sync_sage_invoice_to_sqlite()` écrit les colonnes fiscales à l'`INSERT` **et** à l'`UPDATE` : `montant_ht_brut`, `total_tax_t_amount`, `total_tax_r_amount`, `total_exempt_amount`, `discount_amount`, `total_line_discount_amount`, `additional_cent_tax`, `electronic_stamp_duty`, `type_doc`, `sage_domaine`, `sage_type`, `sage_piece`.
+
+`app/sync/bidirectional.py::_update_from_sage()` écrit les mêmes colonnes pour les factures déjà présentes, en conservant la logique SFEC existante. Aucune de ces fonctions n'écrit dans Sage : la proposition 07 ne fait que lire Sage et mettre à jour `data/tconnector.db`.
+
+### 9.3 Backfill
+
+`scripts/backfill_mirror_totals.py` :
+
+- **dry-run par défaut** ; `--apply` est obligatoire pour exécuter les `UPDATE` ;
+- ne sélectionne que `source='sage' AND (montant_tva IS NULL OR montant_tva = 0) AND ABS(montant_ttc - montant_ht) > 0.01` ;
+- classe par ratio (`1,0`, `1,0525`, `1,189`, `1,219`), écrit `montant_tva`, `additional_cent_tax`, `total_tax_t_amount`, `total_tax_r_amount`, `total_exempt_amount` et `type_doc` ;
+- pour un avoir, conserve les montants négatifs (la valeur absolue est faite dans le payload `creditNote`) ;
+- écrit un CSV UTF-8 BOM des suspects (`numero`, `ht`, `ttc`, `ratio`, `motif`) ; un ratio inconnu n'est **pas** corrigé ;
+- appelle `init_database()` avant de travailler, pour garantir les colonnes et la table `settings`.
+
+Le script ne touche jamais à BIJOU ni à Sage. Les données BIJOU restent modifiables depuis l'interface Sage ; le miroir sera recalculé au prochain pull, sans écriture en retour.
+
+### 9.4 Tests
+
+`tests/test_mirror_totals.py` — 19 tests :
+
+1. TVA 18 % + centime ;
+2. TVA 18 % + 5 % + centimes ;
+3. avoir `DO_Type=7` ;
+4. facture négative `DO_Type=6` conservée en négatif ;
+5. ligne à 3 % non absorbée dans la TVA réduite ni dans les centimes ;
+6. ligne à 0,25 % non absorbée dans la TVA réduite ni dans les centimes ;
+7. ratio `1,189` sans lignes ;
+8. ratio `1,20` sans centime, TVA écrite sans centime inventé ;
+9. ratio `1,219` sans lignes : 300 FCFA de taxe 3 % signalés ;
+10. exonération `TTC = HT` ;
+11. BIJOU 20 % avec lignes, sans centime ;
+12. incohérence en-tête/lignes de type `FA00005` ;
+13. lignes à 20 % contredisant un en-tête à `1,189` : la TVA des lignes n'est pas écrasée ;
+14. `_update_from_sage()` écrit bien `montant_tva` et `additional_cent_tax` ;
+15. `sync_sage_invoice_to_sqlite()` écrit les colonnes fiscales ;
+16. backfill `1,219` : 300 FCFA de taxe 3 % signalés, pas absorbés ;
+17. backfill ratio inconnu : aucune écriture ;
+18. backfill 5 % : alimente `total_tax_r_amount` ;
+19. `read_invoices_from_sage()` attache les lignes en réutilisant le même curseur Sage.
+
+Deux assertions de `tests/test_sfec_avoirs.py` ont été mises à jour : un avoir de `-1 000 / -1 189` porte désormais `montant_tva=-180` et `additional_cent_tax=-9` (au lieu de `-189`), conformément à la ventilation TVA réelle.
+
+Résultat local :
+
+```text
+pytest tests/test_sfec_avoirs.py tests/test_sfec_centimes.py \
+  tests/test_certification_retry.py tests/test_article_sync.py \
+  tests/test_sqlite_concurrency.py tests/test_avoirs.py \
+  tests/test_billing_security.py tests/test_dashboard_security.py \
+  tests/test_directory_security.py tests/test_smoke.py \
+  tests/test_bootstrap.py tests/test_sfec_anomalies.py \
+  tests/test_mirror_totals.py -q
+→ 123 tests OK
+```
+
+### 9.5 Critères restant à vérifier en exploitation
+
+- [ ] Exécuter le backfill en dry-run sur une **copie** de `data/tconnector.db`, puis vérifier le CSV de suspects.
+- [ ] Après `--apply`, contrôler `SUM(montant_tva) + SUM(additional_cent_tax) ≈ SUM(montant_ttc - montant_ht)` à 1 FCFA près sur la majorité des lignes.
+- [ ] Vérifier que les 5 585 avoirs remontent bien avec `type_doc='avoir'`.
+- [ ] Vérifier que les factures `TTC = HT` (cluster B) restent hors certification et apparaissent dans le CSV.
+- [ ] Vérifier que le 3 % du cluster C n'est jamais dans `additional_cent_tax` ni dans `total_tax_r_amount`.

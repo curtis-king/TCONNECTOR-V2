@@ -2,10 +2,262 @@ import logging
 import threading
 import time
 from datetime import datetime
-from app.storage.db import get_cursor, log_sync, row_to_dict, rows_to_list
+from app.storage.db import compute_cent_tax, get_cursor, log_sync, row_to_dict, rows_to_list
+from app.integration.sage.database import _safe_float
 from app.integration.sage.writer import read_invoices_from_sage, sync_sage_invoice_to_sqlite, write_contact_to_sage, write_invoice_to_sage
 
 logger = logging.getLogger("t-connector.sync.bi")
+
+# Ratios TTC/HT du modele fiscal client (Congo) : 0 %, 5 % + centime,
+# 18 % + centime, 18 % + centime + 3 %. Un ratio hors de cette liste est
+# un suspect : le miroir ne doit pas inventer de ventilation.
+_MIRROR_RATIOS = (
+    (1.0, 0.0),
+    (1.0525, 0.05),
+    (1.189, 0.18),
+    (1.219, 0.18),
+)
+
+# Ratios sans centime additionnel rencontres en dehors du modele client
+# (notamment la base de test BIJOU a 20 %). On les reconnait pour ne pas
+# inventer de centimes, mais ils restent des suspects : le modele fiscal
+# Congo attend 18 % / 5 % + 5 % de centimes.
+_MIRROR_NO_CENTIME_RATIOS = (
+    (1.05, 0.05),
+    (1.18, 0.18),
+    (1.20, 0.20),
+)
+
+
+def _mirror_tolerance():
+    try:
+        from app.config.manager import get_config
+        cfg = get_config().get("validation", {}) or {}
+        return abs(_safe_float(cfg.get("ttc_sage_tolerance"), 1.0)) or 1.0
+    except Exception:
+        return 1.0
+
+
+def _match_mirror_ratio(ratio):
+    if ratio is None:
+        return None
+    for ref, rate in _MIRROR_RATIOS:
+        if abs(ratio - ref) <= 0.001:
+            return rate
+    return None
+
+
+def _match_no_centime_ratio(ratio):
+    if ratio is None:
+        return None
+    for ref, rate in _MIRROR_NO_CENTIME_RATIOS:
+        if abs(ratio - ref) <= 0.001:
+            return rate
+    return None
+
+
+def _mirror_fields(sage_inv):
+    """Ventile la TVA du miroir local depuis la facture Sage.
+
+    Le miroir sert au dashboard et a l'impression de repli : il doit porter
+    la TVA reelle, pas le delta TTC-HT qui inclut centimes et taxes
+    additionnelles. Regle de prudence : on n'ecrit une ventilation que si
+    les lignes recoupent l'en-tete, ou si le ratio correspond a un modele
+    connu. Sinon `montant_tva` reprend le delta historique et
+    `_suspect_reason` explique pourquoi la ligne doit etre controlee.
+    """
+    lignes = sage_inv.get("lignes") or []
+    montant_ht = round(_safe_float(sage_inv.get("montant_ht")), 2)
+    montant_ttc = round(_safe_float(sage_inv.get("montant_ttc")), 2)
+    tol = _mirror_tolerance()
+
+    try:
+        sage_type = int(float(sage_inv.get("do_type_raw",
+                                          sage_inv.get("sage_type", 6)) or 6))
+    except (TypeError, ValueError):
+        sage_type = 6
+    try:
+        sage_domaine = int(float(sage_inv.get("sage_domaine", 0) or 0))
+    except (TypeError, ValueError):
+        sage_domaine = 0
+    type_doc = "avoir" if (
+        sage_inv.get("type_doc") == "avoir"
+        or sage_type == 7
+        or montant_ttc < 0
+    ) else "vente"
+
+    tva_t = tva_r = exempt = brut = 0.0
+    tva_additionnelle = 0.0
+    taux_additionnels = set()
+    for ligne in lignes:
+        taux = abs(_safe_float(ligne.get("taux_tva")))
+        tva = _safe_float(ligne.get("montant_tva"))
+        if taux >= 17.5:
+            tva_t += tva
+        elif 4.5 <= taux <= 5.5:
+            # Seule la TVA a taux reduit (5 %) entre dans total_tax_r.
+            # Un taux 3 % ou 0,25 % est une taxe additionnelle : il ne doit
+            # jamais etre absorbe dans les centimes ni dans la TVA reduite.
+            tva_r += tva
+        elif taux < 0.01:
+            exempt += _safe_float(ligne.get("montant_ht"))
+        else:
+            tva_additionnelle += tva
+            taux_additionnels.add(round(taux, 2))
+            # Une ligne de taxe additionnelle n'est pas un article : son HT
+            # ne doit pas gonfler le brut ni la remise.
+            continue
+        brut += (_safe_float(ligne.get("quantite")) *
+                 _safe_float(ligne.get("prix_unitaire")))
+
+    remise = round(max(0.0, brut - montant_ht), 2) if lignes else 0.0
+    result = {
+        "montant_tva": round(montant_ttc - montant_ht, 2),
+        "montant_ht_brut": round(brut if lignes else montant_ht, 2),
+        "total_tax_t_amount": 0.0,
+        "total_tax_r_amount": 0.0,
+        "total_exempt_amount": 0.0,
+        "discount_amount": remise,
+        "total_line_discount_amount": remise,
+        "additional_cent_tax": 0.0,
+        "electronic_stamp_duty": 0.0,
+        "type_doc": type_doc,
+        "sage_domaine": sage_domaine,
+        "sage_type": sage_type,
+        "sage_piece": sage_inv.get("sage_piece") or sage_inv.get("numero", ""),
+        "_reliable": False,
+        "_suspect_reason": "",
+    }
+
+    ratio = round(montant_ttc / montant_ht, 6) if montant_ht else None
+    known_rate = _match_mirror_ratio(ratio)
+
+    if lignes:
+        total_t = round(tva_t + tva_r, 2)
+        centimes = compute_cent_tax(total_t)
+        extra = round(
+            montant_ttc - montant_ht - total_t - centimes -
+            tva_additionnelle, 2)
+        if abs(extra) <= tol:
+            result.update({
+                "montant_tva": total_t,
+                "montant_ht_brut": round(brut, 2),
+                "total_tax_t_amount": round(tva_t, 2),
+                "total_tax_r_amount": round(tva_r, 2),
+                "total_exempt_amount": round(exempt, 2),
+                "discount_amount": remise,
+                "total_line_discount_amount": remise,
+                "additional_cent_tax": centimes,
+                "_reliable": abs(tva_additionnelle) <= 0.01,
+            })
+            if abs(tva_additionnelle) > 0.01:
+                result["_suspect_reason"] = (
+                    "taxe(s) additionnelle(s) {} % non stockee(s): {} FCFA"
+                    .format(",".join("%g" % t for t in sorted(taux_additionnels)),
+                            round(tva_additionnelle, 2)))
+            return result
+
+        if known_rate is not None:
+            # Lignes incoherentes mais ratio connu : la ventilation par taux
+            # reste fiable, l'ecart eventuel (3 %) est signale sans etre
+            # absorbe dans les centimes.
+            tva = round(montant_ht * known_rate, 2)
+            if abs(total_t - tva) > tol:
+                # Les lignes contredisent le ratio (ex. lignes a 20 % avec
+                # un en-tete a 1,189) : ne pas ecraser la TVA des lignes.
+                result["montant_tva"] = round(montant_ttc - montant_ht, 2)
+                result["_suspect_reason"] = (
+                    "lignes (TVA {}) incompatibles avec le ratio {} - "
+                    "ventilation non ecrite".format(total_t, ratio))
+                return result
+            centimes = compute_cent_tax(tva)
+            extra = round(montant_ttc - montant_ht - tva - centimes, 2)
+            result.update({
+                "montant_tva": tva,
+                "total_tax_t_amount": tva if known_rate >= 0.18 else 0.0,
+                "total_tax_r_amount": tva if 0 < known_rate < 0.18 else 0.0,
+                "total_exempt_amount": montant_ht if known_rate == 0 else 0.0,
+                "additional_cent_tax": centimes,
+                "_reliable": abs(extra) <= tol and abs(tva_additionnelle) <= 0.01,
+            })
+            if abs(extra) > tol:
+                result["_suspect_reason"] = (
+                    "taxe additionnelle non stockee: {} FCFA".format(extra))
+            elif abs(tva_additionnelle) > 0.01:
+                result["_suspect_reason"] = (
+                    "taxe(s) additionnelle(s) {} % non stockee(s): {} FCFA"
+                    .format(",".join("%g" % t for t in sorted(taux_additionnels)),
+                            round(tva_additionnelle, 2)))
+            return result
+
+        # Modele sans centime (ex. BIJOU a 20 %, ou 18 % sans centime) :
+        # les lignes donnent la TVA exacte, mais le TTC ne contient pas les
+        # 5 % de centimes. On ecrit la TVA sans inventer de centime.
+        delta = round(montant_ttc - montant_ht, 2)
+        if abs(delta - total_t - tva_additionnelle) <= tol:
+            result.update({
+                "montant_tva": total_t,
+                "montant_ht_brut": round(brut, 2),
+                "total_tax_t_amount": round(tva_t, 2),
+                "total_tax_r_amount": round(tva_r, 2),
+                "total_exempt_amount": round(exempt, 2),
+                "discount_amount": remise,
+                "total_line_discount_amount": remise,
+                "additional_cent_tax": 0.0,
+                "_reliable": False,
+            })
+            motif = "centime additionnel absent"
+            if abs(tva_additionnelle) > 0.01:
+                motif += "; taxe(s) additionnelle(s) {} % non stockee(s): {} FCFA".format(
+                    ",".join("%g" % t for t in sorted(taux_additionnels)),
+                    round(tva_additionnelle, 2))
+            result["_suspect_reason"] = motif
+            return result
+
+        result["_suspect_reason"] = (
+            "lignes incoherentes avec l'en-tete (ecart {} FCFA) - "
+            "ventilation non ecrite".format(
+                round(montant_ttc - montant_ht - total_t - centimes -
+                      tva_additionnelle, 2)))
+        return result
+
+    if known_rate is not None:
+        tva = round(montant_ht * known_rate, 2)
+        centimes = compute_cent_tax(tva)
+        extra = round(montant_ttc - montant_ht - tva - centimes, 2)
+        result.update({
+            "montant_tva": tva,
+            "total_tax_t_amount": tva if known_rate >= 0.18 else 0.0,
+            "total_tax_r_amount": tva if 0 < known_rate < 0.18 else 0.0,
+            "total_exempt_amount": montant_ht if known_rate == 0 else 0.0,
+            "additional_cent_tax": centimes,
+            "_reliable": abs(extra) <= tol,
+        })
+        if abs(extra) > tol:
+            result["_suspect_reason"] = (
+                "taxe additionnelle non stockee: {} FCFA".format(extra))
+        return result
+
+    # Ratio simple sans centime : TVA exacte, mais modele hors client.
+    simple_rate = _match_no_centime_ratio(ratio)
+    if simple_rate is not None:
+        tva = round(montant_ht * simple_rate, 2)
+        result.update({
+            "montant_tva": tva,
+            "total_tax_t_amount": tva if simple_rate >= 0.18 else 0.0,
+            "total_tax_r_amount": tva if 0 < simple_rate < 0.18 else 0.0,
+            "total_exempt_amount": montant_ht if simple_rate == 0 else 0.0,
+            "additional_cent_tax": 0.0,
+            "_reliable": False,
+        })
+        result["_suspect_reason"] = (
+            "ratio {} sans centime additionnel - modele fiscal a confirmer"
+            .format(ratio))
+        return result
+
+    result["_suspect_reason"] = (
+        "ratio TTC/HT inconnu: {} - ventilation non ecrite".format(ratio))
+    return result
 
 _last_sync = None
 _sync_lock = threading.Lock()
@@ -168,32 +420,32 @@ def _update_from_sage(invoice_id, sage_inv):
 
         montant_ht = sage_inv.get("montant_ht", 0) or 0
         montant_ttc = sage_inv.get("montant_ttc", 0) or 0
-        try:
-            sage_type = int(float(sage_inv.get("sage_type", 6) or 6))
-        except (TypeError, ValueError):
-            sage_type = 6
-        try:
-            sage_domaine = int(float(sage_inv.get("sage_domaine", 0) or 0))
-        except (TypeError, ValueError):
-            sage_domaine = 0
-        type_doc = "avoir" if (
-            sage_type == 7 or float(montant_ttc) < 0
-        ) else "vente"
+        m = _mirror_fields(sage_inv)
+        if m.get("_suspect_reason"):
+            # Un pull peut concerner des milliers de lignes : le detail part
+            # en debug, le CSV de backfill reste la source d'audit.
+            logger.debug("Miroir fiscal non fiable pour %s: %s",
+                         sage_inv.get("numero", ""), m["_suspect_reason"])
 
         cur.execute("""
             UPDATE invoices SET
                 montant_ht = ?, montant_tva = ?, montant_ttc = ?,
-                montant_restant = ?, type_doc = ?,
+                montant_restant = ?, montant_ht_brut = ?,
+                total_tax_t_amount = ?, total_tax_r_amount = ?,
+                total_exempt_amount = ?, discount_amount = ?,
+                total_line_discount_amount = ?, additional_cent_tax = ?,
+                electronic_stamp_duty = ?, type_doc = ?,
                 sage_domaine = ?, sage_type = ?, sage_piece = ?,
                 synced_sage = 1, updated_at = datetime('now')
             WHERE id = ?
         """, (
-            montant_ht,
-            round(float(montant_ttc) - float(montant_ht), 2),
-            montant_ttc,
-            sage_inv.get("montant_restant", 0),
-            type_doc, sage_domaine, sage_type,
-            sage_inv.get("sage_piece") or sage_inv.get("numero", ""),
+            montant_ht, m["montant_tva"], montant_ttc,
+            sage_inv.get("montant_restant", 0), m["montant_ht_brut"],
+            m["total_tax_t_amount"], m["total_tax_r_amount"],
+            m["total_exempt_amount"], m["discount_amount"],
+            m["total_line_discount_amount"], m["additional_cent_tax"],
+            m["electronic_stamp_duty"], m["type_doc"],
+            m["sage_domaine"], m["sage_type"], m["sage_piece"],
             invoice_id
         ))
 
