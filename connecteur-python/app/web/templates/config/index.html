@@ -97,6 +97,7 @@
 <div class="grid-2">
 <div><label>Polling active</label><select name="polling_enabled"><option value="true" {{ pe_t }}>Oui</option><option value="false" {{ pe_f }}>Non</option></select><div class="desc">Active/desactive la synchro automatique</div></div>
 <div><label>Intervalle polling (ms)</label><input type="number" name="polling_interval_ms" value="{{ poll_ms }}"><div class="desc">Recommande: 30000 (30 secondes)</div></div>
+<div><label>Fenetre pull Sage (jours)</label><input type="number" name="sage_pull_days" value="{{ sage_pull_days }}" min="0" max="3650"><div class="desc">0 = toutes les factures ; 7 = 7 derniers jours</div></div>
 </div>
 <h2 style="margin-top:16px">File d'attente</h2>
 <div class="grid-2">

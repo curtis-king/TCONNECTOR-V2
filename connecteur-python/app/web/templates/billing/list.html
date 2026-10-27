@@ -28,8 +28,15 @@
 <div><a class="btn btn-sm" id="btn-export" href="/api/invoices/export" target="_blank" rel="noopener">Exporter CSV</a></div>
 </form></div><div class="card no-print"><h2>Actions</h2>
 <a href="/billing/invoice/new" class="btn btn-primary">Nouvelle Facture</a>
-<button class="btn btn-success" onclick="syncBi(this)" style="margin-left:8px">Sync Sage</button>
-<span style="margin-left:8px;font-size:12px;color:#64748b">Derniere sync: {{ last_sync }}</span>
+<button class="btn btn-success" onclick="syncBi(this, false)" style="margin-left:8px">
+  Sync Sage ({{ sage_pull_days }} j)
+</button>
+<button class="btn btn-warning" onclick="syncBi(this, true)" style="margin-left:8px">
+  Sync complète
+</button>
+<span style="margin-left:8px;font-size:12px;color:#64748b">
+  Derniere sync: {{ last_sync }} · Pull auto: {{ sage_pull_days }} jours
+</span>
 </div><div class="card"><h2>Factures (<span id="inv-count">0</span>)</h2>
 <table><thead><tr>
 <th data-sort="numero" onclick="toggleSort('numero')">Numero<span id="sort_numero"></span></th>
@@ -151,7 +158,37 @@ function go(n){bs.page=n;render();}
 function setLimit(n){bs.limit=Number(n);bs.page=1;render();}
 function toggleSort(k){if(bs.sort_by===k){bs.sort_dir=bs.sort_dir==="DESC"?"ASC":"DESC";}else{bs.sort_by=k;bs.sort_dir="DESC";}bs.page=1;render();}
 function resetFilters(){["f_statut","f_source","f_search","f_date_from","f_date_to", "f_type_doc"].forEach(function(id){document.getElementById(id).value="";});bs.page=1;render();}
-function syncBi(btn){if(btn){btn.disabled=true;btn.textContent="Sync en cours...";}api("POST","/api/sync/bi",{}).then(function(d){if(d&&d.success===false){showToast("Sync: "+(d.error||"echec"),"err");return}showToast("Sync: "+(d.pushed||0)+" poussees, "+(d.pull_new||0)+" tirees","ok");render()}).catch(function(e){showToast("Erreur sync: "+e,"err")}).finally(function(){if(btn){btn.disabled=false;btn.textContent="Sync Sage";}});}
+function syncBi(btn, full){
+  if(full && !confirm("Sync complète : toutes les factures Sage seront relues. Cela peut prendre plusieurs minutes. Continuer ?")) return;
+  var label = full ? "Sync complète" : "Sync Sage";
+  if(btn){btn.disabled=true;btn.textContent=full?"Sync complète en cours...":"Sync en cours...";}
+  api("POST","/api/sync/bi",{force_all:!!full}).then(function(d){
+    if(d&&d.success===false){showToast("Sync: "+(d.error||"echec"),"err");return;}
+    showToast(full?"Sync complète lancée":"Sync lancée","info");
+    pollSyncBi(btn, label);
+  }).catch(function(e){
+    showToast("Erreur sync: "+e,"err");
+    if(btn){btn.disabled=false;btn.textContent=label;}
+  });
+}
+function pollSyncBi(btn, label){
+  var attempts=0;
+  var timer=setInterval(function(){
+    attempts++;
+    api("GET","/api/sync/bi/stats").then(function(s){
+      if(s && s.running){
+        if(attempts>=150){clearInterval(timer);showToast("Sync toujours en cours, vérifiez plus tard","warn");if(btn){btn.disabled=false;btn.textContent=label;}return;}
+        return;
+      }
+      clearInterval(timer);
+      if(s && s.last_error){showToast("Sync: "+s.last_error,"err");}
+      else{showToast("Sync terminée","ok");render();}
+      if(btn){btn.disabled=false;btn.textContent=label;}
+    }).catch(function(){
+      if(attempts>=150){clearInterval(timer);if(btn){btn.disabled=false;btn.textContent=label;}}
+    });
+  },2000);
+}
 function certifyBilling(id){api("POST","/api/sfec/certify",{invoice_id:"INV-"+id}).then(function(r){if(r.success&&r.certification_number){showToast("Certifiee SFEC: "+r.certification_number,"ok");render();}else if(r.success){showToast("Certification envoyee, en attente...","warn");render();}else{showToast("Certification: "+(r.error||"echec"),"err");}}).catch(function(e){showToast("Erreur certification: "+e,"err")})}
 function pushInvoice(id){api("POST","/api/invoices/"+id+"/push-sage").then(function(r){if(r.success){showToast("Facture poussee vers Sage","ok");render();}else{showToast("Push Sage: "+(r.error||"echec"),"err");}}).catch(function(e){showToast("Erreur push Sage: "+e,"err")})}
 document.getElementById("f_search").addEventListener("input",(function(){var t;return function(){clearTimeout(t);t=setTimeout(function(){bs.page=1;render();},250);};})());

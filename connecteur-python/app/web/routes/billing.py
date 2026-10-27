@@ -8,6 +8,7 @@ wrapping _login_required est reproduit à l'identique.
 
 import functools
 from flask import Blueprint, jsonify, render_template, request, send_file
+from app.config.manager import get_config
 from app.domain import invoices as invoice_engine, pdf as pdf_generator, pos as pos_engine
 from app.integration.sage.database import reset_sfec_monitor
 from app.storage import db as sqlite_db
@@ -26,6 +27,7 @@ bp = Blueprint("billing", __name__)
 def billing_page():
     stats = invoice_engine.count_invoices()
     bi_stats = sync_bidirectional.get_sync_stats()
+    sage_pull_days = get_config().get("db", {}).get("sage_pull_days", 7)
 
     statut_opts = ('<option value="">Tous</option><option value="brouillon">Brouillon</option>'
                    '<option value="valide">Validee</option><option value="a_comptabiliser">A comptabiliser</option>'
@@ -42,6 +44,7 @@ def billing_page():
         mois_nb=stats.get("mois_nb", 0), mois_ht=stats.get("mois_ht", 0),
         mois_tva=stats.get("mois_tva", 0), mois_ttc=stats.get("mois_ttc", 0),
         statut_opts=statut_opts, source_opts=source_opts,
+        sage_pull_days=sage_pull_days,
         last_sync=bi_stats.get("last_sync", "jamais")[:19].replace("T", " ") if bi_stats.get("last_sync") else "jamais",
     ))
 

@@ -15,7 +15,8 @@
     "connection_timeout_ms": 15000,
     "request_timeout_ms": 30000,
     "polling_interval_ms": 60000,
-    "polling_enabled": true
+    "polling_enabled": true,
+    "sage_pull_days": 7
   },
   "sfec": {
     "enabled": true,

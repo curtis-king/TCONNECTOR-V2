@@ -61,6 +61,7 @@ def _defaults():
             "request_timeout_ms": 30000,
             "polling_interval_ms": 30000,
             "polling_enabled": True,
+            "sage_pull_days": 7,
         },
         "sfec": {
             "enabled": True,

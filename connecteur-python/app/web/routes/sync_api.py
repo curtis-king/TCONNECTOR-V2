@@ -131,11 +131,11 @@ def api_retry_queue():
 @bp.route("/api/sync/bi", methods=["POST"])
 @_login_required
 def api_sync_bi():
-    try:
-        result = sync_bidirectional.full_sync()
-        return jsonify({"success": True, **result})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+    data = request.get_json(silent=True) or {}
+    force_all = bool(data.get("force_all", False))
+    result = sync_bidirectional.start_manual_sync(force_all=force_all)
+    status = 202 if result.get("success") else 409
+    return jsonify(result), status
 
 
 @bp.route("/api/sync/bi/stats", methods=["GET"])

@@ -94,7 +94,7 @@ class TConnectorService(win32serviceutil.ServiceFramework):
 
         logger.info("Demarrage du polling...")
         start_polling()
-        _db_cfg = load_config().get("database", {})
+        _db_cfg = load_config().get("db", {})
         _interval = max(_db_cfg.get("polling_interval_ms", 30000) // 1000, 15)
         logger.info("Demarrage de la sync bidirectionnelle (intervalle: %ds)...", _interval)
         start_bi_sync(interval=_interval)

@@ -262,13 +262,86 @@ def _mirror_fields(sage_inv):
 _last_sync = None
 _sync_lock = threading.Lock()
 _sync_thread = None
+_manual_sync_thread = None
 _stop_event = threading.Event()
 _sync_stats = {"last_sync": None, "pushed": 0, "pulled": 0, "conflicts": 0, "errors": 0}
+_sync_active = False
+_manual_sync_state = {
+    "running": False,
+    "mode": "",
+    "started_at": None,
+    "finished_at": None,
+    "last_result": None,
+    "last_error": None,
+}
+
+
+def is_sync_running():
+    with _sync_lock:
+        return bool(_sync_active or _manual_sync_state["running"])
 
 
 def get_sync_stats():
     with _sync_lock:
-        return dict(_sync_stats)
+        stats = dict(_sync_stats)
+        stats.update({
+            "running": _manual_sync_state["running"],
+            "mode": _manual_sync_state["mode"],
+            "started_at": _manual_sync_state["started_at"],
+            "finished_at": _manual_sync_state["finished_at"],
+            "last_result": _manual_sync_state["last_result"],
+            "last_error": _manual_sync_state["last_error"],
+        })
+        return stats
+
+
+def start_manual_sync(force_all=False):
+    """Lance une sync bidirectionnelle en arriere-plan.
+
+    Le thread HTTP doit repondre immediatement (202) : le pull complet de
+    plusieurs milliers de factures ne doit jamais bloquer la requete.
+    """
+    global _manual_sync_thread, _sync_active
+
+    with _sync_lock:
+        if _sync_active or _manual_sync_state["running"]:
+            return {"success": False, "error": "Une synchronisation est deja en cours"}
+        mode = "full" if force_all else "window"
+        _sync_active = True
+        _manual_sync_state.update({
+            "running": True,
+            "mode": mode,
+            "started_at": datetime.utcnow().isoformat() + "Z",
+            "finished_at": None,
+            "last_result": None,
+            "last_error": None,
+        })
+        _manual_sync_thread = threading.Thread(
+            target=_run_manual_sync,
+            args=(force_all,),
+            daemon=True,
+            name="bi-sync-manual",
+        )
+        _manual_sync_thread.start()
+
+    return {"success": True, "started": True, "mode": mode}
+
+
+def _run_manual_sync(force_all):
+    global _sync_active
+    try:
+        result = full_sync(force_all=force_all)
+        with _sync_lock:
+            _manual_sync_state["last_result"] = result
+    except Exception as e:
+        logger.error("Erreur sync manuelle: %s", e)
+        with _sync_lock:
+            _manual_sync_state["last_error"] = str(e)[:300]
+    finally:
+        with _sync_lock:
+            _sync_active = False
+            _manual_sync_state["running"] = False
+            _manual_sync_state["finished_at"] = datetime.utcnow().isoformat() + "Z"
 
 
 def push_invoice_to_sage(invoice_id):
@@ -365,8 +438,27 @@ def push_to_sage():
     return {"pushed": pushed, "errors": errors}
 
 
-def pull_from_sage():
-    sage_invoices = read_invoices_from_sage()
+def pull_from_sage(force_all=False):
+    from app.config.manager import get_config
+
+    db_cfg = get_config().get("db", {}) or {}
+    raw_days = db_cfg.get("sage_pull_days", 7)
+    try:
+        pull_days = int(raw_days)
+    except (TypeError, ValueError):
+        pull_days = 7
+    if pull_days < 0:
+        pull_days = 7
+
+    logger.info(
+        "Pull Sage: force_all=%s, fenetre=%s",
+        force_all,
+        "complete" if force_all else "{} jours".format(pull_days),
+    )
+    sage_invoices = read_invoices_from_sage(
+        sage_pull_days=pull_days,
+        force_all=force_all,
+    )
     if not sage_invoices:
         return {"pulled": 0, "new": 0, "updated": 0}
 
@@ -509,12 +601,12 @@ def certify_pending_pos_invoices():
     return {"certified": certified, "errors": errors}
 
 
-def full_sync():
+def full_sync(force_all=False):
     logger.info("Demarrage sync bidirectionnelle...")
     cert_result = certify_pending_pos_invoices()
     contact_result = push_contacts_to_sage()
     push_result = push_to_sage()
-    pull_result = pull_from_sage()
+    pull_result = pull_from_sage(force_all=force_all)
 
     with _sync_lock:
         _sync_stats["last_sync"] = datetime.utcnow().isoformat() + "Z"
@@ -551,11 +643,20 @@ def stop_bi_sync():
 
 
 def _bi_sync_loop(interval):
+    global _sync_active
     while not _stop_event.is_set():
-        try:
-            full_sync()
-        except Exception as e:
-            logger.error("Erreur sync bidirectionnelle: %s", e)
-            with _sync_lock:
-                _sync_stats["errors"] += 1
+        with _sync_lock:
+            should_run = not (_sync_active or _manual_sync_state["running"])
+            if should_run:
+                _sync_active = True
+        if should_run:
+            try:
+                full_sync()
+            except Exception as e:
+                logger.error("Erreur sync bidirectionnelle: %s", e)
+                with _sync_lock:
+                    _sync_stats["errors"] += 1
+            finally:
+                with _sync_lock:
+                    _sync_active = False
         _stop_event.wait(interval)

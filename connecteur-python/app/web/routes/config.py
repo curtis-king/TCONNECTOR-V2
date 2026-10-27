@@ -140,6 +140,7 @@ def config_page():
         pe_t=_s(db.get("polling_enabled"), True),
         pe_f=_s(db.get("polling_enabled"), False),
         poll_ms=db.get("polling_interval_ms", 30000),
+        sage_pull_days=db.get("sage_pull_days", 7),
         max_concurrent=queue.get("max_concurrent", 5),
         max_retries=queue.get("max_retries", 4),
         retry_base_delay_ms=queue.get("retry_base_delay_ms", 2000),
@@ -497,7 +498,10 @@ def api_config_sync():
     if "polling_enabled" in data:
         db["polling_enabled"] = _bool(data["polling_enabled"])
     errors = []
-    _apply_bounded(data, db, (("polling_interval_ms", 1000, 3600000),), errors)
+    _apply_bounded(data, db, (
+        ("polling_interval_ms", 1000, 3600000),
+        ("sage_pull_days", 0, 3650),
+    ), errors)
     cfg["db"] = db
 
     queue = dict(cfg.get("queue", {}))

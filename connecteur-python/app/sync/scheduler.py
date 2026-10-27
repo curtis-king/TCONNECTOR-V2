@@ -17,7 +17,7 @@ from app.sync.bidirectional import start_bi_sync, stop_bi_sync
 
 logger = logging.getLogger("t-connector.scheduler")
 
-_cached = {"interval": 30}
+_cached = {"interval": 90}
 _started = False
 _lock = threading.Lock()
 

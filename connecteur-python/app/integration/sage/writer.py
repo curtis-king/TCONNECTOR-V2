@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from app.storage.db import get_cursor as get_sqlite_cursor, log_sync
 
 logger = logging.getLogger("t-connector.sage")
@@ -223,7 +223,7 @@ def write_invoice_to_sage(invoice):
         return {"success": False, "error": str(e)[:200]}
 
 
-def read_invoices_from_sage():
+def read_invoices_from_sage(sage_pull_days=None, force_all=False):
     cursor_ctx = _get_sage_cursor()
     if cursor_ctx is None:
         return []
@@ -233,11 +233,19 @@ def read_invoices_from_sage():
             # I3 : détection dynamique des colonnes SFEC_* — la migration
             # n'a jamais été lancée sur BIJOU, donc on ne peut pas les
             # coder en dur sous peine de faire planter toute la lecture.
+            # cbModification sert a rapatrier une ancienne facture modifiee
+            # recemment sans elargir toute la fenetre de pull.
             cur.execute("""
                 SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
-                WHERE TABLE_NAME = 'F_DOCENTETE' AND COLUMN_NAME LIKE 'SFEC%'
+                WHERE TABLE_NAME = 'F_DOCENTETE'
+                  AND (COLUMN_NAME LIKE 'SFEC%' OR LOWER(COLUMN_NAME) = 'cbmodification')
             """)
-            sfec_cols_present = {row[0] for row in cur.fetchall()}
+            doc_cols = {str(row[0]) for row in cur.fetchall()}
+            doc_cols_lower = {col.lower(): col for col in doc_cols}
+            sfec_cols_present = {
+                col for lower, col in doc_cols_lower.items() if lower.startswith("sfec")
+            }
+            has_cb_modification = "cbmodification" in doc_cols_lower
 
             sfec_fields = ["SFEC_STATUT", "SFEC_NUM_CERTIF", "SFEC_SIGNATURE", "SFEC_QR_CODE"]
             sfec_select = ",\n                    ".join(
@@ -263,6 +271,27 @@ def read_invoices_from_sage():
                 return fallback
 
             join_tiers = "LEFT JOIN F_COMPTET c ON d.DO_Tiers = c.CT_Num" if "CT_Num" in ct_cols else ""
+
+            # Fenetre glissante : le pull automatique ne relit que les
+            # factures recentes. force_all=True (sync complete manuelle)
+            # ignore cette limite pour le backfill initial.
+            date_filter = ""
+            params = []
+            if not force_all and sage_pull_days is not None:
+                try:
+                    days = int(sage_pull_days)
+                except (TypeError, ValueError):
+                    days = 7
+                if days < 0:
+                    days = 7
+                if days > 0:
+                    since = datetime.now() - timedelta(days=days)
+                    if has_cb_modification:
+                        date_filter = " AND (d.DO_Date >= ? OR d.cbModification >= ?)"
+                        params = [since, since]
+                    else:
+                        date_filter = " AND d.DO_Date >= ?"
+                        params = [since]
 
             # I2 : DO_Type IN (6,7) pour lire aussi les avoirs.
             # I1 : DO_Ref n'est JAMAIS utilisé comme lien avoir->facture,
@@ -305,9 +334,10 @@ def read_invoices_from_sage():
                 FROM F_DOCENTETE d
                 {join_tiers}
                 WHERE d.DO_Domaine = 0 AND d.DO_Type IN (6, 7)
+                {date_filter}
                 ORDER BY d.DO_Date DESC
             """
-            cur.execute(query)
+            cur.execute(query, params)
 
             columns = [desc[0] for desc in cur.description]
             rows = cur.fetchall()
