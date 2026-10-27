@@ -208,10 +208,12 @@ def test_tolerance_explicite_du_garde_fou():
 
 
 def test_reference_26faz07297():
-    """Facture cliente 26FAZ07297 : 18 % + centime 5 % de TVA + taxe 3 % (203).
+    """Facture cliente 26FAZ07297 : 18 % + centime 5 % de TVA + taxe 3 %.
 
     HT 14 094 340 ; TVA 2 536 981 ; centime 126 849 ; taxe 3 % 422 830 ;
     TTC 17 181 000. Arrondi XAF au franc entier.
+    La taxe de 3 % est envoyee dans additional_taxes avec le code SFEC
+    configure (AUTRE par defaut, a confirmer avec SFEC).
     """
     lignes = [
         {"designation": d, "quantite": 1, "prix_unitaire": ht,
@@ -237,7 +239,7 @@ def test_reference_26faz07297():
     assert p["additional_cent_tax"] == 126849.0
     assert len(p["additional_taxes"]) == 1
     tax = p["additional_taxes"][0]
-    assert tax["tax_code"] == "203"
+    assert tax["tax_code"] == "AUTRE"
     assert tax["tax_label"] == "Taxe supplementaire 3 %"
     assert tax["tax_rate"] == 3.0
     assert tax["tax_amount"] == 422830.0

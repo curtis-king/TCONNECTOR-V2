@@ -70,16 +70,10 @@
     "max_additional_tax_rate": 10,
     "cent_tax_rate": 5,
     "additional_tax_codes": {
-      "3": "203"
+      "3": "AUTRE"
     },
     "additional_tax_labels": {
       "3": "Taxe supplementaire 3 %"
-    },
-    "tax_code_profile": {
-      "1": { "role": "vat", "rate": 18 },
-      "202": { "role": "centime", "rate": 0.9 },
-      "203": { "role": "additional", "rate": 3, "sfec_code": "203",
-        "label": "Taxe supplementaire 3 %" }
     }
   },
   "notifications": {

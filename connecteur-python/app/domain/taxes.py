@@ -38,23 +38,12 @@ ITEM_ROLES = (VAT_NORMAL, VAT_REDUCED, EXEMPT)
 # 0,9 % pour une base a 18 %, 0,25 % pour une base a 5 %.
 CENTIME_HT_RATES = (0.25, 0.9)
 
-# Referentiel par defaut des codes de taxe Sage (client) :
-#   1   -> TVA 18 %
-#   202 -> centime additionnel (0,9 % du HT = 5 % de la TVA)
-#   203 -> taxe supplementaire de 3 %
-DEFAULT_TAX_CODE_PROFILE = {
-    "1": {"role": "vat", "rate": 18},
-    "202": {"role": "centime", "rate": 0.9},
-    "203": {
-        "role": "additional",
-        "rate": 3,
-        "sfec_code": "203",
-        "label": "Taxe supplementaire 3 %",
-    },
-}
-
 # Taux -> code SFEC / libelle, surchargeables par la configuration.
-DEFAULT_ADDITIONAL_TAX_CODES = {"3": "203"}
+# La doc SFEC (openapi.yaml) ne donne aucune liste de valeurs autorisees pour
+# tax_code : le seul exemple est "TAR" (Taxe sur les activites remunerées, 2,5 %).
+# Le code "AUTRE" est un fallback a remplacer par le code officiellement
+# accepte par SFEC une fois confirme avec le client.
+DEFAULT_ADDITIONAL_TAX_CODES = {"3": "AUTRE"}
 DEFAULT_ADDITIONAL_TAX_LABELS = {"3": "Taxe supplementaire 3 %"}
 
 # Ratios TTC/HT connus, pour le repli quand les lignes sont absentes.
@@ -160,23 +149,18 @@ def _config_section(config, name):
 
 
 def tax_code_profile(config=None):
-    """Profil des codes de taxe Sage (defauts + surcharge configuration)."""
-    profile = dict(DEFAULT_TAX_CODE_PROFILE)
-    extra = _config_section(config, "tax_code_profile")
-    for code, entry in (extra or {}).items():
-        if isinstance(entry, dict):
-            merged = dict(profile.get(str(code), {}))
-            merged.update(entry)
-            profile[str(code)] = merged
-    return profile
+    """Profil des codes de taxe Sage (toujours vide : la doc SFEC
+    n'en donne aucune liste autorisee)."""
+    return {}
 
 
 def resolve_additional_tax(rate, config=None, invoice=None):
     """Code et libelle SFEC d'une taxe supplementaire de taux `rate`.
 
     Ordre : surcharge explicite sur la facture, configuration
-    (`validation.additional_tax_codes` / `additional_tax_labels`), profil
-    des codes Sage, puis defaut `AUTRE`.
+    (`validation.additional_tax_codes` / `additional_tax_labels`),
+    puis defaut `AUTRE`. Aucun code Sage n'est resolu : la doc SFEC
+    n'en donne aucune liste autorisee (exemple : "TAR").
     """
     rate = snap_rate(rate)
     code = ""
@@ -203,15 +187,6 @@ def resolve_additional_tax(rate, config=None, invoice=None):
         if not label and abs(safe_float(key, -1) - rate) <= 0.1:
             label = str(value or "").strip()
             break
-
-    if not code:
-        for sage_code, entry in tax_code_profile(config).items():
-            if entry.get("role") != "additional":
-                continue
-            if abs(safe_float(entry.get("rate"), -1) - rate) <= 0.1:
-                code = str(entry.get("sfec_code") or sage_code).strip()
-                label = label or str(entry.get("label") or "").strip()
-                break
 
     if not code:
         code = "AUTRE"
