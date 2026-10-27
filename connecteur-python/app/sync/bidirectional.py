@@ -82,7 +82,7 @@ def _mirror_fields(sage_inv):
         sage_domaine = 0
     type_doc = "avoir" if (
         sage_inv.get("type_doc") == "avoir"
-        or sage_type == 7
+        or sage_type in (7, 8)
         or montant_ttc < 0
     ) else "vente"
 

@@ -18,7 +18,24 @@ def _get_sage_cursor():
 
 
 def _get_sage_domaine_type():
-    return {"vente_domaine": 0, "vente_type": 6, "avoir_type": 7, "achat_domaine": 1}
+    """Types de documents Sage (vente 6, avoir 7, retour 8).
+
+    Delegue a `app.integration.sage.database.get_domain_config`, qui peut etre
+    surcharge via `config.json` (`db.sage_facture_type`, `db.sage_avoir_type`,
+    `db.sage_retour_type`). La cle `vente_type` est conservee pour la
+    retro-compatibilite.
+    """
+    from app.integration.sage.database import get_domain_config as _get_domain_config
+
+    dc = _get_domain_config()
+    return {
+        "vente_domaine": dc.get("vente_domain", 0),
+        "vente_type": dc.get("facture_type", 6),
+        "facture_type": dc.get("facture_type", 6),
+        "avoir_type": dc.get("avoir_type", 7),
+        "retour_type": dc.get("retour_type", 8),
+        "achat_domaine": dc.get("achat_domain", 1),
+    }
 
 
 _CONTACT_TYPE_MAP = {"client": 0, "fournisseur": 1}
@@ -304,7 +321,7 @@ def read_invoices_from_sage(sage_pull_days=None, force_all=False):
                     d.DO_Domaine AS sage_domaine,
                     d.DO_Type AS sage_type,
                     d.DO_Piece AS sage_piece,
-                    CASE WHEN d.DO_Type = 7 THEN 'avoir' ELSE 'vente' END AS type_doc,
+                    CASE WHEN d.DO_Type IN (7, 8) THEN 'avoir' ELSE 'vente' END AS type_doc,
                     '' AS reference_invoice_id,
                     ISNULL(TRY_CONVERT(VARCHAR(10), d.DO_Date, 120), '') AS date_facture,
                     ISNULL(d.DO_Tiers, '') AS tiers_code,
@@ -333,7 +350,7 @@ def read_invoices_from_sage(sage_pull_days=None, force_all=False):
                     {sfec_select}
                 FROM F_DOCENTETE d
                 {join_tiers}
-                WHERE d.DO_Domaine = 0 AND d.DO_Type IN (6, 7)
+                WHERE d.DO_Domaine = 0 AND d.DO_Type IN (6, 7, 8)
                 {date_filter}
                 ORDER BY d.DO_Date DESC
             """
@@ -365,9 +382,9 @@ def read_invoices_from_sage(sage_pull_days=None, force_all=False):
                     inv["sage_type"] = int(float(str(inv["sage_type"])))
                 except (ValueError, TypeError):
                     inv["sage_type"] = 0
-                if inv["sage_type"] == 7 or inv.get("montant_ttc", 0) < 0:
-                    # Avoir Sage ou facture negative : le miroir doit le
-                    # distinguer d'une vente (audit 2026-10-21).
+                if inv["sage_type"] in (7, 8) or inv.get("montant_ttc", 0) < 0:
+                    # Avoir Sage (7) ou retour de vente (8), ou facture negative :
+                    # le miroir doit le distinguer d'une vente.
                     inv["type_doc"] = "avoir"
                 try:
                     inv["valide"] = 1 if int(float(str(inv.get("valide", 0) or 0))) == 1 else 0

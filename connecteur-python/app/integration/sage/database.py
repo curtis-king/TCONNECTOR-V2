@@ -290,6 +290,7 @@ _DOMAIN_CONFIG = {
     "achat_domain": 1,
     "facture_type": 6,
     "avoir_type": 7,
+    "retour_type": 8,
 }
 
 _SFEC_COLUMNS = [
@@ -685,7 +686,64 @@ def get_table_map():
 
 
 def get_domain_config():
-    return dict(_DOMAIN_CONFIG)
+    """Types de documents Sage, surchargeables par `config.json`.
+
+    Modele client (table Sage des types de pieces) :
+      - 6 = facture de vente
+      - 7 = facture d'avoir de vente
+      - 8 = facture de retour de vente (impact stock gere par Sage)
+
+    La surcharge `db.sage_facture_type`, `db.sage_avoir_type` et
+    `db.sage_retour_type` permet d'adapter le connecteur a un autre
+    parametrage Sage sans toucher au code.
+    """
+    config = dict(_DOMAIN_CONFIG)
+    try:
+        from app.config.manager import get_config
+        db_config = (get_config().get("db") or {})
+    except Exception:
+        db_config = {}
+    for key, config_key in (
+        ("facture_type", "sage_facture_type"),
+        ("avoir_type", "sage_avoir_type"),
+        ("retour_type", "sage_retour_type"),
+    ):
+        value = db_config.get(config_key)
+        if value in (None, ""):
+            continue
+        try:
+            config[key] = int(value)
+        except (TypeError, ValueError):
+            continue
+    return config
+
+
+def _doc_types(config, keys):
+    """Liste de types de pieces (sans doublon) pour une liste de cles."""
+    types = []
+    for key in keys:
+        value = config.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            continue
+        if value not in types:
+            types.append(value)
+    return types
+
+
+def sales_doc_types(config=None):
+    """Types de pieces de vente lus par le connecteur (facture, avoir, retour)."""
+    return _doc_types(config or get_domain_config(),
+                      ("facture_type", "avoir_type", "retour_type"))
+
+
+def credit_doc_types(config=None):
+    """Types de pieces qui sont des remboursements (creditNote SFEC)."""
+    return _doc_types(config or get_domain_config(),
+                      ("avoir_type", "retour_type"))
 
 
 def _get_tiers_col():
@@ -741,8 +799,16 @@ def fetch_sales_invoices(updated_from=None, limit=None):
             '' AS sfec_statut"""
 
     limit_clause = "TOP {}".format(limit) if limit else "TOP 1000"
-    where = "WHERE d.DO_Domaine = {} AND d.DO_Type IN ({}, {})".format(
-        dc["vente_domain"], dc["facture_type"], dc["avoir_type"]
+    doc_types = sales_doc_types(dc)
+    credit_types = credit_doc_types(dc)
+    types_in = ", ".join(str(t) for t in doc_types)
+    credit_in = ", ".join(str(t) for t in credit_types)
+    where = "WHERE d.DO_Domaine = {} AND d.DO_Type IN ({})".format(
+        dc["vente_domain"], types_in
+    )
+    type_doc_case = (
+        "CASE WHEN d.DO_Type IN ({}) THEN 'avoir' ELSE 'vente' END"
+        .format(credit_in)
     )
 
     tiers_col = _get_tiers_col()
@@ -815,8 +881,9 @@ def fetch_sales_invoices(updated_from=None, limit=None):
 
     query = """
         SELECT {limit}
-            CAST({vd} AS VARCHAR) + '-' + CAST({ft} AS VARCHAR) + '-' + d.DO_Piece AS id,
+            CAST({vd} AS VARCHAR) + '-' + CAST(d.DO_Type AS VARCHAR) + '-' + d.DO_Piece AS id,
             d.DO_Piece AS numero,
+            'sage' AS source,
             ISNULL(TRY_CONVERT(VARCHAR(10), d.DO_Date, 120), '') AS date_facture,
             ISNULL(TRY_CONVERT(VARCHAR(10), d.DO_Date, 120), '') AS date_echeance,
             {ref},
@@ -842,7 +909,7 @@ def fetch_sales_invoices(updated_from=None, limit=None):
                 ELSE 'SAISI'
             END AS statut,
             {valide},
-            CASE WHEN d.DO_Type = {at} THEN 'avoir' ELSE 'vente' END AS type_doc,
+            {type_doc_case},
             d.DO_Type AS do_type_raw,
             {dates}
             {sfec}
@@ -851,10 +918,10 @@ def fetch_sales_invoices(updated_from=None, limit=None):
         {where}
         ORDER BY d.DO_Date DESC
     """.format(
-        at=dc["avoir_type"],
-        payment=payment_select, 
+        type_doc_case=type_doc_case,
+        payment=payment_select,
         devise=devise_select,
-        limit=limit_clause, vd=dc["vente_domain"], ft=dc["facture_type"],
+        limit=limit_clause, vd=dc["vente_domain"],
         ref=ref_select, tiers=tiers_select, nom_tiers=nom_tiers_select,
         niu=niu_select, phone=phone_select, email=email_select, addr=addr_select,
         classif=classif_select,
@@ -915,11 +982,16 @@ def _fetch_sales_invoices_fallback(dc, t):
     has_ttc = "DO_TOTALTTC" in doc_cols
     ttc_expr = "ISNULL(d.DO_TotalTTC, 0)" if has_ttc else "ISNULL(d.DO_TotalHT, 0) + ISNULL(d.DO_Taxe1, 0) + ISNULL(d.DO_Taxe2, 0) + ISNULL(d.DO_Taxe3, 0)"
     tva_expr = "ISNULL(d.DO_TotalTTC - d.DO_TotalHT, 0)" if has_ttc else "ISNULL(d.DO_Taxe1, 0) + ISNULL(d.DO_Taxe2, 0) + ISNULL(d.DO_Taxe3, 0)"
+    doc_types = sales_doc_types(dc)
+    credit_types = credit_doc_types(dc)
+    types_in = ", ".join(str(t) for t in doc_types)
+    credit_in = ", ".join(str(t) for t in credit_types)
 
     fallback_query = """
         SELECT TOP 500
-            CAST({vd} AS VARCHAR) + '-' + CAST({ft} AS VARCHAR) + '-' + d.DO_Piece AS id,
+            CAST({vd} AS VARCHAR) + '-' + CAST(d.DO_Type AS VARCHAR) + '-' + d.DO_Piece AS id,
             d.DO_Piece AS numero,
+            'sage' AS source,
             ISNULL(TRY_CONVERT(VARCHAR(10), d.DO_Date, 120), '') AS date_facture,
             ISNULL(TRY_CONVERT(VARCHAR(10), d.DO_Date, 120), '') AS date_echeance,
             ISNULL(d.DO_Ref, '') AS reference,
@@ -944,15 +1016,18 @@ def _fetch_sales_invoices_fallback(dc, t):
                 ELSE 'SAISI'
             END AS statut,
             ISNULL(d.DO_Valide, 0) AS valide,
+            CASE WHEN d.DO_Type IN ({credit_in}) THEN 'avoir' ELSE 'vente' END AS type_doc,
+            d.DO_Type AS do_type_raw,
             '' AS date_creation,
             '' AS date_modification,
             '' AS sfec_num_certif,
             '' AS sfec_date_certif,
             '' AS sfec_statut
         FROM {tbl} d
-        WHERE d.DO_Domaine = {vd} AND d.DO_Type = {ft}
+        WHERE d.DO_Domaine = {vd} AND d.DO_Type IN ({types_in})
         ORDER BY d.DO_Piece DESC
-    """.format(tbl=t["documents"], vd=dc["vente_domain"], ft=dc["facture_type"], ttc_expr=ttc_expr, tva_expr=tva_expr)
+    """.format(tbl=t["documents"], vd=dc["vente_domain"], types_in=types_in,
+               credit_in=credit_in, ttc_expr=ttc_expr, tva_expr=tva_expr)
 
     try:
         with get_cursor() as cur:
@@ -964,7 +1039,11 @@ def _fetch_sales_invoices_fallback(dc, t):
         idx = {c: i for i, c in enumerate(columns)}
         _keys = []
         for _r in rows:
-            _keys.append((dc["facture_type"], str(_r[idx["numero"]])))
+            try:
+                _dt = int(_safe_float(_r[idx["do_type_raw"]]))
+            except (ValueError, TypeError, KeyError):
+                _dt = dc["facture_type"]
+            _keys.append((_dt, str(_r[idx["numero"]])))
         _lines_map = fetch_doc_lines_batch(dc["vente_domain"], _keys)
         for row in rows:
             inv = dict(zip(columns, [str(v) if v is not None else "" for v in row]))
@@ -980,7 +1059,11 @@ def _fetch_sales_invoices_fallback(dc, t):
                 inv["valide"] = int(_safe_float(row[idx["valide"]]))
             except (ValueError, TypeError):
                 inv["valide"] = 0
-            inv["lignes"] = _lines_map.get((dc["facture_type"], inv["numero"])) or fetch_doc_lines(dc["vente_domain"], dc["facture_type"], inv["numero"])
+            try:
+                do_type_raw = int(_safe_float(row[idx["do_type_raw"]]))
+            except (ValueError, TypeError, KeyError):
+                do_type_raw = dc["facture_type"]
+            inv["lignes"] = _lines_map.get((do_type_raw, inv["numero"])) or fetch_doc_lines(dc["vente_domain"], do_type_raw, inv["numero"])
             invoices.append(inv)
 
         if invoices:
@@ -1065,10 +1148,26 @@ def _doc_lines_query_parts():
     else:
         extra_cols += ", 0 AS poids_kg"
 
+    # Codes et taux de taxe de la ligne. Les montants de taxes ne sont pas
+    # stockes par Sage : ils sont recalcules. On lit les codes (1, 202, 203
+    # chez le client) et les taux supplementaires pour identifier le role
+    # de chaque taxe (TVA, centime, taxe supplementaire).
+    tax_cols = ""
+    for _index in (1, 2, 3):
+        _code_col = "DL_CODETAXE{}".format(_index)
+        _rate_col = "DL_TAXE{}".format(_index)
+        if _code_col in line_cols:
+            tax_cols += ", ISNULL(l.{}, '') AS code_taxe{}".format(
+                _code_col, _index)
+        if _index > 1 and _rate_col in line_cols:
+            tax_cols += ", ISNULL(l.{}, 0) AS taux_taxe{}".format(
+                _rate_col, _index)
+
     return {
         "join_clause": "\n                ".join(joins),
         "article_cols": article_cols,
         "extra_cols": extra_cols,
+        "tax_cols": tax_cols,
     }
 
 
@@ -1803,20 +1902,24 @@ def reset_sfec_monitor(piece):
     """Autorise un nouveau passage apres un lien manuel avoir -> parent.
 
     Ne touche qu'au statut A_SURVEILLER (jamais ERREUR ni CERTIFIE) et
-    uniquement pour la piece concernee, tous types confondus (6 et 7).
+    uniquement pour la piece concernee, tous types confondus (6, 7 et 8).
     """
     t = get_table_map()
     if not t["documents"] or not piece:
         return 0
+    doc_types = sales_doc_types()
+    if not doc_types:
+        return 0
+    types_in = ", ".join(str(t) for t in doc_types)
     try:
         with get_cursor() as cur:
             cur.execute("""
                 UPDATE {} SET SFEC_STATUT = NULL
-                WHERE DO_Domaine = 0 AND DO_Type IN (6, 7) AND DO_Piece = ?
+                WHERE DO_Domaine = 0 AND DO_Type IN ({}) AND DO_Piece = ?
                   AND SFEC_STATUT = 'A_SURVEILLER'
                   AND SFEC_DATE_CERTIF IS NULL
                   AND (SFEC_NUM_CERTIF IS NULL OR SFEC_NUM_CERTIF = '')
-            """.format(t["documents"]), piece)
+            """.format(t["documents"], types_in), piece)
             return cur.rowcount or 0
     except Exception as e:
         logger.debug("reset_sfec_monitor echoue pour %s: %s", piece, e)
@@ -1930,6 +2033,13 @@ def fetch_certified_invoices():
         return []
 
     try:
+        doc_types = sales_doc_types(dc)
+        credit_types = credit_doc_types(dc)
+        if not doc_types:
+            return []
+        types_ph = ", ".join("?" for _ in doc_types)
+        credit_ph = ", ".join("?" for _ in credit_types) if credit_types else types_ph
+        params = list(credit_types) + [dc["vente_domain"]] + list(doc_types)
         with get_cursor() as cur:
             cur.execute("""
                 SELECT
@@ -1937,13 +2047,14 @@ def fetch_certified_invoices():
                     SFEC_NUM_CERTIF AS certif_num,
                     SFEC_SIGNATURE AS signature,
                     SFEC_QR_CODE AS qr_code,
-                    CASE WHEN DO_Type = ? THEN 'creditNote' ELSE 'salesInvoice' END AS invoice_type,
+                    CASE WHEN DO_Type IN ({credit_ph}) THEN 'creditNote' ELSE 'salesInvoice' END AS invoice_type,
                     ISNULL(TRY_CONVERT(VARCHAR(30), SFEC_DATE_CERTIF, 126), '') AS date
                 FROM {}
                 WHERE DO_Domaine = ?
-                  AND DO_Type IN (?, ?)
+                  AND DO_Type IN ({types_ph})
                   AND SFEC_STATUT IN ('CERTIFIE', 'DEJA_CERTIFIE')
-            """.format(t["documents"]), dc["avoir_type"], dc["vente_domain"], dc["facture_type"], dc["avoir_type"])
+            """.format(t["documents"], credit_ph=credit_ph, types_ph=types_ph),
+                       params)
             columns = [desc[0] for desc in cur.description]
             return [dict(zip(columns, [str(v) if v is not None else "" for v in row])) for row in cur.fetchall()]
     except Exception:

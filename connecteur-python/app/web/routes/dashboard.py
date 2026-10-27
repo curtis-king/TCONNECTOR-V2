@@ -165,8 +165,19 @@ def invoices_page():
         val = inv.get("valide", 0)
         val_cls = "badge-ok" if val == 1 else "badge-err"
         val_txt = "Valide" if val == 1 else "Non valide"
-        type_badge_cls = "badge-warn" if inv.get("type_doc") == "avoir" else "badge-info"
-        type_badge_txt = "Avoir" if inv.get("type_doc") == "avoir" else ("Achat" if inv_type == "purchase" else "Vente")
+        is_avoir = inv.get("type_doc") == "avoir"
+        sage_type = inv.get("sage_type")
+        try:
+            sage_type = int(sage_type) if sage_type not in (None, "") else None
+        except (TypeError, ValueError):
+            sage_type = None
+        type_badge_cls = "badge-warn" if is_avoir else "badge-info"
+        if is_avoir and sage_type == 8:
+            type_badge_txt = "Retour"
+        elif is_avoir:
+            type_badge_txt = "Avoir"
+        else:
+            type_badge_txt = "Achat" if inv_type == "purchase" else "Vente"
         rows += "<tr><td>{}</td><td>{}</td><td>{}</td><td><span class='badge {}'>{}</span></td><td style='text-align:right'>{}</td><td><span class='badge {}'>{}</span></td><td><span class='badge {}'>{}</span></td><td><span class='badge {}'>{}</span></td><td>{}</td></tr>".format(
             _esc(inv.get("numero", "")), _esc(inv.get("date_facture", "")), _esc(inv.get("nom_tiers", "")),
             type_badge_cls, type_badge_txt,
@@ -224,7 +235,13 @@ def pending_page():
 
     rows = ""
     for inv in page_rows:
-        badge_avoir = ' <span class="badge badge-warn">Avoir</span>' if inv.get("type_doc") == "avoir" else ""
+        sage_type = inv.get("sage_type")
+        try:
+            sage_type = int(sage_type) if sage_type not in (None, "") else None
+        except (TypeError, ValueError):
+            sage_type = None
+        badge_avoir = ' <span class="badge badge-warn">{}</span>'.format(
+            "Retour" if sage_type == 8 else "Avoir") if inv.get("type_doc") == "avoir" else ""
         rows += "<tr><td>{}{}</td><td>{}</td><td>{}</td><td style='text-align:right'>{}</td><td><button class='btn btn-sm btn-success' onclick=\"certifySingle('{}')\">Certifier</button> <button class='btn btn-sm' style='background:#4a1d96;color:#fff' onclick=\"toMonitor('{}')\">Surveiller</button></td></tr>".format(
             _esc(inv.get("numero", "")), badge_avoir, _esc(inv.get("date_facture", "")),
             _esc(inv.get("nom_tiers", "")), _safe_amount(inv.get("montant_ttc", 0), 2),
@@ -380,7 +397,7 @@ def _print_sage_lines(numero, type_doc="vente", domaine=None, sage_type=None):
         if sage_type not in (None, ""):
             types.append(int(sage_type))
         elif type_doc == "avoir":
-            types.extend([cfg["avoir_type"], cfg["facture_type"]])
+            types.extend([cfg["avoir_type"], cfg["retour_type"], cfg["facture_type"]])
         else:
             types.extend([cfg["facture_type"], cfg["avoir_type"]])
         for doc_type in types:

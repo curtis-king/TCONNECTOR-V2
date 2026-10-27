@@ -191,7 +191,16 @@ def _has_zero_amount(invoice):
 
 
 def _credit_label(invoice):
-    return "Avoir" if invoice.get("type_doc") == "avoir" else "Facture negative"
+    if invoice.get("type_doc") != "avoir":
+        return "Facture negative"
+    sage_type = invoice.get("sage_type")
+    try:
+        sage_type = int(sage_type) if sage_type not in (None, "") else None
+    except (TypeError, ValueError):
+        sage_type = None
+    if sage_type == 8:
+        return "Retour"
+    return "Avoir"
 
 
 def _should_mark_credit_failure(invoice):
@@ -312,10 +321,10 @@ def _prepare_credit_note(invoice, by_numero, manual_links, credit_index):
         return ("parent_pending", ref, parent,
                 "{}: facture d'origine '{}' non certifiee (en attente)".format(label, ref))
 
-    _ids_ref = (credit_index or {}).get(ref, [])
-    if any(_i != invoice.get("id") for _i in _ids_ref):
+    _ids_child = (credit_index or {}).get(child_numero, [])
+    if any(_i != invoice.get("id") for _i in _ids_child):
         return ("duplicate", ref, parent,
-                "Un avoir certifie existe deja pour '{}'".format(ref))
+                "Un avoir/retour certifie existe deja pour '{}'".format(child_numero))
 
     # Champs exiges par l'OpenAPI SFEC pour un creditNote.
     invoice["reference_invoice_id"] = ref
@@ -328,15 +337,22 @@ def _prepare_credit_note(invoice, by_numero, manual_links, credit_index):
 
 
 def _build_credit_note_index(snapshot, by_numero, manual_links):
+    """Index des avoirs/retours deja certifies, par NUMERO de piece.
+
+    L'index est cle par le numero de l'avoir/retour (et non par la facture
+    parente) : plusieurs retours partiels sur une meme facture d'origine sont
+    donc autorises. Seule la réédition du meme numero est bloquée comme
+    doublon.
+    """
     index = {}
     for item in snapshot:
         if not _is_credit_note(item):
             continue
         if item.get("sfec_statut") not in ("CERTIFIE", "DEJA_CERTIFIE"):
             continue
-        ref = _resolve_credit_parent(item, by_numero, manual_links)
-        if ref:
-            index.setdefault(ref, []).append(item.get("id"))
+        child_numero = str(item.get("numero") or "").strip()
+        if child_numero:
+            index.setdefault(child_numero, []).append(item.get("id"))
     return index
 
 

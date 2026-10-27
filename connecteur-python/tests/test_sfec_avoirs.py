@@ -6,7 +6,8 @@ Regles verifiees :
   - avoir sans reference -> A_SURVEILLER, jamais ERREUR ;
   - parent non certifie -> aucun marquage (attente du cycle suivant) ;
   - parent certifie -> creditNote avec les trois champs exiges ;
-  - deuxieme avoir pour le meme parent -> A_SURVEILLER ;
+  - deuxieme avoir sur le meme parent, numero different -> certifie (retours multiples autorises) ;
+  - redaction du meme numero d'avoir -> A_SURVEILLER (doublon) ;
   - facture a 0 -> A_SURVEILLER ;
   - facture negative -> creditNote a montants positifs.
 """
@@ -155,7 +156,9 @@ def test_parent_certifie_renseigne_les_trois_champs(monkeypatch):
     assert inv["original_sfec_invoice_number"] == "CG-P1"
 
 
-def test_deuxieme_avoir_a_surveiller(monkeypatch):
+def test_deuxieme_avoir_sur_meme_parent_est_accepte(monkeypatch):
+    """Deux retours partiels (numeros differents) sur le meme parent P1
+    sont certifies : seul la redition du meme numero est bloquee."""
     deja = _child(
         id="0-7-A0", numero="A0", sfec_statut="CERTIFIE",
         reference_invoice_id="P1",
@@ -170,9 +173,34 @@ def test_deuxieme_avoir_a_surveiller(monkeypatch):
 
     engine._auto_certify_invoices_locked()
 
-    assert calls == []
-    assert monitors and monitors[0][0] == "0-7-A1"
-    assert "deja" in monitors[0][1]
+    # L'avoir A1 (numero different de A0) sur le meme parent P1 est certifie.
+    assert [c["numero"] for c in calls] == ["A1"]
+    assert monitors == []
+
+
+def test_prepare_credit_note_accepte_autre_numero_meme_parent():
+    """Meme parent P1, numero different : pas de doublon, etat ok."""
+    credit_index = {"A0": ["0-7-A0"]}  # A0 deja certifie sur le parent P1
+    enfant = _child(
+        id="0-7-A1", numero="A1", sfec_statut="", reference_invoice_id="P1",
+    )
+    state, ref, parent, reason = engine._prepare_credit_note(
+        enfant, {"P1": _parent()}, {}, credit_index)
+    assert state == "ok"
+    assert ref == "P1"
+
+
+def test_prepare_credit_note_bloque_redition_meme_numero():
+    """Meme numero d'avoir, id different : doublon, marque A_SURVEILLER."""
+    credit_index = {"A0": ["0-7-A0"]}  # A0 deja certifie
+    redite = _child(
+        id="0-7-A0-bis", numero="A0", sfec_statut="", reference_invoice_id="P1",
+    )
+    state, ref, parent, reason = engine._prepare_credit_note(
+        redite, {"P1": _parent()}, {}, credit_index)
+    assert state == "duplicate"
+    assert ref == "P1"
+    assert "deja" in reason
 
 
 def test_facture_zero_a_surveiller(monkeypatch):
@@ -410,6 +438,46 @@ def test_lien_manuel_avoir_parent():
         sqlite_db.set_sfec_invoice_link(numero, "P1")
         assert sqlite_db.get_sfec_invoice_link(numero) == "P1"
         assert sqlite_db.fetch_sfec_invoice_links()[numero] == "P1"
+    finally:
+        _purge()
+
+
+# ── Type 8 : retour de vente ──────────────────────────────────────────────────
+
+
+def test_credit_label_retour_pour_type8():
+    assert engine._credit_label({"type_doc": "avoir", "sage_type": 8}) == "Retour"
+    assert engine._credit_label({"type_doc": "avoir", "sage_type": 7}) == "Avoir"
+    assert engine._credit_label({"type_doc": "vente"}) == "Facture negative"
+
+
+def test_miroir_retour_type8_ecrit_sage_type():
+    sqlite_db.init_database()
+    _purge()
+    numero = PREFIX + "R001"
+    try:
+        invoice_id = sync_sage_invoice_to_sqlite({
+            "numero": numero,
+            "date_facture": "2026-01-15",
+            "tiers_code": "C1",
+            "type_doc": "avoir",
+            "sage_domaine": 0,
+            "sage_type": 8,
+            "sage_piece": numero,
+            "montant_ht": -1000,
+            "montant_ttc": -1189,
+            "montant_restant": -1189,
+            "statut": "A COMPTABILISER",
+            "valide": 1,
+        })
+        with sqlite_db.get_cursor() as cur:
+            row = cur.execute(
+                "SELECT * FROM invoices WHERE id = ?", (invoice_id,)
+            ).fetchone()
+        assert row["type_doc"] == "avoir"
+        assert row["sage_type"] == 8
+        assert row["sage_domaine"] == 0
+        assert row["sage_piece"] == numero
     finally:
         _purge()
 
