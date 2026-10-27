@@ -204,14 +204,15 @@ def _credit_label(invoice):
 
 
 def _should_mark_credit_failure(invoice):
-    """Seuls les vrais avoirs (DO_Type=7) sont marques A_SURVEILLER.
+    """Seuls les vrais avoirs (DO_Type=7) ou factures negatives sont marques
+    A_SURVEILLER en cas d'echec.
 
     Les 5 585 factures negatives saisies en DO_Type=6 restent hors perimetre
     automatique tant que le client n'a pas tranche (rapport 2026-10-21, §6.4).
     Les marquer toutes A_SURVEILLER noierait la liste des anomalies ; elles
     sont certifiees en creditNote des qu'un parent est resolu (lien manuel).
     """
-    return invoice.get("type_doc") == "avoir"
+    return invoice.get("type_doc") == "avoir" or _as_float(invoice.get("montant_ttc"), 0) < 0
 
 
 def _manual_links():
@@ -276,6 +277,19 @@ def _prepare_credit_note(invoice, by_numero, manual_links, credit_index):
     ref = _resolve_credit_parent(invoice, by_numero, manual_links)
 
     if not ref:
+        # Facture sans reference : si c'est un avoir/retour (type_doc="avoir"
+        # ou montant_ttc negatif), c'est un remboursement direct. On ne bloque
+        # pas : on prepare le creditNote avec le numero de facture comme
+        # reference, pour que SFEC reçoive des montants positifs.
+        if _is_credit_note(invoice):
+            child_numero = str(invoice.get("numero") or "").strip()
+            invoice["reference_invoice_id"] = child_numero or raw_ref
+            invoice["external_credit_note_number"] = child_numero
+            invoice["original_sfec_invoice_number"] = child_numero or raw_ref
+            logger.info(
+                "Avoir/retour %s sans reference parent : creditNote direct",
+                invoice.get("numero", ""))
+            return ("ok", invoice["reference_invoice_id"], None, "")
         return ("no_ref", "", None,
                 "{}: reference d'origine introuvable ({!r})".format(label, raw_ref))
 

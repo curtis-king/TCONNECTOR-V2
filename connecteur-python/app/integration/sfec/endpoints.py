@@ -55,11 +55,11 @@ def _save_certified(certified_list):
 
 
 def _extract_tax_rate(tax_rate_str):
-    if not tax_rate_str:
+    if tax_rate_str is None or tax_rate_str == "":
         return 18, "18"
     clean = str(tax_rate_str).replace(",", ".")
     match = re.search(r"(\d+\.?\d*)", clean)
-    rate = round(float(match.group(1)), 2) if match else 18
+    rate = round(float(match.group(1)), 2) if match else 0.0
     return rate, str(rate)
 
 
@@ -277,9 +277,8 @@ def check_sage_totals(invoice, payload, tolerance=None):
         return ["HT Sage absent ou nul: ventilation TVA/centimes non fiable "
                 "- verifier la facture dans Sage"]
 
-    if abs(sage_ttc - sage_ht) <= tolerance:
-        return ["TTC = HT ({} FCFA): aucune TVA facturee - exoneration a "
-                "confirmer".format(sage_ttc)]
+    # Une facture exoneree (TTC = HT) est valide : pas de blocage
+    # "exoneration a confirmer" (validation directe, demande client).
 
     max_rate = _safe_float(cfg.get("max_additional_tax_rate"), 10.0)
     for tax in payload.get("additional_taxes") or []:

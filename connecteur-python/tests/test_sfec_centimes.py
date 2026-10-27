@@ -114,17 +114,19 @@ def test_taxe_additionnelle_code_explicite():
     assert p["additional_taxes"][0]["tax_label"] == "Taxe 3 %"
 
 
-def test_ttc_egal_ht_signale():
-    """Cas 25VFA3118 : aucune TVA facturee -> A_SURVEILLER, pas de payload."""
+def test_exonere_ttc_egal_ht_valide_directement():
+    """Cas 25VFA3118 : aucune TVA facturee (exonere).
+    L'exonération est validée directement, pas de blocage "a confirmer"."""
     inv = _invoice([{
         "designation": "Produit", "quantite": 1, "prix_unitaire": 250000,
-        "montant_ht": 250000, "taux_tva": 18, "montant_tva": 45000,
+        "montant_ht": 250000, "taux_tva": 0, "montant_tva": 0,
         "montant_ttc": 250000,
     }])
     p = db_invoice_to_sfec(inv)
 
     errors = check_sage_totals(inv, p)
-    assert any("TTC = HT" in e for e in errors)
+    assert errors == []
+    assert validate_sfec_payload(p) == []
 
 
 def test_cluster_a_ecart_arrondi_dans_tolerance():

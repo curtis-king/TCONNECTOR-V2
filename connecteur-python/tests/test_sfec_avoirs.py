@@ -109,7 +109,9 @@ def _capture_worker(monkeypatch):
     return calls
 
 
-def test_avoir_sans_reference_a_surveiller(monkeypatch):
+def test_avoir_sans_reference_devient_credit_note(monkeypatch):
+    """Un avoir Type 7 sans reference parent est un remboursement direct :
+    certifie en creditNote a montants positifs, pas de A_SURVEILLER."""
     _setup_pass(monkeypatch, [_child(reference="")])
     calls = _capture_worker(monkeypatch)
     monitors = []
@@ -120,9 +122,12 @@ def test_avoir_sans_reference_a_surveiller(monkeypatch):
 
     engine._auto_certify_invoices_locked()
 
-    assert calls == []
-    assert monitors and monitors[0][0] == "0-7-A1"
-    assert "introuvable" in monitors[0][1]
+    assert len(calls) == 1
+    assert calls[0]["numero"] == "A1"
+    assert calls[0]["reference_invoice_id"] == "A1"
+    assert calls[0]["external_credit_note_number"] == "A1"
+    assert calls[0]["original_sfec_invoice_number"] == "A1"
+    assert monitors == []
 
 
 def test_parent_non_certifie_attend_sans_marquage(monkeypatch):
@@ -223,7 +228,9 @@ def test_facture_zero_a_surveiller(monkeypatch):
     assert monitors and "Montant nul" in monitors[0][1]
 
 
-def test_facture_negative_sans_reference_non_marquee(monkeypatch):
+def test_facture_negative_sans_reference_devient_credit_note(monkeypatch):
+    """Une facture negative (montant_ttc < 0) sans reference est un
+    avoir/remboursement : certifiee en creditNote a montants positifs."""
     inv = _child(
         id="0-6-N1", numero="N1", type_doc="vente",
         reference="", reference_invoice_id="", montant_ttc=-1189,
@@ -238,9 +245,12 @@ def test_facture_negative_sans_reference_non_marquee(monkeypatch):
 
     engine._auto_certify_invoices_locked()
 
-    # Les 5 585 factures negatives ne sont pas noyees dans A_SURVEILLER tant
-    # que le client n'a pas tranche ; elles restent hors perimetre.
-    assert calls == []
+    # Certifiee en creditNote (pas de marquage A_SURVEILLER).
+    assert len(calls) == 1
+    assert calls[0]["numero"] == "N1"
+    assert calls[0]["reference_invoice_id"] == "N1"
+    assert calls[0]["external_credit_note_number"] == "N1"
+    assert calls[0]["original_sfec_invoice_number"] == "N1"
     assert monitors == []
 
 
