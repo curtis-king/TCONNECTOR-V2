@@ -222,6 +222,8 @@ def pending_page():
         uncertified.append(inv)
     uncertified.sort(key=lambda x: x.get("date_facture", ""), reverse=True)
 
+    pending_reasons = cache.get("pending_reasons", {}) or {}
+
     try:
         page = max(1, int(request.args.get("page", 1)))
     except (TypeError, ValueError):
@@ -242,9 +244,11 @@ def pending_page():
             sage_type = None
         badge_avoir = ' <span class="badge badge-warn">{}</span>'.format(
             "Retour" if sage_type == 8 else "Avoir") if inv.get("type_doc") == "avoir" else ""
-        rows += "<tr><td>{}{}</td><td>{}</td><td>{}</td><td style='text-align:right'>{}</td><td><button class='btn btn-sm btn-success' onclick=\"certifySingle('{}')\">Certifier</button> <button class='btn btn-sm' style='background:#4a1d96;color:#fff' onclick=\"toMonitor('{}')\">Surveiller</button></td></tr>".format(
+        motif = _esc(pending_reasons.get(inv.get("id"), ""))
+        rows += "<tr><td>{}{}</td><td>{}</td><td>{}</td><td style='text-align:right'>{}</td><td>{}</td><td><button class='btn btn-sm btn-success' onclick=\"certifySingle('{}')\">Certifier</button> <button class='btn btn-sm' style='background:#4a1d96;color:#fff' onclick=\"toMonitor('{}')\">Surveiller</button></td></tr>".format(
             _esc(inv.get("numero", "")), badge_avoir, _esc(inv.get("date_facture", "")),
             _esc(inv.get("nom_tiers", "")), _safe_amount(inv.get("montant_ttc", 0), 2),
+            motif,
             inv.get("id", ""), inv.get("id", "")
         )
     sfec_warn = ""
@@ -255,7 +259,7 @@ def pending_page():
     elif not sfec_lookup_available:
         sfec_warn = ('<p class="badge badge-warn" style="margin-bottom:12px">'
                      'Liste SFEC indisponible : filtre base sur le statut local, verification impossible</p>')
-    empty = '<tr><td colspan="5" style="text-align:center;color:#64748b">Toutes certifiees !</td></tr>' if not rows else ""
+    empty = '<tr><td colspan="6" style="text-align:center;color:#64748b">Toutes certifiees !</td></tr>' if not rows else ""
 
     # Proposition 06 : les factures A_SURVEILLER ne sont plus muettes. Le
     # motif est enregistre par mark_to_monitor() et affiche ici avec une

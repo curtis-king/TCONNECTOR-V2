@@ -1025,6 +1025,9 @@ def _auto_certify_invoices_locked():
     avoir_ids_par_ref = _build_credit_note_index(
         invoices_snapshot, by_numero, manual_links)
 
+    # Motifs de non-certification, pour affichage sur la page /pending.
+    pending_reasons = {}
+
 
     _seen_ids = set()
     _seen_numeros = set()
@@ -1046,6 +1049,7 @@ def _auto_certify_invoices_locked():
         sfec_statut = inv.get("sfec_statut", "")
 
         if sfec_statut in ("EN_COURS", "ERREUR", "A_SURVEILLER"):
+            pending_reasons[_id] = "Statut SFEC : {}".format(sfec_statut)
             continue
 
         if numero in sfec_lookup:
@@ -1065,6 +1069,7 @@ def _auto_certify_invoices_locked():
         # recuperation/409 au lieu de rester invisible a vie.
         if (sfec_statut in ("CERTIFIE", "DEJA_CERTIFIE")
                 and not _needs_certification_recovery(inv)):
+            pending_reasons[_id] = "Déjà certifiée sur SFEC"
             continue
 
         if _has_zero_amount(inv):
@@ -1078,6 +1083,9 @@ def _auto_certify_invoices_locked():
             state, ref, _parent, reason = _prepare_credit_note(
                 inv, by_numero, manual_links, avoir_ids_par_ref)
             if state == "parent_pending":
+                pending_reasons[_id] = (
+                    "En attente de certification de la facture d'origine ('{}')"
+                    .format(ref))
                 logger.debug("Avoir %s en attente de certification de %s",
                              numero, ref)
                 continue
@@ -1088,17 +1096,25 @@ def _auto_certify_invoices_locked():
                     except Exception:
                         pass
                 else:
+                    pending_reasons[_id] = (
+                        "Facture négative hors périmètre automatique : {}"
+                        .format(reason))
                     logger.debug("Facture negative %s hors perimetre: %s",
                                  numero, reason)
                 continue
 
         if not _should_retry(numero):
+            pending_reasons[_id] = "Nouvelle tentative désactivée pour ce numéro"
             continue
 
         to_certify.append(inv)
 
     logger.info("Auto-certif: %d a comptabiliser, %d sur SFEC (OK), %d a certifier",
                 to_account, sfec_matched, len(to_certify))
+
+    # Persiste les motifs de non-certification pour affichage sur /pending.
+    with _lock:
+        _cache["pending_reasons"] = pending_reasons
 
     if not to_certify:
         return

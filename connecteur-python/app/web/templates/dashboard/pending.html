@@ -2,7 +2,7 @@
 <div class="card"><h2>En attente de certification SFEC ({{ count }})</h2>{{ sfec_warn | safe }}
 <p style="font-size:13px;color:#94a3b8;margin-bottom:12px">{{ val_count }} facture(s) a comptabiliser (DO_Statut=2)</p>
 <table><thead><tr><th>Numero</th><th>Date</th><th>Tiers</th>
-<th style="text-align:right">Montant TTC</th><th>Action</th></tr></thead>
+<th style="text-align:right">Montant TTC</th><th>Motif</th><th>Action</th></tr></thead>
 <tbody>{{ rows | safe }}{{ empty | safe }}</tbody></table>
 {% if count > 100 %}
 <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px">
