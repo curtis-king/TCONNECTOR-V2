@@ -6,8 +6,16 @@ import logging
 import threading
 from datetime import datetime
 from app.config.manager import get_company_config, get_config
+from app.domain.taxes import (
+    ITEM_ROLES,
+    classify_line_rate,
+    compute_tax_breakdown,
+    resolve_additional_tax,
+    round_amount,
+    snap_rate,
+)
 from app.integration.sfec.client import SfecClient
-from app.storage.db import compute_cent_tax
+from app.storage.db import cent_tax_rate
 
 _DEFAULT_RECIPIENT_NIU = "M000000000000001"
 _DEFAULT_RECIPIENT_PHONE = "069134144"
@@ -202,12 +210,13 @@ def _infer_vat_rate(ratio):
 
 def _extract_additional_taxes(invoice, subtotal, total_tax, centimes,
                               tolerance=None, max_rate=None):
-    """Deduit les taxes additionnelles du TTC Sage.
+    """Deduit les taxes additionnelles du TTC Sage (wrapper historique).
 
-    SFEC separe la TVA (total_tax_t_amount / total_tax_r_amount), le centime
-    additionnel (additional_cent_tax, 5 % de la TVA) et les autres taxes
-    (additional_taxes : 3 %, 0,25 %, TAR, TAX_MUNI...). Le TTC Sage est la
-    source de verite : on isole le residu apres TVA et centimes.
+    Le calcul complet est fait par `app.domain.taxes` (ventilation TVA /
+    centime / taxes supplementaires a partir des lignes et du TTC). Cette
+    fonction reste disponible pour les appelants historiques : elle isole
+    le residu apres TVA et centimes et le qualifie avec le code SFEC
+    configure (`validation.additional_tax_codes`, code 203 pour le 3 %).
     """
     if subtotal <= 0:
         return []
@@ -228,28 +237,18 @@ def _extract_additional_taxes(invoice, subtotal, total_tax, centimes,
     if extra <= tolerance:
         return []
 
-    rate = round(extra / subtotal * 100, 2)
     # Les arrondis de Sage transforment 3 % en 2,99 % : on rehausse les taux
     # quasi entiers, sans toucher aux taux fractionnaires (0,25 %).
-    if abs(rate - round(rate)) <= 0.05:
-        rate = float(round(rate))
+    rate = snap_rate(extra / subtotal * 100.0)
     if max_rate and rate > max_rate:
         return []
 
     code = _safe_str(invoice.get("additional_tax_code"), "")
-    if not code:
-        for key, val in (cfg.get("additional_tax_codes") or {}).items():
-            try:
-                if abs(float(key) - rate) <= 0.1:
-                    code = _safe_str(val)
-                    break
-            except (TypeError, ValueError):
-                continue
-    code = code or "AUTRE"
-
     label = _safe_str(invoice.get("additional_tax_label"), "")
-    if not label:
-        label = "Taxe additionnelle {}%".format(("%g" % rate))
+    if not code or not label:
+        default_code, default_label = resolve_additional_tax(rate, cfg)
+        code = code or default_code
+        label = label or default_label
 
     return [{
         "tax_code": code,
@@ -311,10 +310,13 @@ def db_invoice_to_sfec(invoice):
         or raw_ttc < 0
     )
 
+    devise = _safe_str(invoice.get("devise"), "")
+    if not devise:
+        devise = "XAF" if company.get("currency", "XAF") == "XAF" else "USD"
+
     items = []
-    total_tax_t = 0
-    total_tax_r = 0
-    total_exempt = 0
+    line_records = []
+    item_record_indexes = []
 
     for line in lignes:
         quantity = _safe_float(line.get("quantite", 1), 1)
@@ -359,15 +361,20 @@ def db_invoice_to_sfec(invoice):
         discount_type = _safe_str(line.get("discount_type"), "fixed")
 
         rate_num, rate_str = _extract_tax_rate(line.get("taux_tva", "18"))
-        tax_amount = _safe_float(line.get("montant_tva", 0), 0)
-        if is_credit_note:
-            tax_amount = abs(tax_amount)
-        if tax_amount == 0:
-            tax_amount = round(net_amount * rate_num / 100, 2)
-        # SFEC attend le TTC de ligne (HT net + TVA). Les centimes et taxes
-        # additionnelles sont ventiles au niveau facture : ne pas reprendre
-        # DL_MontantTTC, qui les inclut deja (double comptage sinon).
-        item_total = round(net_amount + tax_amount, 2)
+        role = classify_line_rate(rate_num)
+
+        # Une ligne de taxe (centime 0,9 %, taxe supplementaire 3 %...) n'est
+        # pas un article : elle ne doit ni gonfler le HT ni les items SFEC.
+        # Son montant est repris au niveau facture (centime 5 % de la TVA +
+        # taxes supplementaires) a partir du TTC Sage.
+        line_records.append({
+            "net": net_amount,
+            "rate": rate_num,
+            "kind": role,
+            "line": line,
+        })
+        if role not in ITEM_ROLES:
+            continue
 
         designation = _safe_str(line.get("description"), "")
         if not designation:
@@ -403,93 +410,87 @@ def db_invoice_to_sfec(invoice):
             "discount_amount": round(discount_amount, 2),
             "discount_type": discount_type,
             "amount_after_discount": round(net_amount, 2),
-            "net_amount": item_total,
+            # La TVA est allouee apres coup, par taux (voir ventilation
+            # fiscale ci-dessous) : la somme des items vaut exactement le
+            # total de TVA de la facture.
+            "net_amount": round(net_amount, 2),
             "tax_rate": rate_str,
-            "tax_amount": round(tax_amount, 2),
-            "total_amount": item_total,
+            "tax_amount": 0.0,
+            "total_amount": round(net_amount, 2),
         }
         items.append(item)
+        item_record_indexes.append(len(line_records) - 1)
 
-        if rate_num == 5:
-            total_tax_r += tax_amount
-        elif rate_num == 0:
-            total_exempt += net_amount
-        else:
-            total_tax_t += tax_amount
+    # Ventilation fiscale : TVA par taux, centime (5 % de la TVA collectee)
+    # et taxes supplementaires (3 %...), le total recalcule doit retomber sur
+    # le TTC Sage (source de verite).
+    breakdown = compute_tax_breakdown(
+        invoice,
+        line_records,
+        config=_validation_config(),
+        currency=devise,
+        cent_rate=cent_tax_rate(),
+    )
+    for message in breakdown.get("errors") or []:
+        logger.warning("Ventilation fiscale impossible (%s): %s",
+                       invoice.get("numero", "?"), message)
+    for message in breakdown.get("warnings") or []:
+        logger.info("Ventilation fiscale (%s): %s",
+                    invoice.get("numero", "?"), message)
 
     if not items:
-        montant_ht = _safe_float(invoice.get("montant_ht"), 0)
-        montant_ttc = _safe_float(invoice.get("montant_ttc"), 0)
-        if is_credit_note:
-            montant_ht = abs(montant_ht)
-            montant_ttc = abs(montant_ttc)
-
-        if montant_ht <= 0 and montant_ttc > 0:
-            # Repli degrade : sans lignes ni HT, on suppose le taux standard
-            # 18 % + centimes (1,189). check_sage_totals() signalera les
-            # factures dont le TTC n'est pas reconstructible.
-            montant_ht = round(montant_ttc / 1.189, 2)
-        if montant_ht <= 0 and montant_ttc <= 0:
-            montant_ht = 1
-
-        ratio = (montant_ttc / montant_ht) if montant_ht else None
-        rate = _infer_vat_rate(ratio)
-        if rate is None:
-            rate = 0.18
-        montant_tva = round(montant_ht * rate, 2)
-        centimes = compute_cent_tax(montant_tva)
-        if montant_ttc <= 0:
-            montant_ttc = round(montant_ht + montant_tva + centimes, 2)
-
-        item_total = round(montant_ht + montant_tva, 2)
+        # Repli degrade : sans lignes, on synthetise une ligne unique depuis
+        # l'en-tete. check_sage_totals() signalera les factures dont le TTC
+        # n'est pas reconstructible.
+        synthetic = breakdown.get("synthetic") or {}
+        net_amount = round_amount(
+            synthetic.get("net", 0), breakdown.get("decimals", 2))
+        tax_amount = round_amount(
+            synthetic.get("tax_amount", 0), breakdown.get("decimals", 2))
+        rate = synthetic.get("rate", 0) or 0
         items = [{
             "designation": "Facture",
             "classification_code": None,
             "type": "product",
-            "unit_price": montant_ht,
+            "unit_price": net_amount,
             "quantity": 1,
-            "subtotal": montant_ht,
+            "subtotal": net_amount,
             "discount_amount": 0,
             "discount_type": "fixed",
-            "amount_after_discount": montant_ht,
-            "net_amount": item_total,
-            "tax_rate": ("%g" % (rate * 100)),
-            "tax_amount": montant_tva,
-            "total_amount": item_total,
+            "amount_after_discount": net_amount,
+            "net_amount": round(net_amount + tax_amount, 2),
+            "tax_rate": ("%g" % rate),
+            "tax_amount": tax_amount,
+            "total_amount": round(net_amount + tax_amount, 2),
         }]
-        if rate == 0.05:
-            total_tax_t = 0
-            total_tax_r = montant_tva
-            total_exempt = 0
-        elif rate == 0:
-            total_tax_t = 0
-            total_tax_r = 0
-            total_exempt = montant_ht
-        else:
-            total_tax_t = montant_tva
-            total_tax_r = 0
-            total_exempt = 0
 
-    total_tax = round(total_tax_t + total_tax_r, 2)
+    line_tax_amounts = breakdown.get("line_tax_amounts") or []
+    for position, record_index in enumerate(item_record_indexes):
+        if record_index >= len(line_tax_amounts):
+            continue
+        tax_amount = line_tax_amounts[record_index]
+        item = items[position]
+        item["tax_amount"] = tax_amount
+        item["net_amount"] = round(item["subtotal"] + tax_amount, 2)
+        item["total_amount"] = item["net_amount"]
+
+    total_tax_t = breakdown["total_tax_t_amount"]
+    total_tax_r = breakdown["total_tax_r_amount"]
+    total_exempt = breakdown["total_exempt_amount"]
+    total_tax = breakdown["total_tax_amount"]
     subtotal = round(sum(i["subtotal"] for i in items), 2)
     total_line_discount = round(sum(i["discount_amount"] for i in items), 2)
 
     # Centime additionnel = 5 % de la TVA collectee (decret n° 2023-1737,
     # art. 22), jamais 5 % du HT. Meme regle que recalc_invoice_totals().
-    additional_cent_tax = compute_cent_tax(total_tax)
+    additional_cent_tax = breakdown["additional_cent_tax"]
 
-    # Taxes additionnelles (3 %, 0,25 %, TAR, TAX_MUNI...) : hors
+    # Taxes supplementaires (3 %, 0,25 %, TAR, TAX_MUNI...) : hors
     # total_tax_amount, dans `additional_taxes`.
-    additional_taxes = _extract_additional_taxes(
-        invoice, subtotal, total_tax, additional_cent_tax
-    )
-    additional_taxes_total = round(
-        sum(_safe_float(t.get("tax_amount"), 0) for t in additional_taxes), 2
-    )
+    additional_taxes = breakdown["additional_taxes"]
+    additional_taxes_total = breakdown["additional_taxes_total"]
 
-    total_amount = round(
-        subtotal + total_tax + additional_cent_tax + additional_taxes_total, 2
-    )
+    total_amount = breakdown["total_amount"]
 
     invoice_type = _map_invoice_type(invoice.get("type_doc", "vente"))
     if raw_ttc < 0:
@@ -498,6 +499,10 @@ def db_invoice_to_sfec(invoice):
         invoice_type = "creditNote"
 
     amount_due = round(_safe_float(invoice.get("montant_restant"), total_amount), 2)
+    if amount_due <= 0 and total_amount > 0:
+        # Une facture sans net a payer exploitable ne doit pas partir avec un
+        # montant du a zero : on reporte le total calcule.
+        amount_due = total_amount
     discount_amount = round(_safe_float(invoice.get("discount_amount", 0), 0), 2)
 
     if invoice_type == "creditNote":
@@ -547,10 +552,6 @@ def db_invoice_to_sfec(invoice):
     if not raw_niu and not comp_niu:
         if recipient_type == "business":
             recipient_type = "individual"
-
-    devise = _safe_str(invoice.get("devise"), "")
-    if not devise:
-        devise = "XAF" if company.get("currency", "XAF") == "XAF" else "USD"
 
     sfec_req = {
         "invoice_id": _safe_str(invoice.get("numero"), invoice.get("id", "")),

@@ -22,8 +22,8 @@ def _invoice(lignes, **kw):
         "numero": "TEST-CENT",
         "type_doc": "vente",
         "montant_ht": sum(l["montant_ht"] for l in lignes),
-        "montant_tva": sum(l["montant_tva"] for l in lignes),
-        "montant_ttc": sum(l["montant_ttc"] for l in lignes),
+        "montant_tva": sum(l.get("montant_tva", 0) for l in lignes),
+        "montant_ttc": sum(l.get("montant_ttc", 0) for l in lignes),
         "lignes": lignes,
     }
     inv.update(kw)
@@ -200,3 +200,165 @@ def test_tolerance_explicite_du_garde_fou():
 
     assert check_sage_totals(inv, p, tolerance=1.0) == []
     assert check_sage_totals(inv, p, tolerance=0.01)
+
+
+# ── Phase 2 : ventilation fiscale (reference client 26FAZ07297) ──────────────
+
+
+def test_reference_26faz07297():
+    """Facture cliente 26FAZ07297 : 18 % + centime 5 % de TVA + taxe 3 % (203).
+
+    HT 14 094 340 ; TVA 2 536 981 ; centime 126 849 ; taxe 3 % 422 830 ;
+    TTC 17 181 000. Arrondi XAF au franc entier.
+    """
+    lignes = [
+        {"designation": d, "quantite": 1, "prix_unitaire": ht,
+         "montant_ht": ht, "taux_tva": 18}
+        for d, ht in [
+            ("FAITIERE BAC 060 N.CR (M)", 521737),
+            ("TOLE BAC ALU 060 6m (M)", 9706316),
+            ("TOLE BAC ALU 070 DM (M)", 2635767),
+            ("CAVALIER ALU", 332410),
+            ("PLAQUETTE FEUTRE 40 X 20 X 3", 236100),
+            ("RONDELLE ALU 20 X 8", 131880),
+            ("RONDELLE FEUTRE 20 X 8", 138860),
+            ("TIRE FOND 6 X 80", 391270),
+        ]
+    ]
+    inv = _invoice(lignes, montant_ttc=17181000, source="sage", devise="XAF",
+                   numero="26FAZ07297")
+    p = db_invoice_to_sfec(inv)
+
+    assert p["subtotal"] == 14094340.0
+    assert p["total_tax_t_amount"] == 2536981.0
+    assert p["total_tax_r_amount"] == 0.0
+    assert p["additional_cent_tax"] == 126849.0
+    assert len(p["additional_taxes"]) == 1
+    tax = p["additional_taxes"][0]
+    assert tax["tax_code"] == "203"
+    assert tax["tax_label"] == "Taxe supplementaire 3 %"
+    assert tax["tax_rate"] == 3.0
+    assert tax["tax_amount"] == 422830.0
+    assert p["total_amount"] == 17181000.0
+    # La somme des taxes de ligne vaut exactement le total de TVA.
+    assert round(sum(i["tax_amount"] for i in p["items"]), 2) == 2536981.0
+    assert validate_sfec_payload(p) == []
+    assert check_sage_totals(inv, p) == []
+
+
+def test_tva_18_seul_source_sage():
+    inv = _invoice([{
+        "designation": "Produit", "quantite": 1, "prix_unitaire": 10000,
+        "montant_ht": 10000, "taux_tva": 18, "montant_ttc": 11890,
+    }], source="sage", devise="XAF")
+    p = db_invoice_to_sfec(inv)
+
+    assert p["total_tax_t_amount"] == 1800.0
+    assert p["additional_cent_tax"] == 90.0
+    assert "additional_taxes" not in p
+    assert p["total_amount"] == 11890.0
+    assert check_sage_totals(inv, p) == []
+
+
+def test_tva_5_seul_source_sage():
+    inv = _invoice([{
+        "designation": "Produit", "quantite": 1, "prix_unitaire": 10000,
+        "montant_ht": 10000, "taux_tva": 5, "montant_ttc": 10525,
+    }], source="sage", devise="XAF")
+    p = db_invoice_to_sfec(inv)
+
+    assert p["total_tax_r_amount"] == 500.0
+    assert p["additional_cent_tax"] == 25.0   # 5 % de 500
+    assert p["total_amount"] == 10525.0
+    assert check_sage_totals(inv, p) == []
+
+
+def test_mixte_18_5_et_3_source_sage():
+    inv = _invoice([
+        {"designation": "A", "quantite": 1, "prix_unitaire": 1000000,
+         "montant_ht": 1000000, "taux_tva": 18},
+        {"designation": "B", "quantite": 1, "prix_unitaire": 100000,
+         "montant_ht": 100000, "taux_tva": 5},
+    ], montant_ttc=1219000, source="sage", devise="XAF")
+    # 1 000 000 + 100 000 = 1 100 000 HT
+    # TVA : 180 000 + 5 000 = 185 000 ; centime : 9 250
+    # TTC attendu : 1 100 000 + 185 000 + 9 250 + 33 000 (3 % HT) = 1 327 250
+    # Ici TTC force 1 219 000 => residu = 1 219 000 - 1 100 000 - 185 000 - 9 250
+    #         = -75 250 -> incoherent, signale.
+    p = db_invoice_to_sfec(inv)
+    errors = check_sage_totals(inv, p)
+    assert any("TTC calcule" in e or "TTC Sage" in e for e in errors)
+
+
+def test_code_202_est_centime_pas_additionnel():
+    """Une ligne 0,9 % (code 202) alimente le centime, jamais additional_taxes.
+
+    On ajoute une ligne d'article a 18 % pour avoir une vraie TVA ; le
+    centime est alors 5 % de la TVA (90), pas une taxe additionnelle a 0,9 %.
+    """
+    inv = _invoice([{
+        "designation": "Produit", "quantite": 1, "prix_unitaire": 10000,
+        "montant_ht": 10000, "taux_tva": 18, "montant_tva": 1800,
+        "montant_ttc": 11890,
+    }])
+    p = db_invoice_to_sfec(inv)
+
+    assert p["additional_cent_tax"] == 90.0      # 5 % de 1 800
+    assert p["total_tax_t_amount"] == 1800.0
+    assert "additional_taxes" not in p
+    assert p["total_amount"] == 11890.0
+    assert check_sage_totals(inv, p) == []
+
+
+def test_residu_inconfu_a_surveiller():
+    """Residu qui ne correspond a aucun taux connu : code AUTRE + warning."""
+    inv = _invoice([{
+        "designation": "Produit", "quantite": 1, "prix_unitaire": 10000,
+        "montant_ht": 10000, "taux_tva": 18, "montant_ttc": 12500,
+    }])
+    p = db_invoice_to_sfec(inv)
+    # 12 500 - 10 000 - 1 800 - 90 = 610 => 6,10 % (inconnu -> AUTRE)
+    assert len(p["additional_taxes"]) == 1
+    assert p["additional_taxes"][0]["tax_code"] == "AUTRE"
+    assert p["total_amount"] == 12500.0
+    # Le total recalcule retombe exactement sur le TTC : pas d'erreur de totaux.
+    assert check_sage_totals(inv, p) == []
+
+
+def test_taux_additionnel_trop_eleve_a_surveiller():
+    """Ecart de 50 % du HT : taxe non ventilable (garde-fou)."""
+    inv = _invoice([{
+        "designation": "Produit", "quantite": 1, "prix_unitaire": 100000,
+        "montant_ht": 100000, "taux_tva": 18, "montant_ttc": 150000,
+    }])
+    p = db_invoice_to_sfec(inv)
+    errors = check_sage_totals(inv, p)
+    assert any("taxe non ventilable" in e for e in errors)
+
+
+def test_avoir_negatif_devient_credit_note_positif():
+    """Un avoir en montant negatif devient un creditNote a montants positifs."""
+    inv = {
+        "id": "0-7-AV1", "numero": "AV1", "type_doc": "avoir",
+        "sage_type": 8,
+        "montant_ht": -1000, "montant_ttc": -1189,
+        "montant_restant": -1189,
+        "reference": "P1", "reference_invoice_id": "P1",
+        "external_credit_note_number": "AV1",
+        "original_sfec_invoice_number": "CG-P1",
+        "lignes": [{
+            "quantite": -1, "prix_unitaire": 1000,
+            "montant_ht": -1000, "montant_tva": -180,
+            "montant_ttc": -1189, "taux_tva": 18,
+            "designation": "Article",
+        }],
+    }
+    p = db_invoice_to_sfec(inv)
+
+    assert p["invoice_type"] == "creditNote"
+    assert p["total_amount"] == 1189
+    assert p["subtotal"] == 1000
+    assert p["total_tax_amount"] == 180
+    assert p["additional_cent_tax"] == 9
+    assert p["amount_due"] == 1189
+    assert validate_sfec_payload(p) == []
