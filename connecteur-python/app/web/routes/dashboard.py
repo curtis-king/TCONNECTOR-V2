@@ -464,6 +464,12 @@ def print_certified(invoice_id):
     is_avoir = inv_type == "creditNote"
     local, lignes = _print_local_lines(numero, "avoir" if is_avoir else "vente")
 
+    # Fallback lecture directe des lignes Sage quand la facture n'est pas
+    # (ou plus) en base locale SQLite : affiche quand meme les articles a
+    # l'impression. Teste les types 6/7/8 comme _print_sage_lines.
+    if not lignes and numero:
+        lignes = _print_sage_lines(numero, "avoir" if is_avoir else "vente")
+
     # ---- Lignes : fusion donnees SFEC (montants) + donnees locales (Sage)
     items = inv.get("items") or []
     items_rows = []
