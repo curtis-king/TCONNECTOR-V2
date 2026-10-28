@@ -70,7 +70,7 @@
     "max_additional_tax_rate": 10,
     "cent_tax_rate": 5,
     "additional_tax_codes": {
-      "3": "AUTRE"
+      "3": "TAR"
     },
     "additional_tax_labels": {
       "3": "Taxe supplementaire 3 %"

@@ -43,7 +43,7 @@ CENTIME_HT_RATES = (0.25, 0.9)
 # tax_code : le seul exemple est "TAR" (Taxe sur les activites remunerées, 2,5 %).
 # Le code "AUTRE" est un fallback a remplacer par le code officiellement
 # accepte par SFEC une fois confirme avec le client.
-DEFAULT_ADDITIONAL_TAX_CODES = {"3": "AUTRE"}
+DEFAULT_ADDITIONAL_TAX_CODES = {"3": "TAR"}
 DEFAULT_ADDITIONAL_TAX_LABELS = {"3": "Taxe supplementaire 3 %"}
 
 # Ratios TTC/HT connus, pour le repli quand les lignes sont absentes.
