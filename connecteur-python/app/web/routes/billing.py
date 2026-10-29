@@ -7,9 +7,12 @@ wrapping _login_required est reproduit à l'identique.
 """
 
 import functools
+import logging
+
 from flask import Blueprint, jsonify, render_template, request, send_file
 from app.config.manager import get_config
 from app.domain import invoices as invoice_engine, pdf as pdf_generator, pos as pos_engine
+from app.domain.invoice_print_data import enrich_invoice_for_print
 from app.integration.sage.database import reset_sfec_monitor
 from app.storage import db as sqlite_db
 from app.sync import bidirectional as sync_bidirectional
@@ -18,6 +21,7 @@ from app.web.auth.security import _current_identity, _login_required
 from app.web.common import _csv_response, _esc, _page
 
 bp = Blueprint("billing", __name__)
+logger = logging.getLogger(__name__)
 
 
 
@@ -495,6 +499,12 @@ def api_invoice_pdf(invoice_id):
 
     if not pdf_generator.HAS_REPORTLAB:
         return jsonify({"error": "reportlab non installe - pip install reportlab"}), 500
+
+    try:
+        inv = enrich_invoice_for_print(inv)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Enrichissement impression facture %s impossible: %s",
+                       invoice_id, e)
 
     try:
         # Facture certifiee : 1er exemplaire "Original", les suivants "Duplicata"

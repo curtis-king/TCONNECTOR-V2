@@ -1613,6 +1613,63 @@ def fetch_contacts(type_filter=None):
         return []
 
 
+def fetch_contact_by_code(code):
+    """Retourne un tiers Sage par son code, sans charger toute la table."""
+    code = str(code or "").strip()
+    if not code:
+        return {}
+    t = get_table_map()
+    table = t.get("third_party", "")
+    if not table:
+        return {}
+
+    cols = _TABLE_COLUMNS.get(table.upper(), set())
+    name_col = next(
+        (col for col in ("CT_Intitule", "CT_IntitulePayeur", "CT_RaisonSociale",
+                         "CT_Libelle") if col.upper() in cols),
+        None,
+    )
+    name_expr = "ISNULL(c.{}, '') AS nom".format(name_col) if name_col else "'' AS nom"
+    addr_expr = ("ISNULL(c.CT_Adresse, '') AS adresse"
+                 if "CT_ADRESSE" in cols else "'' AS adresse")
+    phone_expr = ("ISNULL(c.CT_Telephone, '') AS telephone"
+                  if "CT_TELEPHONE" in cols else "'' AS telephone")
+    email_expr = ("ISNULL(c.CT_EMail, '') AS email"
+                  if "CT_EMAIL" in cols else "'' AS email")
+    niu_col = ("CT_NIU" if "CT_NIU" in cols else
+               "CT_Identifiant" if "CT_IDENTIFIANT" in cols else None)
+    niu_expr = ("ISNULL(c.{}, '') AS numero_fiscal".format(niu_col)
+                if niu_col else "'' AS numero_fiscal")
+
+    try:
+        with get_cursor() as cur:
+            cur.execute("""
+                SELECT TOP 1
+                    c.CT_Num AS code,
+                    {nom},
+                    {adresse},
+                    {telephone},
+                    {email},
+                    {niu}
+                FROM {tbl} c
+                WHERE c.CT_Num = ?
+            """.format(
+                nom=name_expr, adresse=addr_expr, telephone=phone_expr,
+                email=email_expr, niu=niu_expr, tbl=table,
+            ), (code,))
+            row = cur.fetchone()
+            if not row:
+                return {}
+            columns = [desc[0] for desc in cur.description]
+            return {
+                key: (str(value) if value is not None else "")
+                for key, value in zip(columns, row)
+            }
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Contact Sage introuvable pour %s: %s", code, e)
+        return {}
+
+
 def fetch_tax_rates():
     t = get_table_map()
     if not t["tax_rate"]:

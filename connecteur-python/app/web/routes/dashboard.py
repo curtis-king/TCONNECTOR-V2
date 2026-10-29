@@ -21,6 +21,12 @@ from app.config.manager import get_config, get_sfec_credentials
 from app.domain import invoices as invoice_engine
 from app.domain import pos as pos_engine
 from app.domain import print_copies
+from app.domain.invoice_print_data import (
+    fetch_sage_lines as _print_sage_lines,
+    normalize_print_line as _normalize_print_line,
+    sfec_invoice_items as _sfec_invoice_items,
+    sfec_item_ht as _sfec_item_ht,
+)
 from app.domain.pdf import (
     CGV_TEXT,
     CGR_TEXT,
@@ -414,97 +420,6 @@ def _print_logo_src(company):
     if raw:
         return raw if raw.startswith("data:") else "data:image/png;base64," + raw
     return image_data_uri(company_image_path(company, "logo_file_name"))
-
-
-def _normalize_print_line(line):
-    """Uniformise les noms de champs Sage / SQLite pour le modele d'impression."""
-    if not isinstance(line, dict):
-        return {}
-    normalized = dict(line)
-    normalized["code_article"] = (
-        line.get("code_article")
-        or line.get("code_produit")
-        or line.get("AR_Ref")
-        or ""
-    )
-    normalized["designation"] = (
-        line.get("designation")
-        or line.get("description")
-        or line.get("article_design")
-        or ""
-    )
-    normalized["unite"] = line.get("unite") or line.get("article_unit") or ""
-    return normalized
-
-
-def _sfec_invoice_items(inv):
-    """Retourne les lignes SFEC, y compris le format `items_json` du GET."""
-    if not isinstance(inv, dict):
-        return []
-    items = inv.get("items")
-    if isinstance(items, list) and items:
-        return [item for item in items if isinstance(item, dict)]
-
-    raw = inv.get("items_json")
-    if isinstance(raw, str):
-        try:
-            raw = json.loads(raw)
-        except (TypeError, ValueError):
-            return []
-    if isinstance(raw, list):
-        return [item for item in raw if isinstance(item, dict)]
-    return []
-
-
-def _sfec_item_ht(item):
-    """Montant HT d'une ligne SFEC, sans confondre `net_amount` avec le TTC."""
-    if not isinstance(item, dict):
-        return None
-    after_discount = _print_float(item.get("amount_after_discount"), None)
-    if after_discount is not None:
-        return after_discount
-
-    subtotal = _print_float(item.get("subtotal"), None)
-    net = _print_float(item.get("net_amount"), None)
-    tax = _print_float(item.get("tax_amount"), 0.0) or 0.0
-    if subtotal is not None and net is not None:
-        # Les payloads recents exposent net_amount = HT + TVA. Les anciens
-        # payloads peuvent exposer net_amount = HT apres remise.
-        if net >= subtotal + tax - 0.01:
-            return subtotal
-        return net
-    if subtotal is not None:
-        return subtotal
-    if net is not None:
-        return net - tax
-    return None
-
-
-def _print_sage_lines(numero, type_doc="vente", domaine=None, sage_type=None):
-    """Lignes Sage d'une piece source='sage' absentes de SQLite.
-
-    Les types de document par defaut viennent de la configuration Sage
-    (facture/avoir). Toute erreur (Sage indisponible, table absente) est
-    silencieuse : l'impression doit rester possible sans ces colonnes.
-    """
-    try:
-        from app.integration.sage.database import fetch_doc_lines, get_domain_config
-        cfg = get_domain_config()
-        dom = int(domaine) if domaine not in (None, "") else cfg["vente_domain"]
-        types = []
-        if sage_type not in (None, ""):
-            types.append(int(sage_type))
-        elif type_doc == "avoir":
-            types.extend([cfg["avoir_type"], cfg["retour_type"], cfg["facture_type"]])
-        else:
-            types.extend([cfg["facture_type"], cfg["avoir_type"]])
-        for doc_type in types:
-            lignes = fetch_doc_lines(dom, doc_type, numero)
-            if lignes:
-                return [_normalize_print_line(line) for line in lignes]
-    except Exception as e:
-        logger.warning("Lignes Sage indisponibles pour %s: %s", numero, e)
-    return []
 
 
 def _print_local_lines(numero, type_doc="vente"):
