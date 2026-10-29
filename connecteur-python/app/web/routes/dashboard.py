@@ -416,6 +416,70 @@ def _print_logo_src(company):
     return image_data_uri(company_image_path(company, "logo_file_name"))
 
 
+def _normalize_print_line(line):
+    """Uniformise les noms de champs Sage / SQLite pour le modele d'impression."""
+    if not isinstance(line, dict):
+        return {}
+    normalized = dict(line)
+    normalized["code_article"] = (
+        line.get("code_article")
+        or line.get("code_produit")
+        or line.get("AR_Ref")
+        or ""
+    )
+    normalized["designation"] = (
+        line.get("designation")
+        or line.get("description")
+        or line.get("article_design")
+        or ""
+    )
+    normalized["unite"] = line.get("unite") or line.get("article_unit") or ""
+    return normalized
+
+
+def _sfec_invoice_items(inv):
+    """Retourne les lignes SFEC, y compris le format `items_json` du GET."""
+    if not isinstance(inv, dict):
+        return []
+    items = inv.get("items")
+    if isinstance(items, list) and items:
+        return [item for item in items if isinstance(item, dict)]
+
+    raw = inv.get("items_json")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+    if isinstance(raw, list):
+        return [item for item in raw if isinstance(item, dict)]
+    return []
+
+
+def _sfec_item_ht(item):
+    """Montant HT d'une ligne SFEC, sans confondre `net_amount` avec le TTC."""
+    if not isinstance(item, dict):
+        return None
+    after_discount = _print_float(item.get("amount_after_discount"), None)
+    if after_discount is not None:
+        return after_discount
+
+    subtotal = _print_float(item.get("subtotal"), None)
+    net = _print_float(item.get("net_amount"), None)
+    tax = _print_float(item.get("tax_amount"), 0.0) or 0.0
+    if subtotal is not None and net is not None:
+        # Les payloads recents exposent net_amount = HT + TVA. Les anciens
+        # payloads peuvent exposer net_amount = HT apres remise.
+        if net >= subtotal + tax - 0.01:
+            return subtotal
+        return net
+    if subtotal is not None:
+        return subtotal
+    if net is not None:
+        return net - tax
+    return None
+
+
 def _print_sage_lines(numero, type_doc="vente", domaine=None, sage_type=None):
     """Lignes Sage d'une piece source='sage' absentes de SQLite.
 
@@ -437,7 +501,7 @@ def _print_sage_lines(numero, type_doc="vente", domaine=None, sage_type=None):
         for doc_type in types:
             lignes = fetch_doc_lines(dom, doc_type, numero)
             if lignes:
-                return lignes
+                return [_normalize_print_line(line) for line in lignes]
     except Exception as e:
         logger.warning("Lignes Sage indisponibles pour %s: %s", numero, e)
     return []
@@ -503,9 +567,10 @@ def print_certified(invoice_id):
     # l'impression. Teste les types 6/7/8 comme _print_sage_lines.
     if not lignes and numero:
         lignes = _print_sage_lines(numero, "avoir" if is_avoir else "vente")
+    lignes = [_normalize_print_line(line) for line in (lignes or [])]
 
     # ---- Lignes : fusion donnees SFEC (montants) + donnees locales (Sage)
-    items = inv.get("items") or []
+    items = _sfec_invoice_items(inv)
     items_rows = []
     total_poids = 0.0
     base18 = base5 = base_exempt = 0.0
@@ -519,10 +584,11 @@ def print_certified(invoice_id):
                           else lg.get("prix_unitaire"), 0.0)
         taux = _print_float(it.get("tax_rate") if it.get("tax_rate") not in (None, "")
                             else lg.get("taux_tva"), 18.0)
-        total_ligne = _print_float(it.get("net_amount") if it.get("net_amount") is not None
-                                   else lg.get("montant_ht"), 0.0)
+        total_ligne = _sfec_item_ht(it)
+        if total_ligne is None:
+            total_ligne = _print_float(lg.get("montant_ht"), 0.0)
         brut_ligne = _print_float(it.get("subtotal") if it.get("subtotal") is not None
-                                  else lg.get("subtotal"), 0.0) or qte * pu
+                                  else lg.get("montant_ht"), 0.0) or qte * pu
         remise = _print_float(it.get("discount_amount"), None)
         if remise is None:
             remise = _print_float(lg.get("remise_montant"), 0.0)
@@ -532,15 +598,39 @@ def print_certified(invoice_id):
         poids = _print_float(lg.get("poids_kg"), 0.0)
         nb_colis = _print_float(lg.get("nb_colis"), 0.0)
         pu_net = (total_ligne / qte) if qte else pu
-        designation = it.get("designation") or lg.get("designation") or ""
+        designation = (
+            it.get("designation")
+            or it.get("description")
+            or it.get("article_design")
+            or lg.get("designation")
+            or lg.get("description")
+            or lg.get("article_design")
+            or ""
+        )
+        reference = (
+            lg.get("code_article")
+            or lg.get("code_produit")
+            or it.get("code_article")
+            or it.get("code_produit")
+            or it.get("article_code")
+            or it.get("reference")
+            or ""
+        )
+        unite = (
+            lg.get("unite")
+            or lg.get("article_unit")
+            or it.get("unite")
+            or it.get("unit")
+            or ""
+        )
 
         items_rows.append({
-            "reference": lg.get("code_article", "") or it.get("article_code", "") or "",
+            "reference": reference,
             "designation": designation,
             "nb_colis": frn_amount(nb_colis, 2) if nb_colis else "",
             "conditionnement": lg.get("conditionnement", "") or "",
             "quantite": frn_amount(qte, 2),
-            "unite": lg.get("unite", "") or "",
+            "unite": unite,
             "poids": frn_amount(poids, 2) if poids else "",
             "remise": fmt_rate(remise_pct) if remise_pct else "Prix Net",
             "pu": frn_amount(pu, 2),
@@ -653,7 +743,13 @@ def print_certified(invoice_id):
         barcode_svg=barcode_svg(numero),
         invoice_date=fr_date(inv.get("invoice_date") or (local or {}).get("date_facture", "")),
         currency=devise,
-        reference=inv.get("reference") or (local or {}).get("reference", "") or "",
+        reference=(
+            next((row.get("reference") for row in items_rows
+                  if row.get("reference")), "")
+            or inv.get("reference")
+            or (local or {}).get("reference", "")
+            or ""
+        ),
         compte=(local or {}).get("tiers_code", "") or "",
         logo_src=_print_logo_src(company),
         seller_name=inv.get("seller_name", company.get("name", "")),
