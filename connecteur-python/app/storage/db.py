@@ -238,6 +238,7 @@ SCHEMA = """
                 is_recipient_taxable INTEGER DEFAULT 1,
                 recipient_rccm TEXT DEFAULT '',
                 reference_invoice_id TEXT DEFAULT '',
+                credit_note_on_account INTEGER DEFAULT 0,
                 payment_date TEXT DEFAULT '',
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now')),
@@ -475,6 +476,7 @@ def _migrate():
             ("is_recipient_taxable", "INTEGER DEFAULT 1"),
             ("recipient_rccm", "TEXT DEFAULT ''"),
             ("reference_invoice_id", "TEXT DEFAULT ''"),
+            ("credit_note_on_account", "INTEGER DEFAULT 0"),
             ("payment_date", "TEXT DEFAULT ''"),
         ]),
         ("invoice_lines", [
@@ -796,6 +798,178 @@ def update_invoice_sfec(invoice_id, sfec_id="", certification_number="",
             invoice_id
         ))
     return True
+
+
+def update_invoice_sfec_by_numero(numero, sfec_id="", certification_number="",
+                                  signature="", qr_code="",
+                                  certification_date="", statut=""):
+    """Met a jour le miroir SQLite a partir du numero de facture Sage/SFEC.
+
+    Utilise apres une recuperation ou une certification SFEC pour que
+    `/billing` reflechisse immediatement l'etat reel, sans attendre le
+    prochain pull Sage.
+    """
+    numero = str(numero or "").strip()
+    if not numero:
+        return False
+    with get_cursor() as cur:
+        cur.execute(
+            "SELECT id FROM invoices WHERE numero = ? ORDER BY id DESC LIMIT 1",
+            (numero,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return False
+    update_invoice_sfec(
+        row["id"],
+        sfec_id=sfec_id,
+        certification_number=certification_number,
+        signature=signature,
+        qr_code=qr_code,
+        certification_date=certification_date,
+        statut=statut,
+    )
+    clear_sfec_anomaly(numero)
+    return True
+
+
+def _pending_sfec_table_available(cur):
+    try:
+        row = cur.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'sfec_pending_writes'"
+        ).fetchone()
+        return bool(row)
+    except sqlite3.Error:
+        return False
+
+
+def get_pending_sfec_write(invoice_id="", numero=""):
+    """Retourne une certification SFEC en attente d'ecriture dans Sage.
+
+    La file est creee par `app.integration.sfec.pending_writes`. Si elle
+    n'existe pas encore, la fonction retourne simplement None.
+    """
+    invoice_id = str(invoice_id or "").strip()
+    numero = str(numero or "").strip()
+    if not invoice_id and not numero:
+        return None
+    with get_cursor() as cur:
+        if not _pending_sfec_table_available(cur):
+            return None
+        if invoice_id:
+            cur.execute(
+                "SELECT * FROM sfec_pending_writes WHERE invoice_id = ?",
+                (invoice_id,),
+            )
+            row = cur.fetchone()
+            if row:
+                return dict(row)
+        if numero:
+            cur.execute(
+                "SELECT * FROM sfec_pending_writes "
+                "WHERE invoice_id LIKE ? ORDER BY created_at DESC LIMIT 1",
+                ("%-" + numero,),
+            )
+            row = cur.fetchone()
+            if row:
+                return dict(row)
+    return None
+
+
+def _empty_sfec_state():
+    return {
+        "sfec_statut": "",
+        "sfec_num_certif": "",
+        "sfec_signature": "",
+        "sfec_qr_code": "",
+        "sfec_date_certif": "",
+        "sfec_id": "",
+        "sfec_pending_sage": False,
+        "sfec_pending_attempts": 0,
+    }
+
+
+def get_sfec_states_by_numeros(numeros):
+    """Etat SFEC effectif par numero de facture.
+
+    Combine le miroir SQLite et la file `sfec_pending_writes`. Une
+    certification connue localement reste visible meme si le pull Sage
+    renvoie encore des champs vides parce que l'ecriture Sage est bloquee.
+    """
+    numbers = []
+    for value in numeros or []:
+        numero = str(value or "").strip()
+        if numero and numero not in numbers:
+            numbers.append(numero)
+    if not numbers:
+        return {}
+
+    states = {}
+    pending_rows = []
+    with get_cursor() as cur:
+        placeholders = ",".join("?" for _ in numbers)
+        cur.execute(
+            "SELECT numero, sfec_statut, sfec_num_certif, sfec_signature, "
+            "sfec_qr_code, sfec_date_certif, sfec_id "
+            "FROM invoices WHERE numero IN ({})".format(placeholders),
+            numbers,
+        )
+        for row in cur.fetchall():
+            data = dict(row)
+            state = _empty_sfec_state()
+            state.update({
+                "sfec_statut": data.get("sfec_statut") or "",
+                "sfec_num_certif": data.get("sfec_num_certif") or "",
+                "sfec_signature": data.get("sfec_signature") or "",
+                "sfec_qr_code": data.get("sfec_qr_code") or "",
+                "sfec_date_certif": data.get("sfec_date_certif") or "",
+                "sfec_id": data.get("sfec_id") or "",
+            })
+            states[data["numero"]] = state
+
+        if _pending_sfec_table_available(cur):
+            cur.execute(
+                "SELECT invoice_id, certification_number, signature, qr_code, "
+                "certification_date, attempts FROM sfec_pending_writes"
+            )
+            pending_rows = [dict(row) for row in cur.fetchall()]
+
+    for pending in pending_rows:
+        invoice_id = str(pending.get("invoice_id") or "")
+        for numero in numbers:
+            if not invoice_id.endswith("-" + numero):
+                continue
+            state = states.setdefault(numero, _empty_sfec_state())
+            state["sfec_pending_sage"] = True
+            state["sfec_pending_attempts"] = int(pending.get("attempts") or 0)
+            state["sfec_num_certif"] = (
+                state.get("sfec_num_certif")
+                or str(pending.get("certification_number") or "")
+            )
+            state["sfec_signature"] = (
+                state.get("sfec_signature")
+                or str(pending.get("signature") or "")
+            )
+            state["sfec_qr_code"] = (
+                state.get("sfec_qr_code")
+                or str(pending.get("qr_code") or "")
+            )
+            state["sfec_date_certif"] = (
+                state.get("sfec_date_certif")
+                or str(pending.get("certification_date") or "")
+            )
+            if state["sfec_num_certif"]:
+                state["sfec_statut"] = "CERTIFIE"
+            elif state["sfec_statut"] not in ("CERTIFIE", "DEJA_CERTIFIE"):
+                state["sfec_statut"] = "EN_COURS"
+            break
+
+    for state in states.values():
+        if (state.get("sfec_num_certif")
+                and state.get("sfec_statut") not in ("CERTIFIE", "DEJA_CERTIFIE")):
+            state["sfec_statut"] = "CERTIFIE"
+    return states
 
 
 def generate_invoice_number():

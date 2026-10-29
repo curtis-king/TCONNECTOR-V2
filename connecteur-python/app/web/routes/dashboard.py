@@ -17,7 +17,7 @@ import time
 from datetime import datetime, timezone
 from app.core.utils import fmt_money
 from flask import Blueprint, jsonify, render_template, request
-from app.config.manager import get_config
+from app.config.manager import get_config, get_sfec_credentials
 from app.domain import invoices as invoice_engine
 from app.domain import pos as pos_engine
 from app.domain import print_copies
@@ -92,7 +92,8 @@ def index():
 
     val_count = m.get("pending_accounting", 0)
     sfec_enabled = bool(sfec_cfg.get("enabled"))
-    sfec_configured = sfec_enabled and bool(sfec_cfg.get("api_key"))
+    sfec_creds = get_sfec_credentials(sfec_cfg)
+    sfec_configured = sfec_enabled and bool(sfec_creds["api_key"])
     polling = polling_active()
 
     db_ok = "badge-ok" if m.get("db_connected") else "badge-err"
@@ -105,8 +106,7 @@ def index():
         sfec_ok, sfec_txt = "badge-ok", "Synchronisee"
     else:
         sfec_ok, sfec_txt = "badge-warn", "Jamais synchronisee"
-    sfec_url = (sfec_cfg.get("sandbox_url") if sfec_cfg.get("use_sandbox")
-                else sfec_cfg.get("base_url")) or ""
+    sfec_url = sfec_creds["base_url"]
     poll_ok = "badge-ok" if polling else "badge-err"
     poll_txt = "Actif" if polling else "Inactif"
     net_cls = "badge-ok" if conn.get("online") else "badge-err"
@@ -152,15 +152,44 @@ def invoices_page():
     pages = max(1, (total + limit - 1) // limit)
     page = min(page, pages)
     offset = (page - 1) * limit
-    page_rows = invoices[offset:offset + limit]
+    page_rows = [dict(inv) for inv in invoices[offset:offset + limit]]
+    states = sqlite_db.get_sfec_states_by_numeros(
+        [inv.get("numero") for inv in page_rows]
+    )
+    for inv in page_rows:
+        state = states.get(str(inv.get("numero") or "").strip())
+        if not state:
+            continue
+        # Ne jamais remplacer une certification lue dans Sage par un miroir
+        # local vide. La surcouche locale ne s'applique que si elle apporte
+        # une preuve/pending, ou si Sage n'a encore aucun statut SFEC.
+        if (state.get("sfec_pending_sage")
+                or state.get("sfec_num_certif")
+                or not (inv.get("sfec_num_certif") or inv.get("sfec_statut"))):
+            inv.update(state)
 
     rows = ""
     for inv in page_rows:
         s = inv.get("statut", "")
         sb = "badge-ok" if s == "COMPTABILISE" else "badge-info" if s in ("LETTRE", "LETTRÉ", "LETTRE ") else "badge-warn" if s in ("CONFIRME", "A COMPTABILISER") else ""
         ss = inv.get("sfec_statut", "")
-        sfb = "badge-ok" if ss in ("CERTIFIE", "DEJA_CERTIFIE") else "badge-warn" if ss == "EN_COURS" else "badge-err" if ss == "ERREUR" else "badge-info" if ss == "A_SURVEILLER" else ""
-        sftxt = "Certifie" if ss == "CERTIFIE" else "Deja certifie" if ss == "DEJA_CERTIFIE" else "En cours" if ss == "EN_COURS" else "Erreur" if ss == "ERREUR" else "A surveiller" if ss == "A_SURVEILLER" else "A certifier" if inv_type == "sale" else "-"
+        pending_sage = bool(inv.get("sfec_pending_sage"))
+        sfb = (
+            "badge-warn" if pending_sage
+            else "badge-ok" if ss in ("CERTIFIE", "DEJA_CERTIFIE")
+            else "badge-warn" if ss == "EN_COURS"
+            else "badge-err" if ss == "ERREUR"
+            else "badge-info" if ss == "A_SURVEILLER" else ""
+        )
+        sftxt = (
+            "Certifiée SFEC — Sage en attente" if pending_sage
+            else "Certifie" if ss == "CERTIFIE"
+            else "Deja certifie" if ss == "DEJA_CERTIFIE"
+            else "En cours" if ss == "EN_COURS"
+            else "Erreur" if ss == "ERREUR"
+            else "A surveiller" if ss == "A_SURVEILLER"
+            else "A certifier" if inv_type == "sale" else "-"
+        )
         cert_num = inv.get("sfec_num_certif", "") or ""
         val = inv.get("valide", 0)
         val_cls = "badge-ok" if val == 1 else "badge-err"
@@ -201,7 +230,8 @@ def pending_page():
     cache = get_cache()
     sfec_cfg = get_config().get("sfec", {})
     sfec_enabled = bool(sfec_cfg.get("enabled"))
-    sfec_configured = sfec_enabled and bool(sfec_cfg.get("api_key"))
+    sfec_configured = sfec_enabled and bool(
+        get_sfec_credentials(sfec_cfg)["api_key"])
     sfec_ids = set()
     for item in cache.get("sfec_invoices", []):
         seller_inv = item.get("seller_invoice_number", "") or item.get("invoice_number", "")
@@ -802,7 +832,9 @@ def ready():
     sfec_cfg = cfg.get("sfec", {}) or {}
     sfec_state = "disabled"
     if sfec_cfg.get("enabled"):
-        sfec_state = "configured" if sfec_cfg.get("api_key") else "missing_api_key"
+        sfec_state = ("configured"
+                      if get_sfec_credentials(sfec_cfg)["api_key"]
+                      else "missing_api_key")
     cache = get_cache()
     payload = {
         "ready": bool(db_ok),

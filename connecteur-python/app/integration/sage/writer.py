@@ -1,6 +1,10 @@
 import logging
 from datetime import datetime, timedelta
-from app.storage.db import get_cursor as get_sqlite_cursor, log_sync
+from app.storage.db import (
+    get_cursor as get_sqlite_cursor,
+    get_pending_sfec_write,
+    log_sync,
+)
 
 logger = logging.getLogger("t-connector.sage")
 
@@ -427,6 +431,67 @@ def read_invoices_from_sage(sage_pull_days=None, force_all=False):
         logger.error("Lecture Sage echouee: %s", e)
         return []
 
+
+def _resolve_sfec_state(existing, sage_inv, pending):
+    """Choisit l'etat SFEC a persister dans SQLite.
+
+    Un pull Sage peut arriver avant que l'ecriture SFEC ne soit validee dans
+    Sage (verrou SQL Server). Dans ce cas, les colonnes SFEC lues sont vides
+    ou encore `A_SURVEILLER` : il ne faut pas ecraser une certification
+    connue localement ni une certification en file d'ecriture.
+    """
+    incoming_cert = str(sage_inv.get("sfec_num_certif") or "").strip()
+    if incoming_cert:
+        return {
+            "statut": str(sage_inv.get("sfec_statut") or "CERTIFIE"),
+            "certification_number": incoming_cert,
+            "signature": str(sage_inv.get("sfec_signature") or ""),
+            "qr_code": str(sage_inv.get("sfec_qr_code") or ""),
+            "certification_date": str(sage_inv.get("sfec_date_certif") or ""),
+            "pending": bool(pending),
+        }
+
+    local_cert = str(existing["sfec_num_certif"] or "").strip()
+    local_proof = bool(
+        local_cert
+        or str(existing["sfec_id"] or "").strip()
+        or str(existing["sfec_date_certif"] or "").strip()
+    )
+    if not (local_proof or pending):
+        return {
+            "statut": str(sage_inv.get("sfec_statut") or ""),
+            "certification_number": "",
+            "signature": str(sage_inv.get("sfec_signature") or ""),
+            "qr_code": str(sage_inv.get("sfec_qr_code") or ""),
+            "certification_date": "",
+            "pending": False,
+        }
+
+    cert_number = local_cert or str(
+        (pending or {}).get("certification_number") or ""
+    )
+    return {
+        "statut": (
+            "CERTIFIE" if cert_number
+            else str(existing["sfec_statut"] or "EN_COURS")
+        ),
+        "certification_number": cert_number,
+        "signature": (
+            str(existing["sfec_signature"] or "")
+            or str((pending or {}).get("signature") or "")
+        ),
+        "qr_code": (
+            str(existing["sfec_qr_code"] or "")
+            or str((pending or {}).get("qr_code") or "")
+        ),
+        "certification_date": (
+            str(existing["sfec_date_certif"] or "")
+            or str((pending or {}).get("certification_date") or "")
+        ),
+        "pending": bool(pending),
+    }
+
+
 def sync_sage_invoice_to_sqlite(sage_inv):
     numero = sage_inv.get("numero", "")
     if not numero:
@@ -446,11 +511,21 @@ def sync_sage_invoice_to_sqlite(sage_inv):
     sage_domaine = m["sage_domaine"]
     sage_piece = m["sage_piece"]
 
+    pending = get_pending_sfec_write(numero=numero)
+
     with get_sqlite_cursor() as cur:
-        cur.execute("SELECT id FROM invoices WHERE numero = ? AND source = 'sage'", (numero,))
+        cur.execute("""
+            SELECT id, sfec_statut, sfec_num_certif, sfec_signature,
+                   sfec_qr_code, sfec_date_certif, sfec_id
+            FROM invoices
+            WHERE numero = ? AND source = 'sage'
+            ORDER BY id DESC
+            LIMIT 1
+        """, (numero,))
         existing = cur.fetchone()
 
         if existing:
+            sfec = _resolve_sfec_state(existing, sage_inv, pending)
             cur.execute("""
                 UPDATE invoices SET
                     tiers_code = ?, montant_ht = ?, montant_tva = ?,
@@ -484,14 +559,22 @@ def sync_sage_invoice_to_sqlite(sage_inv):
                 sage_inv.get("tiers_telephone", ""), sage_inv.get("tiers_telephone", ""),
                 sage_inv.get("tiers_email", ""), sage_inv.get("tiers_email", ""),
                 1 if sage_inv.get("valide") else 0,
-                sage_inv.get("sfec_statut", ""),
-                sage_inv.get("sfec_num_certif", ""),
-                sage_inv.get("sfec_signature", ""),
-                sage_inv.get("sfec_qr_code", ""),
+                sfec["statut"],
+                sfec["certification_number"],
+                sfec["signature"],
+                sfec["qr_code"],
                 existing["id"]
             ))
             return existing["id"]
         else:
+            sfec = _resolve_sfec_state({
+                "sfec_statut": "",
+                "sfec_num_certif": "",
+                "sfec_signature": "",
+                "sfec_qr_code": "",
+                "sfec_date_certif": "",
+                "sfec_id": "",
+            }, sage_inv, pending)
             statut_map = {
                 "SAISI": "brouillon",
                 "A COMPTABILISER": "a_comptabiliser",
@@ -526,8 +609,8 @@ def sync_sage_invoice_to_sqlite(sage_inv):
                 m["electronic_stamp_duty"],
                 type_doc, statut,
                 1 if sage_inv.get("valide") else 0,
-                sage_inv.get("sfec_statut", ""), sage_inv.get("sfec_num_certif", ""),
-                sage_inv.get("sfec_signature", ""), sage_inv.get("sfec_qr_code", ""),
+                sfec["statut"], sfec["certification_number"],
+                sfec["signature"], sfec["qr_code"],
                 sage_domaine, sage_type, sage_piece
             ))
             invoice_id = cur.lastrowid

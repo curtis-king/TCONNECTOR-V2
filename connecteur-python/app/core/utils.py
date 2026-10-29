@@ -2,6 +2,56 @@
 import re
 
 
+DEFAULT_COUNTER_CUSTOMER_CODES = frozenset({"CLI-CPT"})
+DEFAULT_COUNTER_NAME_KEYWORDS = ("COMPTOIR", "COMPTANT")
+
+
+def _normalise_code_list(value, default):
+    if value is None:
+        return default
+    if isinstance(value, str):
+        value = [value]
+    return frozenset(
+        str(item).strip().upper() for item in value if str(item).strip()
+    )
+
+
+def _normalise_keyword_list(value, default):
+    if value is None:
+        return default
+    if isinstance(value, str):
+        value = [value]
+    return tuple(
+        str(item).strip().upper() for item in value if str(item).strip()
+    )
+
+
+def is_counter_customer(code="", name="", sfec_cfg=None):
+    """Detecte un client comptoir sans modifier les donnees client.
+
+    Le code client est prioritaire. Le nom sert de repli pour les comptes
+    comptoir qui n'utilisent pas exactement le code `CLI-CPT`.
+    """
+    cfg = sfec_cfg or {}
+    codes = _normalise_code_list(
+        cfg.get("counter_customer_codes"),
+        DEFAULT_COUNTER_CUSTOMER_CODES,
+    )
+    keywords = _normalise_keyword_list(
+        cfg.get("counter_name_keywords"),
+        DEFAULT_COUNTER_NAME_KEYWORDS,
+    )
+
+    normalized_code = str(code or "").strip().upper()
+    if normalized_code and normalized_code in codes:
+        return True
+
+    normalized_name = str(name or "").strip().upper()
+    return bool(normalized_name) and any(
+        keyword in normalized_name for keyword in keywords
+    )
+
+
 def safe_float(val, default=0.0):
     """Convertit une valeur en float, en gérant la virgule décimale française."""
     if val is None:

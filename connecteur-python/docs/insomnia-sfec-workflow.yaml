@@ -1,0 +1,240 @@
+_type: export
+__export_version: 4
+__export_date: 2026-10-27
+__export_source: insomnia.desktop.app
+resources:
+  - _type: collection
+    parentId: null
+    name: T-CONNECTOR SFEC — Workflow complet
+    description: |
+      Workflow de test complet pour l'API SFEC (République du Congo).
+      
+      Endpoints couverts :
+      1. GET    /api/v1/invoices        — Liste des factures certifiées (pagination)
+      2. GET    /api/v1/invoices/{id}   — Détail d'une facture certifiée
+      3. POST   /api/v1/invoices        — Certification d'une facture (creditNote ou salesInvoice)
+      4. GET    /api/certified/list     — Liste locale des factures certifiées (connecteur)
+      5. GET    /certified/{id}/print   — Impression d'une facture certifiée (connecteur)
+      
+      Variables à configurer dans Insomnia (onglet "Variables" ou "Environment") :
+      - baseUrl   : https://api.sfec.gouv.cg  (ou https://sandbox.api.sfec.gouv.cg)
+      - apiKey    : votre clé API SFEC (X-API-Key)
+      - invoiceId : UUID ou numéro de facture (ex: f0b6ad2d-bd0e-4c5a-9559-e2d7c4156c90)
+      - invoiceNumber : numéro de facture (ex: INV-2025-000145)
+    color: "#4f46e5"
+    children:
+      # ========================================================================
+      # 1. LISTE DES FACTURES CERTIFIÉES (pagination)
+      # ========================================================================
+      - _type: request
+        parentId: null
+        name: GET /api/v1/invoices — Liste certifiées (pagination)
+        description: |
+          Récupère la liste des factures certifiées par votre ERP via l'intégration en ligne.
+          Pagination : pageSize max 20. Boucler sur page jusqu'à page >= totalPages.
+          
+          Query params :
+          - page            : numéro de page (défaut 1)
+          - pageSize        : nombre par page (max 20, défaut 10)
+          - invoice_type    : salesInvoice | creditNote (optionnel)
+          - date_start      : RFC 3339 (ex: 2026-07-01T00:00:00Z)
+          - date_end        : RFC 3339 (ex: 2026-07-31T00:00:00Z)
+        method: GET
+        url: "{{baseUrl}}/api/v1/invoices"
+        parameters:
+          - name: page
+            value: "1"
+            description: Numéro de page
+          - name: pageSize
+            value: "20"
+            description: Nombre par page (max 20)
+          - name: invoice_type
+            value: ""
+            description: salesInvoice ou creditNote (laisser vide pour tous)
+          - name: date_start
+            value: ""
+            description: Date début (RFC 3339)
+          - name: date_end
+            value: ""
+            description: Date fin (RFC 3339)
+        headers:
+          - name: X-API-Key
+            value: "{{apiKey}}"
+            description: Clé API SFEC
+        body: {}
+        authentication: {}
+        metaSortKey: 100
+        private: false
+        setting: {}
+        urlParams: {}
+
+      # ========================================================================
+      # 2. DÉTAIL D'UNE FACTURE CERTIFIÉE
+      # ========================================================================
+      - _type: request
+        parentId: null
+        name: GET /api/v1/invoices/{id} — Détail facture
+        description: |
+          Récupère les détails complets d'une facture spécifique par son UUID ou son numéro.
+          L'id accepte soit l'identifiant SFEC (UUID), soit le numéro de facture.
+        method: GET
+        url: "{{baseUrl}}/api/v1/invoices/{{invoiceId}}"
+        parameters: []
+        headers:
+          - name: X-API-Key
+            value: "{{apiKey}}"
+            description: Clé API SFEC
+        body: {}
+        authentication: {}
+        metaSortKey: 200
+        private: false
+        setting: {}
+        urlParams: {}
+
+      # ========================================================================
+      # 3. CERTIFICATION D'UNE FACTURE (POST)
+      # ========================================================================
+      - _type: request
+        parentId: null
+        name: POST /api/v1/invoices — Certifier une facture
+        description: |
+          Certifie une facture via l'API ERP en ligne.
+          
+          Champs requis selon le type :
+          - salesInvoice : invoice_id, invoice_type, subtotal, total_tax_t_amount,
+            total_tax_r_amount, total_exempt_amount, total_tax_amount, discount_amount,
+            amount_due, total_line_discount_amount, additional_cent_tax,
+            electronic_stamp_duty (doit être 0), total_amount, currency,
+            recipient_type, is_recipient_taxable, items
+          - creditNote : même chose + external_credit_note_number et
+            original_sfec_invoice_number requis
+          
+          Items requis : designation, type, unit_price, quantity, subtotal,
+          discount_amount, net_amount, tax_rate ("0"|"5"|"18"), tax_amount,
+          total_amount
+        method: POST
+        url: "{{baseUrl}}/api/v1/invoices"
+        parameters: []
+        headers:
+          - name: X-API-Key
+            value: "{{apiKey}}"
+            description: Clé API SFEC
+          - name: Content-Type
+            value: application/json
+            description: Type de contenu JSON
+        body:
+          mimeType: application/json
+          text: |-
+            {
+              "invoice_id": "INV-2025-000145",
+              "invoice_type": "salesInvoice",
+              "invoice_subject": "Vente matériel informatique",
+              "invoice_due_date": null,
+              "reference_invoice_id": null,
+              "sciet": null,
+              "terminal_identifier": null,
+              "logo_img": null,
+              "seller_bank_iban": null,
+              "seller_bank_rib": null,
+              "seller_address": null,
+              "seller_tax_regime": null,
+              "subtotal": 11280,
+              "total_tax_t_amount": 2030.4,
+              "total_tax_r_amount": 0,
+              "total_exempt_amount": 0,
+              "total_tax_amount": 2030.4,
+              "discount_amount": 0,
+              "amount_due": 13310.4,
+              "total_line_discount_amount": 2000,
+              "additional_cent_tax": 0,
+              "electronic_stamp_duty": 0,
+              "total_amount": 13310.4,
+              "currency": "XAF",
+              "recipient_type": "business",
+              "recipient_name": "Test Buyer Company",
+              "recipient_niu": "BUYER123456789",
+              "recipient_rccm": "CG-BZV-2025-B-001",
+              "recipient_address": "123 Buyer Street, Brazzaville",
+              "recipient_phone": "+237123456789",
+              "recipient_email": "contact@buyer.com",
+              "is_recipient_taxable": true,
+              "payment_method": "bank_transfer",
+              "payment_reference": "PAY-2025-001",
+              "payment_date": "2025-01-15T14:30:00Z",
+              "notes": "Facture API pour test d'intégration",
+              "items": [
+                {
+                  "designation": "iPhone 16 Pro",
+                  "classification_code": "C01",
+                  "discount_amount": 1000,
+                  "amount_after_discount": 3320,
+                  "net_amount": 3917.6,
+                  "quantity": 6,
+                  "subtotal": 3320,
+                  "tax_rate": "18",
+                  "tax_amount": 597.6,
+                  "total_amount": 3917.6,
+                  "type": "product",
+                  "unit_price": 720
+                }
+              ],
+              "logo_img": null,
+              "seller_bank_iban": null,
+              "seller_bank_rib": null,
+              "seller_address": null,
+              "seller_tax_regime": null,
+              "recipient_rib": null,
+              "recipient_iban": null,
+              "recipient_tax_residence": null,
+              "recipient_tax_regime": null,
+              "cashier_name": null,
+              "external_credit_note_number": null,
+              "original_sfec_invoice_number": null
+            }
+        authentication: {}
+        metaSortKey: 300
+        private: false
+        setting: {}
+        urlParams: {}
+
+      # ========================================================================
+      # 4. LOCAL — LISTE DES FACTURES CERTIFIÉES (connecteur)
+      # ========================================================================
+      - _type: request
+        parentId: null
+        name: GET /api/certified/list — Liste locale certifiées (connecteur)
+        description: |
+          Endpoint local du connecteur T-CONNECTOR.
+          Récupère la liste des factures certifiées stockées en cache local.
+          Utilisé par le dashboard /certified.
+        method: GET
+        url: "http://localhost:3000/api/certified/list"
+        parameters: []
+        headers: []
+        body: {}
+        authentication: {}
+        metaSortKey: 400
+        private: false
+        setting: {}
+        urlParams: {}
+
+      # ========================================================================
+      # 5. LOCAL — IMPRESSION D'UNE FACTURE CERTIFIÉE (connecteur)
+      # ========================================================================
+      - _type: request
+        parentId: null
+        name: GET /certified/{id}/print — Impression facture (connecteur)
+        description: |
+          Endpoint local du connecteur T-CONNECTOR.
+          Génère le PDF HTML d'impression d'une facture certifiée.
+          L'id est le numéro de facture (ex: 26FAZ07297).
+        method: GET
+        url: "http://localhost:3000/certified/{{invoiceNumber}}/print"
+        parameters: []
+        headers: []
+        body: {}
+        authentication: {}
+        metaSortKey: 500
+        private: false
+        setting: {}
+        urlParams: {}

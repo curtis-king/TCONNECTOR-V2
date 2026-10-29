@@ -13,7 +13,8 @@ echo ============================================
 echo.
 
 REM Racine du projet = 2 niveaux au-dessus de scripts\windows\
-cd /d "%~dp0..\.."
+REM pushd supporte les chemins UNC (\\serveur\partage) contrairement à cd /d
+pushd "%~dp0..\.."
 if errorlevel 1 (
     echo [ERREUR] Impossible d'acceder a la racine du projet.
     pause
@@ -61,5 +62,6 @@ if not "%EXITCODE%"=="0" (
     echo Consultez les logs dans le dossier data\.
 )
 
+popd 2>nul
 pause
 exit /b %EXITCODE%

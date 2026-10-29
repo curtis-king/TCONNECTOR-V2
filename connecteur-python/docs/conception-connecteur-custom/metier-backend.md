@@ -184,4 +184,5 @@ Contacts (NIU unique), produits (`tva_code` 18/5/0), TVA (seeds 18/5/0), vendeur
 14 contacts, 3 vendeurs, `INSERT OR IGNORE`), migration additive idempotente
 (`ALTER TABLE ADD COLUMN` si absent, jamais de `DROP`), config JSON par sections
 (`db/sfec/company/queue/validation/notifications/rate_limit/dashboard/pos/log_level`)
-avec overlay `SFEC_API_KEY` prioritaire.
+avec overlay `SFEC_API_KEY` (production) et `SFEC_SANDBOX_API_KEY` (sandbox)
+prioritaire ; le mode sandbox n'utilise jamais la clé de production.

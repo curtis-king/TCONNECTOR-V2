@@ -2,6 +2,7 @@ import logging
 import threading
 import time
 from datetime import datetime
+from app.config.manager import get_sfec_api_key
 from app.storage.db import compute_cent_tax, get_cursor, log_sync, row_to_dict, rows_to_list
 from app.integration.sage.database import _safe_float
 from app.integration.sage.writer import read_invoices_from_sage, sync_sage_invoice_to_sqlite, write_contact_to_sage, write_invoice_to_sage
@@ -566,7 +567,7 @@ def certify_pending_pos_invoices():
         return {"certified": 0, "errors": 0}
 
     cfg = get_config().get("sfec", {})
-    if not cfg.get("enabled") or not cfg.get("api_key"):
+    if not cfg.get("enabled") or not get_sfec_api_key(cfg):
         return {"certified": 0, "errors": 0}
     if not is_online():
         return {"certified": 0, "errors": 0}

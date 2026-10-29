@@ -55,6 +55,7 @@
 window.NATIVE_ALERTS = true;
 var bs={page:1,limit:25,sort_by:"date_facture",sort_dir:"DESC"};
 function esc(x){var d=document.createElement("div");d.textContent=(x==null?"":String(x));return d.innerHTML;}
+function escAttr(x){return esc(x).replace(/"/g,"&quot;").replace(/'/g,"&#39;");}
 function fmt(x){var n=Number(x);if(!isFinite(n))return "0";return n.toLocaleString("fr-FR",{maximumFractionDigits:0});}
 function buildQ(){
 var q=[],a=function(k,v){if(v!==null&&v!==""){q.push(k+"="+encodeURIComponent(v));}};
@@ -68,9 +69,11 @@ a("sort_by",bs.sort_by);a("sort_dir",bs.sort_dir);
 a("page",bs.page);a("limit",bs.limit);
 return q.join("&");}
 function sfecCell(t){
-var ss=t.sfec_statut||"",cb=' <button class="btn btn-sm" onclick="certifyBilling('+t.id+')">Certifier</button>';
+var ss=t.sfec_statut||"",cb=' <button class="btn btn-sm" data-invoice-id="'+escAttr(t.id)+'" data-invoice-numero="'+escAttr(t.numero)+'" data-invoice-source="'+escAttr(t.source)+'" onclick="certifyBilling(this)">Certifier</button>';
+if(t.sfec_pending_sage){return '<span class="badge badge-warn" title="'+esc((t.sfec_num_certif||"").slice(0,25))+'">Certifiée SFEC - Sage en attente</span>';}
 if(ss==="CERTIFIE"||ss==="DEJA_CERTIFIE"){return '<span class="badge badge-ok" title="'+esc((t.sfec_num_certif||"").slice(0,25))+'">'+(ss==="CERTIFIE"?"Certifie":"Deja certifie")+"</span>";}
-if(ss==="EN_COURS"){return '<span class="badge badge-warn">En attente</span>'+cb;}
+if(ss==="A_SURVEILLER"){return '<span class="badge badge-warn" title="Anomalie SFEC: voir la page Pending">A surveiller</span> <a class="btn btn-sm" href="/pending" rel="noopener" style="text-decoration:none">Details</a>';}
+if(ss==="EN_COURS"){return '<span class="badge badge-warn">En attente</span>';}
 if(ss==="ERREUR"){return '<span class="badge badge-err">Erreur</span>'+cb;}
 if(t.statut==="brouillon"){return '<span class="badge badge-info">A valider</span>';}
 return '<span class="badge badge-info">A certifier</span>'+cb;}
@@ -189,7 +192,18 @@ function pollSyncBi(btn, label){
     });
   },2000);
 }
-function certifyBilling(id){api("POST","/api/sfec/certify",{invoice_id:"INV-"+id}).then(function(r){if(r.success&&r.certification_number){showToast("Certifiee SFEC: "+r.certification_number,"ok");render();}else if(r.success){showToast("Certification envoyee, en attente...","warn");render();}else{showToast("Certification: "+(r.error||"echec"),"err");}}).catch(function(e){showToast("Erreur certification: "+e,"err")})}
+function certifyBilling(btn){
+  var id=btn.getAttribute("data-invoice-id");
+  var numero=btn.getAttribute("data-invoice-numero");
+  var source=btn.getAttribute("data-invoice-source");
+  var payload=(source==="sage"&&numero)?{invoice_id:numero,by:"numero"}:{invoice_id:"INV-"+id};
+  btn.disabled=true;
+  api("POST","/api/sfec/certify",payload).then(function(r){
+    if(r.success&&r.certification_number){showToast("Certifiee SFEC: "+r.certification_number,"ok");render();}
+    else if(r.success){showToast("Certification envoyee, en attente...","warn");render();}
+    else{btn.disabled=false;showToast("Certification: "+(r.error||"echec"),"err");}
+  }).catch(function(e){btn.disabled=false;showToast("Erreur certification: "+e,"err")});
+}
 function pushInvoice(id){api("POST","/api/invoices/"+id+"/push-sage").then(function(r){if(r.success){showToast("Facture poussee vers Sage","ok");render();}else{showToast("Push Sage: "+(r.error||"echec"),"err");}}).catch(function(e){showToast("Erreur push Sage: "+e,"err")})}
 document.getElementById("f_search").addEventListener("input",(function(){var t;return function(){clearTimeout(t);t=setTimeout(function(){bs.page=1;render();},250);};})());
 document.getElementById("filters-form").addEventListener("submit",function(e){e.preventDefault();bs.page=1;render();});

@@ -20,7 +20,14 @@ from app.domain import invoices as invoice_engine, pos as pos_engine
 from app.storage import db as sqlite_db
 from app.integration.sage.database import fetch_tax_rates, list_all_tables, mark_to_monitor, ping_database
 from app.integration.sfec.client import SfecClient
-from app.integration.sfec.endpoints import certify_sqlite_invoice, check_health, preview_sfec_payload, validate_sfec_payload
+from app.integration.sfec.endpoints import (
+    _extract_cert_data as _extract_sfec_cert_data,
+    certify_sqlite_invoice,
+    check_health,
+    preview_sfec_payload,
+    validate_sfec_payload,
+)
+from app.sync.connectivity import is_online
 from app.sync.engine import apply_config, certify_single, get_cache, sync_sfec_invoices
 from app.web.auth import user_auth
 from app.web.auth.security import _login_required, _current_identity
@@ -30,8 +37,8 @@ from app.web.common import _esc, _page
 bp = Blueprint('config', __name__)
 
 _SECRET_KEYS = {
-    "password", "api_key", "session_secret", "login_password",
-    "secret", "token", "private_key",
+    "password", "api_key", "sandbox_api_key", "session_secret",
+    "login_password", "secret", "token", "private_key",
 }
 
 
@@ -106,6 +113,7 @@ def config_page():
         connection_timeout_ms=db.get("connection_timeout_ms", 15000),
         request_timeout_ms=db.get("request_timeout_ms", 30000),
         api_key="",
+        sandbox_api_key="",
         sb_t=_s(sfec.get("use_sandbox"), True),
         sb_f=_s(sfec.get("use_sandbox"), False),
         en_t=_s(sfec.get("enabled"), True),
@@ -241,41 +249,181 @@ def api_sfec_test():
     return jsonify(check_health())
 
 
+def _sage_invoice_id(inv):
+    """Reconstruit l'identifiant du cache Sage : domaine-type-piece."""
+    piece = str(inv.get("sage_piece") or inv.get("numero") or "").strip()
+    if not piece:
+        return ""
+    try:
+        domaine = int(inv.get("sage_domaine"))
+    except (TypeError, ValueError):
+        domaine = 0
+    try:
+        type_doc = int(inv.get("sage_type"))
+    except (TypeError, ValueError):
+        return ""
+    if type_doc <= 0:
+        return ""
+    return "{}-{}-{}".format(domaine, type_doc, piece)
+
+
+def _local_sfec_recovery(inv):
+    """Recupere une certification SFEC existante pour une facture locale.
+
+    Retourne None si SFEC ne connait pas la facture, un resultat de succes si
+    la certification est lisible, ou un resultat en attente si la facture
+    existe mais n'expose pas encore de preuve exploitable.
+    """
+    numero = str(inv.get("numero") or "").strip()
+    if not numero:
+        return None
+    if not (get_config().get("sfec", {}) or {}).get("enabled"):
+        return None
+    try:
+        existing = SfecClient().verify_by_invoice_number(numero)
+    except Exception:  # noqa: BLE001
+        return None
+    if not existing:
+        return None
+
+    cert_number, sig, qr, cert_date = _extract_sfec_cert_data(existing)
+    if not (cert_number or qr):
+        return {
+            "success": False,
+            "pending": True,
+            "error": "Facture presente sur SFEC mais certification illisible: "
+                     "verification replanifiee",
+        }
+
+    sfec_id = str(existing.get("id") or existing.get("sfec_id") or "").strip()
+    try:
+        sqlite_db.update_invoice_sfec(
+            inv["id"],
+            sfec_id=sfec_id,
+            certification_number=cert_number,
+            signature=sig or "",
+            qr_code=qr or "",
+            certification_date=cert_date or "",
+            statut="DEJA_CERTIFIE",
+        )
+        sqlite_db.clear_sfec_anomaly(numero)
+    except Exception:  # noqa: BLE001
+        pass
+
+    return {
+        "success": True,
+        "already_certified": True,
+        "certification_number": cert_number,
+        "certification_date": cert_date or "",
+        "signature": sig or "",
+        "qr_code": qr or "",
+        "identifier": sfec_id,
+        "note": "Facture deja certifiee sur SFEC",
+    }
+
+
+def _certify_local_invoice(inv):
+    """Certifie une facture SQLite et journalise l'action."""
+    statut = (inv.get("statut") or "").lower()
+    if statut in ("", "brouillon", "draft"):
+        return jsonify({"success": False,
+                        "error": "Validez la facture avant de la certifier SFEC"}), 422
+
+    # Une preuve SFEC existe deja : ne pas la transformer en conflit 409.
+    if invoice_engine.is_sfec_certified(inv):
+        try:
+            sqlite_db.clear_sfec_anomaly(inv.get("numero", ""))
+        except Exception:  # noqa: BLE001
+            pass
+        return jsonify({
+            "success": True,
+            "already_certified": True,
+            "certification_number": inv.get("sfec_num_certif", ""),
+            "note": "Facture deja certifiee sur SFEC",
+        })
+
+    # Une facture synchronisee Sage est immuable pour l'edition, mais sa
+    # certification doit passer par le circuit Sage (ecriture dans Sage),
+    # pas par le seul miroir SQLite.
+    if invoice_engine.is_sage_synced(inv):
+        sage_id = _sage_invoice_id(inv)
+        if not sage_id:
+            return jsonify({
+                "success": False,
+                "error": "Facture synchronisee Sage mais identifiant Sage "
+                         "introuvable; lancez une synchronisation Sage.",
+            }), 409
+        try:
+            result = certify_single(sage_id)
+        except Exception as e:  # noqa: BLE001
+            return jsonify({"success": False, "error": str(e)}), 500
+        status = 200
+        if (not result.get("success")
+                and "non trouvee" in str(result.get("error") or "")):
+            status = 409
+        return jsonify(result), status
+
+    if is_online():
+        recovered = _local_sfec_recovery(inv)
+        if recovered is not None:
+            return jsonify(recovered)
+
+    try:
+        result = certify_sqlite_invoice(inv)
+        user_auth.audit("facture.certifiee", "Certification SFEC {} #{}".format(
+            result.get("certification_number", ""), inv.get("numero", "")),
+            email=(_current_identity() or {}).get("email", ""))
+        return jsonify(result)
+    except Exception as e:
+        status = int(getattr(e, "status_code", 0) or 0)
+        if status not in (400, 404, 409, 422):
+            status = 500
+        return jsonify({"success": False, "error": str(e)}), status
+
+
 @bp.route("/api/sfec/certify", methods=["POST"])
 @_login_required
 def api_sfec_certify():
     data = request.get_json(silent=True) or {}
     invoice_id = data.get("invoice_id")
-    if not invoice_id:
+    if invoice_id is None or str(invoice_id).strip() == "":
         return jsonify({"success": False, "error": "invoice_id requis"}), 400
 
-    if str(invoice_id).startswith("INV-"):
+    raw_id = str(invoice_id).strip()
+    by = str(data.get("by") or "").strip().lower()
+
+    # Contrat explicite utilise par la liste billing pour une facture Sage :
+    # le numero de piece est resolu cote serveur ; on ne fait jamais confiance
+    # au seul numero fourni par le navigateur pour construire le payload.
+    if by == "numero":
+        inv = invoice_engine.get_invoice_by_numero(raw_id)
+        if not inv:
+            return jsonify({"success": False,
+                            "error": "Facture '{}' non trouvee".format(raw_id)}), 404
+        return _certify_local_invoice(inv)
+
+    # Contrat historique : INV-<id SQLite>. L'identifiant SFEC reste le
+    # numero de la facture, resolu par sqlite_invoice_to_sfec().
+    if raw_id.startswith("INV-"):
         try:
-            inv_num = int(str(invoice_id).replace("INV-", ""))
+            inv_num = int(raw_id.replace("INV-", "", 1))
         except ValueError:
-            return jsonify({"success": False, "error": "Format ID invalide: {}".format(invoice_id)}), 400
+            # Compatibilite : un numero local peut lui-meme commencer par
+            # INV- (ex. INV-0001). On le resout alors par son numero.
+            inv = invoice_engine.get_invoice_by_numero(raw_id)
+            if inv:
+                return _certify_local_invoice(inv)
+            return jsonify({"success": False,
+                            "error": "Format ID invalide: {}".format(raw_id)}), 400
 
         inv = invoice_engine.get_invoice(inv_num)
         if not inv:
-            return jsonify({"success": False, "error": "Facture SQLite #{} non trouvee".format(inv_num)}), 404
-        statut = (inv.get("statut") or "").lower()
-        if statut in ("", "brouillon", "draft"):
             return jsonify({"success": False,
-                            "error": "Validez la facture avant de la certifier SFEC"}), 422
-        if invoice_engine.is_invoice_locked(inv):
-            return jsonify({"success": False,
-                            "error": "Facture deja certifiee SFEC ou synchronisee Sage"}), 409
+                            "error": "Facture SQLite #{} non trouvee".format(inv_num)}), 404
+        return _certify_local_invoice(inv)
 
-        try:
-            result = certify_sqlite_invoice(inv)
-            user_auth.audit("facture.certifiee", "Certification SFEC {} #{}".format(
-                result.get("certification_number", ""), inv.get("numero", "")),
-                email=(_current_identity() or {}).get("email", ""))
-            return jsonify(result)
-        except Exception as e:
-            return jsonify({"success": False, "error": str(e)}), 500
-
-    return jsonify(certify_single(invoice_id))
+    # Contrat dashboard : identifiant du cache Sage.
+    return jsonify(certify_single(raw_id))
 
 
 @bp.route("/api/sfec/to-monitor", methods=["POST"])
@@ -347,7 +495,7 @@ def api_sfec_sync():
 def api_sfec_certified_from_api():
     try:
         client = SfecClient()
-        result = client.list_invoices(page=1, page_size=100)
+        result = client.list_invoices(page=1, page_size=20)
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -411,8 +559,8 @@ def api_config_sfec():
     data = request.get_json(silent=True) or {}
     errors = []
     warnings = []
-    for key in ("api_key", "certify_status"):
-        if key in data and not (key == "api_key" and data[key] == ""):
+    for key in ("api_key", "sandbox_api_key", "certify_status"):
+        if key in data and not (key in ("api_key", "sandbox_api_key") and data[key] == ""):
             sfec[key] = data[key]
     # CF-14 : URLs validees (format) + avertissement si hote prive (SSRF) —
     # non bloquant car le middleware TCC Server peut etre auto-heberge.

@@ -134,9 +134,10 @@ def create_invoice(data):
     if is_recipient_taxable is None:
         is_recipient_taxable = 1
     reference_invoice_id = data.get("reference_invoice_id") or ""
+    credit_note_on_account = 1 if data.get("credit_note_on_account") else 0
     montant_ht_brut = data.get("montant_ht_brut")
 
-    if type_doc == 'avoir':
+    if type_doc == 'avoir' and not credit_note_on_account:
         _validate_avoir(reference_invoice_id)
 
     lignes = _validate_invoice_lines(data.get("lignes", []))
@@ -147,8 +148,8 @@ def create_invoice(data):
                 numero, date_facture, date_echeance, reference,
                 contact_id, tiers_code, tiers_nom, tiers_niu,
                 tiers_email, tiers_telephone, tiers_adresse, tiers_type,
-                statut, type_doc, source, notes, payment_method, devise, recipient_rccm, is_recipient_taxable, reference_invoice_id, montant_ht_brut
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                statut, type_doc, source, notes, payment_method, devise, recipient_rccm, is_recipient_taxable, reference_invoice_id, credit_note_on_account, montant_ht_brut
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             numero, date_facture, date_echeance, reference,
             contact_id, tiers_code, tiers_nom, tiers_niu,
@@ -158,6 +159,7 @@ devise,
 recipient_rccm,
 is_recipient_taxable,
 reference_invoice_id,
+credit_note_on_account,
 montant_ht_brut
         ))
         invoice_id = cur.lastrowid
@@ -185,6 +187,24 @@ def is_invoice_locked(invoice):
     return _is_invoice_locked(invoice)
 
 
+def is_sfec_certified(invoice):
+    """Vrai si une preuve de certification SFEC existe localement.
+
+    Ce test est volontairement distinct de `is_invoice_locked` : une facture
+    synchronisee avec Sage reste immuable pour l'edition, mais peut encore
+    avoir besoin d'etre certifiee SFEC.
+    """
+    return bool(
+        invoice.get("sfec_statut") in ("CERTIFIE", "DEJA_CERTIFIE")
+        or str(invoice.get("sfec_num_certif") or "").strip()
+    )
+
+
+def is_sage_synced(invoice):
+    """Vrai si la facture provient de Sage ou y a deja ete ecrite."""
+    return bool(invoice.get("synced_sage") or invoice.get("sage_piece"))
+
+
 def update_invoice(invoice_id, data):
     invoice = get_invoice(invoice_id)
     if not invoice:
@@ -195,15 +215,21 @@ def update_invoice(invoice_id, data):
                 invoice.get("numero", invoice_id)))
 
     # Alignement edit/create : gérer type de document + origine d'un avoir
-    if "type_doc" in data or "reference_invoice_id" in data:
+    if ("type_doc" in data or "reference_invoice_id" in data
+            or "credit_note_on_account" in data):
         data = dict(data)
         new_type_doc = data.get("type_doc", invoice.get("type_doc", "vente"))
+        new_on_account = bool(data.get(
+            "credit_note_on_account", invoice.get("credit_note_on_account", 0)))
         if new_type_doc == "avoir":
             ref = data.get("reference_invoice_id") or invoice.get("reference_invoice_id") or ""
             data["reference_invoice_id"] = ref
-            _validate_avoir(ref, exclude_invoice_id=invoice_id)
+            data["credit_note_on_account"] = 1 if new_on_account else 0
+            if not new_on_account:
+                _validate_avoir(ref, exclude_invoice_id=invoice_id)
         else:
             data["reference_invoice_id"] = ""
+            data["credit_note_on_account"] = 0
 
     fields = []
     values = []
@@ -213,7 +239,8 @@ def update_invoice(invoice_id, data):
         "tiers_telephone", "tiers_adresse", "tiers_type",
         "statut", "valide", "notes", "payment_method", "devise", "recipient_rccm",
         "is_recipient_taxable", "payment_date",
-        "type_doc", "reference_invoice_id", "montant_ht_brut",
+        "type_doc", "reference_invoice_id", "credit_note_on_account",
+        "montant_ht_brut",
     ]
 
     for field in updatable:

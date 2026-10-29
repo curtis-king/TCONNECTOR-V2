@@ -21,6 +21,8 @@ def _invoice(lignes, **kw):
     inv = {
         "numero": "TEST-CENT",
         "type_doc": "vente",
+        "nom_tiers": "Client Test",
+        "recipient_niu": "M0000000000000001",
         "montant_ht": sum(l["montant_ht"] for l in lignes),
         "montant_tva": sum(l.get("montant_tva", 0) for l in lignes),
         "montant_ttc": sum(l.get("montant_ttc", 0) for l in lignes),
@@ -350,6 +352,8 @@ def test_avoir_negatif_devient_credit_note_positif():
         "reference": "P1", "reference_invoice_id": "P1",
         "external_credit_note_number": "AV1",
         "original_sfec_invoice_number": "CG-P1",
+        "nom_tiers": "Client Test",
+        "recipient_niu": "M0000000000000001",
         "lignes": [{
             "quantite": -1, "prix_unitaire": 1000,
             "montant_ht": -1000, "montant_tva": -180,

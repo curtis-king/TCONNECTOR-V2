@@ -34,6 +34,45 @@ INSECURE_SESSION_SECRETS = {
     "", "CHANGE-ME", "CHANGE-ME-IN-PRODUCTION", "change-me", "secret",
 }
 
+SFEC_DEFAULT_BASE_URL = "https://api.sfec.gouv.cg"
+SFEC_DEFAULT_SANDBOX_URL = "https://sandbox.api.sfec.gouv.cg"
+
+
+def _config_bool(value):
+    """Convertit une valeur de config JSON en booleen sans piege des str."""
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "on")
+    return bool(value)
+
+
+def get_sfec_credentials(cfg=None):
+    """Retourne l'URL et la cle de l'environnement SFEC actif.
+
+    Mode strict : le sandbox n'utilise jamais la cle de production, et la
+    production n'utilise jamais la cle sandbox. Une cle absente doit etre
+    traitee comme une configuration incomplete par les appelants.
+    """
+    sfec = cfg if isinstance(cfg, dict) else get_sfec_config()
+    if _config_bool(sfec.get("use_sandbox")):
+        environment = "sandbox"
+        base_url = sfec.get("sandbox_url") or SFEC_DEFAULT_SANDBOX_URL
+        api_key = sfec.get("sandbox_api_key") or ""
+    else:
+        environment = "production"
+        base_url = sfec.get("base_url") or SFEC_DEFAULT_BASE_URL
+        api_key = sfec.get("api_key") or ""
+
+    return {
+        "environment": environment,
+        "base_url": str(base_url).strip().rstrip("/"),
+        "api_key": str(api_key).strip(),
+    }
+
+
+def get_sfec_api_key(cfg=None):
+    """Cle API de l'environnement SFEC actif (sandbox ou production)."""
+    return get_sfec_credentials(cfg)["api_key"]
+
 
 def _restrict_permissions(path):
     """Les secrets de config.json ne doivent pas etre lisibles par tous."""
@@ -66,10 +105,13 @@ def _defaults():
         "sfec": {
             "enabled": True,
             "api_key": "",
-            "base_url": "https://api.sfec.gouv.cg",
-            "sandbox_url": "https://sandbox.api.sfec.gouv.cg",
+            "sandbox_api_key": "",
+            "base_url": SFEC_DEFAULT_BASE_URL,
+            "sandbox_url": SFEC_DEFAULT_SANDBOX_URL,
             "use_sandbox": True,
             "certify_status": "A COMPTABILISER",
+            "counter_customer_codes": ["CLI-CPT"],
+            "counter_name_keywords": ["COMPTOIR", "COMPTANT"],
         },
         "company": {
             "name": "",
@@ -187,20 +229,32 @@ def load_config():
         else:
             _config = defaults
             save_config(_config)
-        # S1 (sécurité, audit 2026-09) : la clé API SFEC peut être fournie par
-        # la variable d'environnement SFEC_API_KEY, qui PREND LA PRIORITÉ sur
-        # la valeur de config.json. config.json (gitignoré) reste le fallback
-        # pour les installations existantes — la clé n'y est PAS supprimée.
-        # L'overlay est appliqué ici, sur la config chargée, afin que TOUS les
-        # lecteurs (get_sfec_config, engine.py, pos.py, routes/config.py, ...)
-        # voient la clé effective sans modification de leur code.
-        env_key = os.environ.get("SFEC_API_KEY", "").strip()
-        if env_key:
-            _config.setdefault("sfec", {})["api_key"] = env_key
+        # S1 (sécurité, audit 2026-09) : les clés API SFEC peuvent être
+        # fournies par l'environnement, avec priorité sur config.json.
+        # SFEC_API_KEY alimente la production ; SFEC_SANDBOX_API_KEY alimente
+        # le sandbox. Aucune clé n'est partagée entre les deux environnements.
+        _apply_sfec_env_overrides(_config)
         _apply_env_security_overrides(_config)
         if os.path.exists(CONFIG_FILE):
             _restrict_permissions(CONFIG_FILE)
     return _config
+
+
+def _apply_sfec_env_overrides(cfg):
+    """Applique les cles SFEC fournies par l'environnement.
+
+    SFEC_API_KEY          -> sfec.api_key (production)
+    SFEC_SANDBOX_API_KEY  -> sfec.sandbox_api_key (sandbox)
+    """
+    sfec = cfg.setdefault("sfec", {})
+    for env_name, key in (
+        ("SFEC_API_KEY", "api_key"),
+        ("SFEC_SANDBOX_API_KEY", "sandbox_api_key"),
+    ):
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            sfec[key] = value
+    return cfg
 
 
 def _apply_env_security_overrides(cfg):
@@ -270,6 +324,8 @@ def _restore_persisted_security_values(clean):
         ("TCONNECTOR_LOGIN_EMAIL", "dashboard", "login_email"),
         ("TCONNECTOR_LOGIN_PASSWORD", "dashboard", "login_password"),
         ("TCONNECTOR_DB_PASSWORD", "db", "password"),
+        ("SFEC_API_KEY", "sfec", "api_key"),
+        ("SFEC_SANDBOX_API_KEY", "sfec", "sandbox_api_key"),
     ):
         env_value = os.environ.get(env_name, "").strip()
         if not env_value:
@@ -285,11 +341,8 @@ def save_config(cfg):
     global _config
     with _lock:
         clean = copy.deepcopy(cfg)
-        # La clé fournie par l'environnement ne doit JAMAIS être persistée
+        # Une clé fournie par l'environnement ne doit JAMAIS être persistée
         # dans config.json (audit : fuite de secret via export/sauvegarde).
-        env_key = os.environ.get("SFEC_API_KEY", "").strip()
-        if env_key and clean.get("sfec", {}).get("api_key") == env_key:
-            clean.setdefault("sfec", {})["api_key"] = ""
         _restore_persisted_security_values(clean)
 
         directory = os.path.dirname(CONFIG_FILE) or "."
@@ -316,9 +369,7 @@ def save_config(cfg):
         _config = copy.deepcopy(clean)
         # Les surcharges d'environnement restent effectives en memoire apres
         # une sauvegarde, sans avoir ete ecrites dans le fichier.
-        env_key = os.environ.get("SFEC_API_KEY", "").strip()
-        if env_key:
-            _config.setdefault("sfec", {})["api_key"] = env_key
+        _apply_sfec_env_overrides(_config)
         _apply_env_security_overrides(_config)
 
 

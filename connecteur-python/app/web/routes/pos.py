@@ -12,6 +12,7 @@ import logging
 import os
 from flask import Blueprint, jsonify, render_template, request, send_file, session
 from app.config.manager import get_config, save_config
+from app.core.utils import is_counter_customer
 from app.domain import invoices as invoice_engine, pdf as pdf_generator, pos as pos_engine
 from app.storage import db as sqlite_db
 from app.web.common import _esc, _page
@@ -108,13 +109,21 @@ def pos_page():
         vendeur_opts_html += '<option value="{}"{}>{}</option>'.format(
             v["id"], sel, _esc(label))
 
+    try:
+        sfec_cfg = get_config().get("sfec", {})
+    except Exception:
+        sfec_cfg = {}
+
     with sqlite_db.get_cursor() as cur:
-        cur.execute("SELECT id, code, nom, niu, rccm, is_taxable, type FROM contacts WHERE type = 'client' AND est_actif = 1 ORDER BY nom LIMIT 1000")
+        cur.execute("SELECT id, code, nom, niu, rccm, is_taxable, type, type_raw FROM contacts WHERE type = 'client' AND est_actif = 1 ORDER BY nom LIMIT 1000")
         pos_clients = sqlite_db.rows_to_list(cur.fetchall())
         pos_clients_data = [
             {"id": c["id"], "code": c["code"], "nom": c["nom"],
              "niu": c.get("niu", ""), "rccm": c.get("rccm", ""),
-             "type": c.get("type", ""), "type_raw": c.get("type_raw", ""),
+             "type": c.get("type", ""),
+             "type_raw": ("individual" if is_counter_customer(
+                 c.get("code"), c.get("nom"), sfec_cfg)
+                 else c.get("type_raw", "")),
              "is_taxable": c.get("is_taxable", 1)} for c in pos_clients
         ]
 

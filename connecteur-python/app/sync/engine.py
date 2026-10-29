@@ -1,10 +1,11 @@
+import json
 import logging
 import time
 import threading
 import traceback
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from app.config.manager import get_config
+from app.config.manager import get_config, get_sfec_api_key
 from app.integration.sage.database import (
     fetch_sales_invoices, fetch_purchase_invoices, fetch_contacts,
     fetch_tax_rates, fetch_ledger_accounts, fetch_certified_invoices,
@@ -18,7 +19,7 @@ from app.integration.sfec.endpoints import (
 )
 from app.integration.sfec.client import SfecClient, NetworkOfflineError
 from app.integration.sfec.pending_writes import enqueue, flush
-from app.storage.db import fetch_sfec_invoice_links
+from app.storage.db import fetch_sfec_invoice_links, update_invoice_sfec_by_numero
 from app.sync.connectivity import is_online, check_now, get_status
 
 logger = logging.getLogger("t-connector.sync")
@@ -105,6 +106,66 @@ def _invalidate_sfec_lookup():
     _sfec_lookup_ts = 0
 
 
+def _sfec_error_json(exc):
+    body = getattr(exc, "error_json", None)
+    if isinstance(body, dict):
+        return body
+    raw = getattr(exc, "error_body", "") or ""
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+def overcredit_details(exc):
+    """Retourne le corps d'un 400 'avoir sur-solde', sinon None.
+
+    SFEC renvoie `already_credited`, `invoice_net` et `remaining` sur ce cas.
+    C'est un rejet metier definitif, pas une erreur transitoire.
+    """
+    try:
+        status = int(getattr(exc, "status_code", 0) or 0)
+    except (TypeError, ValueError):
+        status = 0
+    if status != 400:
+        return None
+    body = _sfec_error_json(exc)
+    if any(key in body for key in ("already_credited", "invoice_net", "remaining")):
+        return body
+    return None
+
+
+def overcredit_message(exc):
+    body = overcredit_details(exc) or {}
+    return (
+        "SFEC 400: avoir sur-solde: deja credite {}, facture {}, reste {} ({})"
+    ).format(
+        body.get("already_credited", "?"),
+        body.get("invoice_net", "?"),
+        body.get("remaining", "?"),
+        body.get("error", ""),
+    ).strip()
+
+
+def on_account_reference_conflict(exc):
+    """Retourne la reference si un 409 vient d'un creditNoteOnAccount."""
+    try:
+        status = int(getattr(exc, "status_code", 0) or 0)
+    except (TypeError, ValueError):
+        status = 0
+    if status != 409:
+        return None
+    body = _sfec_error_json(exc)
+    reference = str(body.get("reference") or "").strip()
+    if not reference:
+        return None
+    message = str(body.get("error") or body.get("message") or "").lower()
+    if "account" in message or "reference" in message:
+        return reference
+    return None
+
+
 def _queue_pending_write(invoice, cert_number, sig, qr, cert_date, error):
     """Met une certification en file si l'ecriture Sage echoue.
 
@@ -119,7 +180,13 @@ def _queue_pending_write(invoice, cert_number, sig, qr, cert_date, error):
         return False
     if isinstance(invoice, dict):
         with _lock:
-            invoice["sfec_statut"] = "EN_COURS"
+            invoice["sfec_statut"] = "CERTIFIE"
+            invoice["sfec_pending_sage"] = True
+            if cert_number:
+                invoice["sfec_num_certif"] = cert_number
+            invoice["sfec_signature"] = sig
+            invoice["sfec_qr_code"] = qr
+            invoice["sfec_date_certif"] = cert_date
     logger.warning(
         "Ecriture Sage differee pour %s (certification SFEC conservee): %s",
         invoice_id, error,
@@ -133,6 +200,8 @@ def _pending_write_done(invoice_id, cert_number=""):
         for inv in _cache["sales_invoices"]:
             if inv.get("id") == invoice_id:
                 inv["sfec_statut"] = "CERTIFIE"
+                inv["sfec_pending_sage"] = False
+                inv["sfec_pending_attempts"] = 0
                 if cert_number:
                     inv["sfec_num_certif"] = cert_number
                 break
@@ -166,14 +235,24 @@ def _as_float(value, default=0.0):
         return default
 
 
+def _as_bool(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "oui", "yes", "on")
+    return bool(value)
+
+
 def _is_credit_note(invoice):
     """Vrai pour un avoir DO_Type=7 ou une piece a montants negatifs.
 
     Une facture d'avoir saisie en DO_Type=6 (montants negatifs) doit partir
-    en creditNote SFEC, jamais en salesInvoice.
+    en creditNote SFEC, jamais en salesInvoice. Un avoir sur compte est
+    explicitement marque.
     """
     return (
-        invoice.get("type_doc") == "avoir"
+        invoice.get("type_doc") in ("avoir", "avoir_compte")
+        or _as_bool(invoice.get("credit_note_on_account"))
         or _as_float(invoice.get("montant_ttc"), 0) < 0
     )
 
@@ -270,31 +349,63 @@ def _prepare_credit_note(invoice, by_numero, manual_links, credit_index):
       - parent_invalid: parent est lui-meme un avoir -> A_SURVEILLER
       - parent_pending: parent pas encore certifie -> ATTENDRE (aucun marquage)
       - duplicate     : un avoir certifie existe deja -> A_SURVEILLER
-      - ok            : champs creditNote renseignes sur `invoice`
+      - ok            : champs creditNote/creditNoteOnAccount renseignes
+
+    Un avoir sans parent est un avoir sur compte (`creditNoteOnAccount`), pas
+    un creditNote auto-reference. Un parent explicitement fourni mais
+    introuvable reste `parent_absent` : on ne bascule jamais silencieusement
+    vers un avoir sur compte.
     """
     label = _credit_label(invoice)
+    child_numero = str(invoice.get("numero") or "").strip()
     raw_ref = invoice.get("reference_invoice_id") or invoice.get("reference", "")
+
+    def _is_duplicate():
+        ids_child = (credit_index or {}).get(child_numero, [])
+        return any(_i != invoice.get("id") for _i in ids_child)
+
+    def _mark_on_account(reference):
+        invoice["credit_note_on_account"] = True
+        invoice["reference_invoice_id"] = reference
+        invoice["external_credit_note_number"] = ""
+        invoice["original_sfec_invoice_number"] = ""
+        logger.info("Avoir %s sur compte (reference %s)", child_numero, reference)
+        return ("ok", reference, None, "")
+
+    on_account = (
+        _as_bool(invoice.get("credit_note_on_account"))
+        or invoice.get("type_doc") == "avoir_compte"
+    )
+    if on_account:
+        reference = str(raw_ref or child_numero or invoice.get("id") or "").strip()
+        if not reference:
+            return ("no_ref", "", None,
+                    "{}: reference d'avoir sur compte vide".format(label))
+        if _is_duplicate():
+            return ("duplicate", reference, None,
+                    "Un avoir/retour certifie existe deja pour '{}'".format(
+                        child_numero))
+        return _mark_on_account(reference)
+
     ref = _resolve_credit_parent(invoice, by_numero, manual_links)
 
     if not ref:
-        # Facture sans reference : si c'est un avoir/retour (type_doc="avoir"
-        # ou montant_ttc negatif), c'est un remboursement direct. On ne bloque
-        # pas : on prepare le creditNote avec le numero de facture comme
-        # reference, pour que SFEC reçoive des montants positifs.
+        # Aucun parent : c'est un avoir sur compte. SFEC exige seulement une
+        # reference unique et ne cherche pas de facture parente.
         if _is_credit_note(invoice):
-            child_numero = str(invoice.get("numero") or "").strip()
-            invoice["reference_invoice_id"] = child_numero or raw_ref
-            invoice["external_credit_note_number"] = child_numero
-            invoice["original_sfec_invoice_number"] = child_numero or raw_ref
-            logger.info(
-                "Avoir/retour %s sans reference parent : creditNote direct",
-                invoice.get("numero", ""))
-            return ("ok", invoice["reference_invoice_id"], None, "")
+            reference = str(child_numero or invoice.get("id") or raw_ref or "").strip()
+            if not reference:
+                return ("no_ref", "", None,
+                        "{}: reference d'avoir sur compte vide".format(label))
+            if _is_duplicate():
+                return ("duplicate", reference, None,
+                        "Un avoir/retour certifie existe deja pour '{}'".format(
+                            child_numero))
+            return _mark_on_account(reference)
         return ("no_ref", "", None,
                 "{}: reference d'origine introuvable ({!r})".format(label, raw_ref))
 
     parent = by_numero.get(ref)
-    child_numero = str(invoice.get("numero") or "").strip()
     manual_parent = str((manual_links or {}).get(child_numero) or "").strip()
 
     # Lien manuel vers un parent plus ancien que la fenetre du cache : on
@@ -311,6 +422,11 @@ def _prepare_credit_note(invoice, by_numero, manual_links, credit_index):
                 return ("parent_invalid", ref, None,
                         "{}: la facture d'origine '{}' est elle-meme un avoir".format(
                             label, ref))
+            if _is_duplicate():
+                return ("duplicate", ref, None,
+                        "Un avoir/retour certifie existe deja pour '{}'".format(
+                            child_numero))
+            invoice["credit_note_on_account"] = False
             invoice["reference_invoice_id"] = ref
             invoice["external_credit_note_number"] = child_numero
             invoice["original_sfec_invoice_number"] = (
@@ -335,12 +451,12 @@ def _prepare_credit_note(invoice, by_numero, manual_links, credit_index):
         return ("parent_pending", ref, parent,
                 "{}: facture d'origine '{}' non certifiee (en attente)".format(label, ref))
 
-    _ids_child = (credit_index or {}).get(child_numero, [])
-    if any(_i != invoice.get("id") for _i in _ids_child):
+    if _is_duplicate():
         return ("duplicate", ref, parent,
                 "Un avoir/retour certifie existe deja pour '{}'".format(child_numero))
 
     # Champs exiges par l'OpenAPI SFEC pour un creditNote.
+    invoice["credit_note_on_account"] = False
     invoice["reference_invoice_id"] = ref
     invoice["external_credit_note_number"] = str(invoice.get("numero") or "")
     invoice["original_sfec_invoice_number"] = _parent_sfec_number(parent, ref) or ref
@@ -348,7 +464,6 @@ def _prepare_credit_note(invoice, by_numero, manual_links, credit_index):
                 invoice.get("numero", ""), ref,
                 invoice["original_sfec_invoice_number"])
     return ("ok", ref, parent, "")
-
 
 def _build_credit_note_index(snapshot, by_numero, manual_links):
     """Index des avoirs/retours deja certifies, par NUMERO de piece.
@@ -414,7 +529,7 @@ def _process_retry_queue():
 
     config = get_config()
     sfec_cfg = config.get("sfec", {})
-    if not sfec_cfg.get("enabled") or not sfec_cfg.get("api_key"):
+    if not sfec_cfg.get("enabled") or not get_sfec_api_key(sfec_cfg):
         with _retry_lock:
             _retry_queue.extend(queue_copy)
         _cache["retry_queue_count"] = len(_retry_queue)
@@ -548,6 +663,28 @@ def _process_retry_queue():
 
         except Exception as e:
             status_code = getattr(e, "status_code", None)
+            overcredit = overcredit_details(e)
+            if overcredit:
+                errors += 1
+                try:
+                    mark_to_monitor(invoice_id, overcredit_message(e))
+                except Exception:
+                    pass
+                _reset_retry(numero)
+                continue
+            ref_conflict = on_account_reference_conflict(e)
+            if ref_conflict:
+                errors += 1
+                try:
+                    mark_to_monitor(
+                        invoice_id,
+                        "Reference d'avoir sur compte deja utilisee: {}".format(
+                            ref_conflict),
+                    )
+                except Exception:
+                    pass
+                _reset_retry(numero)
+                continue
             if status_code == 409:
                 _handle_already_certified(item, sfec_lookup)
                 _reset_retry(numero)
@@ -634,7 +771,7 @@ def sync_all():
 
 def sync_sfec_invoices():
     sfec_cfg = get_config().get("sfec", {})
-    if not sfec_cfg.get("enabled") or not sfec_cfg.get("api_key"):
+    if not sfec_cfg.get("enabled") or not get_sfec_api_key(sfec_cfg):
         return
 
     if not is_online():
@@ -645,16 +782,23 @@ def sync_sfec_invoices():
         client = SfecClient()
         all_invoices = []
         page = 1
-        while True:
-            result = client.list_invoices(page=page, page_size=500)
-            batch = result.get("invoices", [])
+        page_size = 20
+        max_pages = int(sfec_cfg.get("lookup_max_pages", 500) or 500)
+        max_pages = max(1, min(max_pages, 5000))
+        while page <= max_pages:
+            result = client.list_invoices(page=page, page_size=page_size)
+            batch = result.get("invoices", []) or []
             if not batch:
                 break
             all_invoices.extend(batch)
-            total = result.get("total", result.get("total_count", 0))
-            if page * 500 >= total:
+            total_pages = int(result.get("totalPages") or 0)
+            if total_pages and page >= total_pages:
                 break
             page += 1
+        else:
+            logger.warning(
+                "Sync SFEC: limite de %d pages atteinte, liste potentiellement "
+                "incomplete (%d factures recuperees)", max_pages, len(all_invoices))
         with _lock:
             _cache["sfec_invoices"] = all_invoices
             _cache["certified_count"] = len(all_invoices)
@@ -725,19 +869,24 @@ def _build_sfec_lookup():
     if not is_online():
         return lookup
     try:
+        cfg = get_config().get("sfec", {}) or {}
+        max_pages = int(cfg.get("lookup_max_pages", 500) or 500)
+        max_pages = max(1, min(max_pages, 5000))
         client = SfecClient()
         page = 1
-        while True:
-            result = client.list_invoices(page=page, page_size=500)
+        while page <= max_pages:
+            result = client.list_invoices(page=page, page_size=20)
             invoices = result.get("invoices", [])
             if not invoices:
                 break
             for inv in invoices:
-                seller_num = inv.get("seller_invoice_number", "") or inv.get("invoice_number", "")
-                if seller_num:
-                    lookup[seller_num] = inv
-            total = result.get("total", result.get("total_count", 0))
-            if page * 500 >= total:
+                seller_num = str(inv.get("seller_invoice_number") or "").strip()
+                inv_num = str(inv.get("invoice_number") or "").strip()
+                for key in (seller_num, inv_num):
+                    if key:
+                        lookup[key] = inv
+            total_pages = int(result.get("totalPages") or 0)
+            if total_pages and page >= total_pages:
                 break
             page += 1
     except NetworkOfflineError:
@@ -748,6 +897,41 @@ def _build_sfec_lookup():
         _sfec_lookup_cache = lookup
         _sfec_lookup_ts = now
     return lookup
+
+
+def _persist_local_certification(numero, cert_number, signature, qr_code,
+                                  cert_date, sfec_id="", statut="CERTIFIE"):
+    """Met a jour le miroir SQLite sans attendre le prochain pull Sage."""
+    try:
+        updated = update_invoice_sfec_by_numero(
+            numero,
+            sfec_id=sfec_id or "",
+            certification_number=cert_number or "",
+            signature=signature or "",
+            qr_code=qr_code or "",
+            certification_date=cert_date or "",
+            statut=statut or "",
+        )
+        if not updated:
+            logger.debug("Certification SFEC locale: facture %s absente du miroir",
+                         numero)
+    except Exception as ex:  # noqa: BLE001
+        logger.warning("Mise a jour SQLite de la certification %s echouee: %s",
+                       numero, ex)
+
+
+def _certification_result_from_invoice(invoice):
+    """Resultat uniforme pour une facture deja certifiee SFEC."""
+    return {
+        "success": True,
+        "already_certified": True,
+        "certification_number": invoice.get("sfec_num_certif", ""),
+        "certification_date": invoice.get("sfec_date_certif", ""),
+        "signature": invoice.get("sfec_signature", ""),
+        "qr_code": invoice.get("sfec_qr_code", ""),
+        "identifier": invoice.get("sfec_id", ""),
+        "note": "Facture deja certifiee sur SFEC",
+    }
 
 
 def _handle_already_certified(invoice, sfec_lookup=None):
@@ -775,8 +959,8 @@ def _handle_already_certified(invoice, sfec_lookup=None):
 
     if not sfec_inv:
         logger.warning(
-            "409 pour %s mais certification SFEC illisible: facture laissee "
-            "en attente et verification replanifiee", numero,
+            "Verification SFEC pour %s: aucune certification lisible, "
+            "facture laissee en attente", numero,
         )
         return False
 
@@ -785,6 +969,7 @@ def _handle_already_certified(invoice, sfec_lookup=None):
     sfec_invoice_number = str(sfec_inv.get("invoice_number") or "").strip()
     if sfec_invoice_number:
         invoice["sfec_invoice_number"] = sfec_invoice_number
+    sfec_id = str(sfec_inv.get("id") or sfec_inv.get("sfec_id") or "").strip()
     try:
         record_certified_invoice(invoice.get("id", ""), sfec_inv)
     except Exception as ex:  # noqa: BLE001
@@ -798,6 +983,21 @@ def _handle_already_certified(invoice, sfec_lookup=None):
             numero,
         )
         return False
+
+    with _lock:
+        invoice["sfec_statut"] = "DEJA_CERTIFIE"
+        invoice["sfec_num_certif"] = cert_number
+        invoice["sfec_id"] = sfec_id
+        invoice["sfec_signature"] = sig
+        invoice["sfec_qr_code"] = qr
+        invoice["sfec_date_certif"] = cert_date
+
+    # Le miroir SQLite alimente /billing : il doit etre corrige tout de
+    # suite, meme si l'ecriture Sage est differee.
+    _persist_local_certification(
+        numero, cert_number, sig, qr, cert_date,
+        sfec_id=sfec_id, statut="DEJA_CERTIFIE",
+    )
 
     try:
         write_sfec_to_invoice(
@@ -815,9 +1015,6 @@ def _handle_already_certified(invoice, sfec_lookup=None):
             return False
         return True
 
-    with _lock:
-        invoice["sfec_statut"] = "DEJA_CERTIFIE"
-        invoice["sfec_num_certif"] = cert_number
     logger.info("Certif SFEC recuperee et ecrite dans Sage: %s (certif: %s)",
                 numero, cert_number)
     return True
@@ -825,7 +1022,7 @@ def _handle_already_certified(invoice, sfec_lookup=None):
 
 def reconcile_sfec_status():
     sfec_cfg = get_config().get("sfec", {})
-    if not sfec_cfg.get("enabled") or not sfec_cfg.get("api_key"):
+    if not sfec_cfg.get("enabled") or not get_sfec_api_key(sfec_cfg):
         return
 
     if not is_online():
@@ -890,6 +1087,7 @@ def _certify_single_worker(invoice, sfec_lookup):
         if sfec_invoice_number:
             invoice["sfec_invoice_number"] = sfec_invoice_number
         cert_number, sig, qr, cert_date = _extract_sfec_cert_data(result)
+        sfec_id = str(result.get("sfec_id") or result.get("identifier") or "").strip()
 
         try:
             write_sfec_to_invoice(
@@ -903,12 +1101,32 @@ def _certify_single_worker(invoice, sfec_lookup):
             if not _queue_pending_write(
                     invoice, cert_number, sig, qr, cert_date, ex):
                 raise
+            _persist_local_certification(
+                numero, cert_number, sig, qr, cert_date,
+                sfec_id=sfec_id, statut="CERTIFIE",
+            )
+            with _lock:
+                invoice["sfec_statut"] = "CERTIFIE"
+                invoice["sfec_pending_sage"] = True
+                invoice["sfec_num_certif"] = cert_number
+                invoice["sfec_id"] = sfec_id
+                invoice["sfec_signature"] = sig
+                invoice["sfec_qr_code"] = qr
+                invoice["sfec_date_certif"] = cert_date
             _reset_retry(numero)
             return ("queued", numero, cert_number)
 
+        _persist_local_certification(
+            numero, cert_number, sig, qr, cert_date,
+            sfec_id=sfec_id, statut="CERTIFIE",
+        )
         with _lock:
             invoice["sfec_statut"] = "CERTIFIE"
             invoice["sfec_num_certif"] = cert_number
+            invoice["sfec_id"] = sfec_id
+            invoice["sfec_signature"] = sig
+            invoice["sfec_qr_code"] = qr
+            invoice["sfec_date_certif"] = cert_date
         _reset_retry(numero)
 
         return ("ok", numero, cert_number)
@@ -922,6 +1140,26 @@ def _certify_single_worker(invoice, sfec_lookup):
         _log_certify_error(numero, e)
         status_code = getattr(e, "status_code", None)
         error_body = getattr(e, "error_body", "")
+        overcredit = overcredit_details(e)
+        if overcredit:
+            try:
+                mark_to_monitor(invoice["id"], overcredit_message(e))
+            except Exception:
+                pass
+            _reset_retry(numero)
+            return ("error_overcredit", numero)
+        ref_conflict = on_account_reference_conflict(e)
+        if ref_conflict:
+            try:
+                mark_to_monitor(
+                    invoice["id"],
+                    "Reference d'avoir sur compte deja utilisee: {}".format(
+                        ref_conflict),
+                )
+            except Exception:
+                pass
+            _reset_retry(numero)
+            return ("error_duplicate_reference", numero)
         if status_code == 409:
             _handle_already_certified(invoice, sfec_lookup)
             _reset_retry(numero)
@@ -987,8 +1225,9 @@ def _auto_certify_invoices_locked():
         logger.debug("SFEC desactivee - auto-certification ignoree")
         return
 
-    if not sfec_cfg.get("api_key"):
-        logger.debug("Cle API SFEC non configuree - auto-certification ignoree")
+    if not get_sfec_api_key(sfec_cfg):
+        logger.debug("Cle API SFEC de l'environnement actif non configuree - "
+                     "auto-certification ignoree")
         return
 
     if not is_online():
@@ -1048,20 +1287,21 @@ def _auto_certify_invoices_locked():
         numero = inv.get("numero", "")
         sfec_statut = inv.get("sfec_statut", "")
 
-        if sfec_statut in ("EN_COURS", "ERREUR", "A_SURVEILLER"):
-            pending_reasons[_id] = "Statut SFEC : {}".format(sfec_statut)
-            continue
-
         if numero in sfec_lookup:
             sfec_matched += 1
             if (sfec_statut not in ("DEJA_CERTIFIE", "CERTIFIE")
                     or _needs_certification_recovery(inv)):
-                # Un DEJA_CERTIFIE sans numero est une trace du bug 409 :
-                # on reecrit la preuve des que SFEC la fournit.
+                # Un A_SURVEILLER peut avoir ete certifie directement sur SFEC
+                # (ou par une ancienne version du connecteur). On verifie donc
+                # SFEC avant de le considerer comme definitivement en anomalie.
                 try:
                     _handle_already_certified(inv, sfec_lookup)
                 except Exception:
                     pass
+            continue
+
+        if sfec_statut in ("EN_COURS", "ERREUR", "A_SURVEILLER"):
+            pending_reasons[_id] = "Statut SFEC : {}".format(sfec_statut)
             continue
 
         # Ne recertifier que si Sage contient deja une preuve. Un
@@ -1206,7 +1446,7 @@ def _queue_uncertified_for_retry():
 
 def certify_single(invoice_id):
     sfec_cfg = get_config().get("sfec", {})
-    if not sfec_cfg.get("enabled") or not sfec_cfg.get("api_key"):
+    if not sfec_cfg.get("enabled") or not get_sfec_api_key(sfec_cfg):
         return {"success": False, "error": "SFEC non configuree"}
 
     invoice = None
@@ -1222,6 +1462,31 @@ def certify_single(invoice_id):
         return {"success": False, "error": "Facture {} non trouvee".format(invoice_id)}
 
     numero = invoice.get("numero", "")
+
+    if _has_certification_proof(invoice):
+        return _certification_result_from_invoice(invoice)
+
+    # Une facture peut avoir ete certifiee directement sur SFEC alors que le
+    # miroir local est encore vide ou A_SURVEILLER. Ce controle doit passer
+    # avant la validation du payload : des donnees Sage devenues invalides ne
+    # doivent pas empecher la recuperation d'une certification existante.
+    if is_online() and numero:
+        existing = None
+        try:
+            existing = SfecClient().verify_by_invoice_number(numero)
+        except Exception as ex:  # noqa: BLE001
+            logger.warning("Verification SFEC avant certification %s echouee: %s",
+                           numero, ex)
+        if existing:
+            if _handle_already_certified(invoice, {numero: existing}):
+                _reset_retry(numero)
+                return _certification_result_from_invoice(invoice)
+            return {
+                "success": False,
+                "pending": True,
+                "error": "Facture presente sur SFEC mais certification illisible: "
+                         "verification replanifiee",
+            }
 
     if _has_zero_amount(invoice):
         try:
@@ -1264,6 +1529,7 @@ def certify_single(invoice_id):
         if sfec_invoice_number:
             invoice["sfec_invoice_number"] = sfec_invoice_number
         cert_number, sig, qr, cert_date = _extract_sfec_cert_data(result)
+        sfec_id = str(result.get("sfec_id") or result.get("identifier") or "").strip()
 
         try:
             write_sfec_to_invoice(
@@ -1277,24 +1543,50 @@ def certify_single(invoice_id):
             if not _queue_pending_write(
                     invoice, cert_number, sig, qr, cert_date, ex):
                 raise
+            _persist_local_certification(
+                numero, cert_number, sig, qr, cert_date,
+                sfec_id=sfec_id, statut="CERTIFIE",
+            )
+            with _lock:
+                invoice["sfec_statut"] = "CERTIFIE"
+                invoice["sfec_pending_sage"] = True
+                invoice["sfec_num_certif"] = cert_number
+                invoice["sfec_id"] = sfec_id
+                invoice["sfec_signature"] = sig
+                invoice["sfec_qr_code"] = qr
+                invoice["sfec_date_certif"] = cert_date
             _reset_retry(numero)
             return {
                 "success": True,
                 "queued": True,
                 "certification_number": cert_number,
+                "certification_date": cert_date,
+                "signature": sig,
                 "qr_code": qr,
+                "identifier": sfec_id,
                 "note": "Certification SFEC conservee, ecriture Sage en attente",
             }
 
+        _persist_local_certification(
+            numero, cert_number, sig, qr, cert_date,
+            sfec_id=sfec_id, statut="CERTIFIE",
+        )
         with _lock:
             invoice["sfec_statut"] = "CERTIFIE"
             invoice["sfec_num_certif"] = cert_number
+            invoice["sfec_id"] = sfec_id
+            invoice["sfec_signature"] = sig
+            invoice["sfec_qr_code"] = qr
+            invoice["sfec_date_certif"] = cert_date
         _reset_retry(numero)
 
         return {
             "success": True,
             "certification_number": cert_number,
+            "certification_date": cert_date,
+            "signature": sig,
             "qr_code": qr,
+            "identifier": sfec_id,
         }
     except NetworkOfflineError:
         _reset_retry(numero)
@@ -1303,17 +1595,32 @@ def certify_single(invoice_id):
                 "queued": True}
     except Exception as e:
         status_code = getattr(e, "status_code", None)
+        overcredit = overcredit_details(e)
+        if overcredit:
+            try:
+                mark_to_monitor(invoice_id, overcredit_message(e))
+            except Exception:
+                pass
+            _reset_retry(numero)
+            return {"success": False, "error": overcredit_message(e),
+                    "overcredit": overcredit}
+        ref_conflict = on_account_reference_conflict(e)
+        if ref_conflict:
+            message = "Reference d'avoir sur compte deja utilisee: {}".format(
+                ref_conflict)
+            try:
+                mark_to_monitor(invoice_id, message)
+            except Exception:
+                pass
+            _reset_retry(numero)
+            return {"success": False, "error": message}
         if status_code == 409:
             # Ne jamais marquer DEJA_CERTIFIE sans preuve : on relit SFEC et
             # on n'ecrit dans Sage que si un numero/signature est disponible.
             recovered = _handle_already_certified(invoice)
             _reset_retry(numero)
             if recovered:
-                return {
-                    "success": True,
-                    "certification_number": invoice.get("sfec_num_certif", ""),
-                    "note": "Facture deja certifiee sur SFEC",
-                }
+                return _certification_result_from_invoice(invoice)
             return {
                 "success": False,
                 "pending": True,

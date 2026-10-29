@@ -87,7 +87,7 @@ def start():
     _patchers.append(_patch.object(engine, "is_online", lambda: True))
     _patchers.append(_patch.object(engine, "certify_invoice", certify_invoice))
     _patchers.append(_patch.object(SfecClient, "list_invoices",
-                                   lambda self, page=1, page_size=500, **k:
+                                   lambda self, page=1, page_size=20, **k:
                                    {"invoices": [], "totalPages": 1, "page": page}))
     _patchers.append(_patch.object(SfecClient, "get_invoice",
                                    lambda self, invoice_id: _mk_invoice(invoice_id)))

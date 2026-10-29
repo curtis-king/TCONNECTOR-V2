@@ -42,8 +42,8 @@ def enqueue(invoice_id, certification_number, signature, qr_code,
     """Memorise ou met a jour une certification en attente d'ecriture Sage.
 
     `attempts` n'est volontairement pas remis a zero lors d'un conflit :
-    une certification qui echoue de facon persistante doit finir par etre
-    abandonnee (A_SURVEILLER) apres MAX_ATTEMPTS, pas rejouee a l'infini.
+    il sert au suivi d'exploitation. Une certification deja obtenue n'est
+    jamais abandonnee : seule l'ecriture Sage est bloquee.
     """
     invoice_id = str(invoice_id or "").strip()
     if not invoice_id:
@@ -75,8 +75,9 @@ def enqueue(invoice_id, certification_number, signature, qr_code,
 def flush(limit=20, on_success=None):
     """Rejoue les ecritures Sage en attente.
 
-    Retourne le nombre d'ecritures reussies. Les lignes ayant atteint
-    MAX_ATTEMPTS sont conservees pour l'audit mais ne sont plus rejouees.
+    Retourne le nombre d'ecritures reussies. Une certification SFEC valide
+    reste en file meme apres MAX_ATTEMPTS : un verrou Sage ne doit jamais
+    faire perdre la certification ni la transformer en anomalie.
     `on_success(invoice_id, certification_number)` permet au moteur de
     remettre son cache a jour sans importer `app.sync.engine` ici.
     """
@@ -89,10 +90,9 @@ def flush(limit=20, on_success=None):
     with get_cursor() as cur:
         cur.execute("""
             SELECT * FROM sfec_pending_writes
-            WHERE attempts < ?
-            ORDER BY created_at, invoice_id
+            ORDER BY attempts, created_at, invoice_id
             LIMIT ?
-        """, (MAX_ATTEMPTS, limit))
+        """, (limit,))
         rows = cur.fetchall()
 
     done = 0
@@ -114,17 +114,18 @@ def flush(limit=20, on_success=None):
                     SET attempts = ?, last_error = ?
                     WHERE invoice_id = ?
                 """, (attempts, str(e)[:300], invoice_id))
-            if attempts >= MAX_ATTEMPTS:
-                try:
-                    mark_to_monitor(
-                        invoice_id,
-                        "Ecriture Sage impossible apres {} tentatives: {}".format(
-                            attempts, str(e)[:120]),
-                    )
-                except Exception:
-                    pass
-                logger.error("Abandon ecriture SFEC %s apres %d tentatives",
-                             invoice_id, attempts)
+            if attempts == MAX_ATTEMPTS:
+                logger.error(
+                    "Ecriture SFEC toujours en attente pour %s apres %d "
+                    "tentatives ; certification conservee: %s",
+                    invoice_id, attempts, e,
+                )
+            elif attempts > MAX_ATTEMPTS and attempts % MAX_ATTEMPTS == 0:
+                logger.error(
+                    "Ecriture SFEC toujours en attente pour %s (%d tentatives) "
+                    "; certification conservee: %s",
+                    invoice_id, attempts, e,
+                )
             else:
                 logger.warning("Ecriture SFEC differee %s (%d/%d): %s",
                                invoice_id, attempts, MAX_ATTEMPTS, e)

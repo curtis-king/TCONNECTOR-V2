@@ -947,6 +947,7 @@ def fetch_sales_invoices(updated_from=None, limit=None):
         _lines_map = fetch_doc_lines_batch(dc["vente_domain"], _keys)
         for row in rows:
             inv = dict(zip(columns, [str(v) if v is not None else "" for v in row]))
+            inv["tiers_code"] = inv.get("code_tiers", "")
             inv["montant_ht"] = round(_safe_float(row[idx["montant_ht"]]), 2)
             inv["montant_tva"] = round(_safe_float(row[idx["montant_tva"]]), 2)
             inv["montant_ttc"] = round(_safe_float(row[idx["montant_ttc"]]), 2)
@@ -1047,6 +1048,7 @@ def _fetch_sales_invoices_fallback(dc, t):
         _lines_map = fetch_doc_lines_batch(dc["vente_domain"], _keys)
         for row in rows:
             inv = dict(zip(columns, [str(v) if v is not None else "" for v in row]))
+            inv["tiers_code"] = inv.get("code_tiers", "")
             inv["montant_ht"] = round(_safe_float(row[idx["montant_ht"]]), 2)
             inv["montant_tva"] = round(_safe_float(row[idx["montant_tva"]]), 2)
             inv["montant_ttc"] = round(_safe_float(row[idx["montant_ttc"]]), 2)
@@ -1428,6 +1430,7 @@ def fetch_purchase_invoices(updated_from=None, limit=None):
         _lines_map = fetch_doc_lines_batch(dc["achat_domain"], [(a, b) for a, b in _keys if a is not None])
         for row in rows:
             inv = dict(zip(columns, [str(v) if v is not None else "" for v in row]))
+            inv["tiers_code"] = inv.get("code_tiers", "")
             inv["montant_ht"] = round(_safe_float(row[idx["montant_ht"]]), 2)
             inv["montant_tva"] = round(_safe_float(row[idx["montant_tva"]]), 2)
             inv["montant_ttc"] = round(_safe_float(row[idx["montant_ttc"]]), 2)
@@ -1505,6 +1508,7 @@ def _fetch_purchase_invoices_fallback(dc, t):
         _lines_map = fetch_doc_lines_batch(dc["achat_domain"], [(a, b) for a, b in _keys if a is not None])
         for row in rows:
             inv = dict(zip(columns, [str(v) if v is not None else "" for v in row]))
+            inv["tiers_code"] = inv.get("code_tiers", "")
             inv["montant_ht"] = round(_safe_float(row[idx["montant_ht"]]), 2)
             inv["montant_tva"] = round(_safe_float(row[idx["montant_tva"]]), 2)
             inv["montant_ttc"] = round(_safe_float(row[idx["montant_ttc"]]), 2)

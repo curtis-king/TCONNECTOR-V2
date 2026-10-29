@@ -8,7 +8,7 @@ import logging
 import os
 from datetime import datetime, timezone
 
-from app.config.manager import get_config
+from app.config.manager import get_config, get_sfec_api_key
 from app.storage import db as sqlite_db
 
 logger = logging.getLogger("t-connector.health")
@@ -135,7 +135,7 @@ def collect_health(now=None):
             "sqlite": "up" if sqlite_ok else "down",
             "sage_cache": "populated" if cache.get("db_connected") else "empty",
             "sfec": (
-                "configured" if sfec_cfg.get("api_key") else
+                "configured" if get_sfec_api_key(sfec_cfg) else
                 "missing_api_key" if sfec_cfg.get("enabled") else "disabled"
             ),
         },

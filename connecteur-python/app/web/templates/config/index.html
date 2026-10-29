@@ -39,7 +39,8 @@
 <h2 style="margin-bottom:16px">Configuration API SFEC</h2>
 <form id="form-sfec" onsubmit="event.preventDefault();saveForm('form-sfec','/api/config/sfec')">
 <div class="grid-2">
-<div><label>Cle API SFEC</label><input type="password" name="api_key" value="" placeholder="Laisser vide pour conserver" autocomplete="new-password"></div>
+<div><label>Cle API SFEC (Production)</label><input type="password" name="api_key" value="" placeholder="Laisser vide pour conserver" autocomplete="new-password"><div class="desc">Utilisee quand l'environnement est Production</div></div>
+<div><label>Cle API SFEC (Sandbox)</label><input type="password" name="sandbox_api_key" value="" placeholder="Laisser vide pour conserver" autocomplete="new-password"><div class="desc">Utilisee quand l'environnement est Sandbox</div></div>
 <div><label>Environnement</label><select name="use_sandbox"><option value="true" {{ sb_t }}>Sandbox (test)</option><option value="false" {{ sb_f }}>Production</option></select></div>
 <div><label>SFEC active</label><select name="enabled"><option value="true" {{ en_t }}>Oui</option><option value="false" {{ en_f }}>Non</option></select></div>
 <div><label>Statut pour certification</label><select name="certify_status">

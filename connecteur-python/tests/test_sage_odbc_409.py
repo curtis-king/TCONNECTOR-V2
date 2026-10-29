@@ -25,19 +25,19 @@ PREFIX = "test08-"
 def _clean_state():
     sqlite_db.init_database()
     with sqlite_db.get_cursor() as cur:
-        cur.execute(
-            "DELETE FROM sfec_pending_writes WHERE invoice_id LIKE ?",
-            (PREFIX + "%",),
-        )
+        # La base de test est une copie de la base de dev : vider aussi les
+        # anciennes lignes (ex. FCDFG013) pour que flush() ne traite que le
+        # cas de chaque test.
+        cur.execute("DELETE FROM sfec_pending_writes")
     engine._retry_attempts.clear()
     engine._retry_after.clear()
     engine._logged_errors.clear()
     yield
     with sqlite_db.get_cursor() as cur:
-        cur.execute(
-            "DELETE FROM sfec_pending_writes WHERE invoice_id LIKE ?",
-            (PREFIX + "%",),
-        )
+        # La base de test est une copie de la base de dev : vider aussi les
+        # anciennes lignes (ex. FCDFG013) pour que flush() ne traite que le
+        # cas de chaque test.
+        cur.execute("DELETE FROM sfec_pending_writes")
     engine._retry_attempts.clear()
     engine._retry_after.clear()
     engine._logged_errors.clear()
@@ -157,7 +157,7 @@ def test_enqueue_puis_flush_rejoue_apres_deux_echecs(monkeypatch):
     assert _pending_row(invoice_id) is None
 
 
-def test_flush_abandonne_apres_dix_echecs_et_garde_la_ligne(monkeypatch):
+def test_flush_ne_downgrade_pas_apres_dix_echecs(monkeypatch):
     invoice_id = PREFIX + "0-6-F2"
     pending_writes.enqueue(
         invoice_id, "CERT2", "SIG2", "QR2", "2026-10-21T10:00:00Z",
@@ -178,12 +178,14 @@ def test_flush_abandonne_apres_dix_echecs_et_garde_la_ligne(monkeypatch):
     row = _pending_row(invoice_id)
     assert row is not None
     assert row["attempts"] == 10
-    assert len(monitors) == 1
-    assert "10 tentatives" in monitors[0][1]
+    assert row["certification_number"] == "CERT2"
+    assert monitors == []
 
-    # La ligne reste pour l'audit, mais elle n'est plus rejouee sans fin.
+    # La certification reste en file et continue d'etre rejouee : un verrou
+    # Sage ne doit jamais transformer une facture certifiee en anomalie.
     assert pending_writes.flush() == 0
-    assert len(monitors) == 1
+    assert _pending_row(invoice_id)["attempts"] == 11
+    assert monitors == []
 
 
 def test_flush_callback_met_a_jour_le_cache(monkeypatch):
@@ -196,6 +198,7 @@ def test_flush_callback_met_a_jour_le_cache(monkeypatch):
 
     assert cache["sales_invoices"][0]["sfec_statut"] == "CERTIFIE"
     assert cache["sales_invoices"][0]["sfec_num_certif"] == "CERT3"
+    assert cache["sales_invoices"][0]["sfec_pending_sage"] is False
 
 
 # ── 409 : jamais de marquage sans preuve ────────────────────────────────────
@@ -268,7 +271,8 @@ def test_409_ecriture_sage_echouee_met_en_file(monkeypatch):
     assert len(enqueued) == 1
     assert enqueued[0][0] == invoice["id"]
     assert enqueued[0][1] == "CERT-F1"
-    assert invoice["sfec_statut"] == "EN_COURS"
+    assert invoice["sfec_statut"] == "CERTIFIE"
+    assert invoice["sfec_pending_sage"] is True
 
 
 def test_worker_409_sans_get_ne_marque_pas(monkeypatch):
@@ -351,7 +355,8 @@ def test_certification_fraiche_ecriture_sage_echouee_met_en_file(monkeypatch):
     assert result[0] == "queued"
     assert len(enqueued) == 1
     assert enqueued[0][1] == "CERT-F9"
-    assert invoice["sfec_statut"] == "EN_COURS"
+    assert invoice["sfec_statut"] == "CERTIFIE"
+    assert invoice["sfec_pending_sage"] is True
 
 
 def _setup_pass(monkeypatch, invoices):
@@ -437,13 +442,13 @@ def test_verify_by_invoice_number_retente_5xx(monkeypatch):
     sleeps = []
     expected = {"invoice_number": "F10"}
 
-    def fake_list(page=1, page_size=500):
-        calls.append((page, page_size))
+    def fake_get(sfec_id):
+        calls.append(sfec_id)
         if len(calls) < 3:
             raise _HttpError(503, "unavailable")
-        return {"invoices": [expected], "total": 1}
+        return expected
 
-    monkeypatch.setattr(client, "list_invoices", fake_list)
+    monkeypatch.setattr(client, "get_invoice", fake_get)
     monkeypatch.setattr(sfec_client.time, "sleep",
                         lambda delay: sleeps.append(delay))
 
@@ -457,11 +462,11 @@ def test_verify_by_invoice_number_404_retour_immediat(monkeypatch):
     calls = []
     sleeps = []
 
-    def fake_list(page=1, page_size=500):
+    def fake_get(sfec_id):
         calls.append(1)
         raise _HttpError(404, "not found")
 
-    monkeypatch.setattr(client, "list_invoices", fake_list)
+    monkeypatch.setattr(client, "get_invoice", fake_get)
     monkeypatch.setattr(sfec_client.time, "sleep",
                         lambda delay: sleeps.append(delay))
 
@@ -475,11 +480,11 @@ def test_verify_by_invoice_number_epuise_puis_none(monkeypatch):
     calls = []
     sleeps = []
 
-    def fake_list(page=1, page_size=500):
+    def fake_get(sfec_id):
         calls.append(1)
         raise sfec_client.NetworkOfflineError("offline")
 
-    monkeypatch.setattr(client, "list_invoices", fake_list)
+    monkeypatch.setattr(client, "get_invoice", fake_get)
     monkeypatch.setattr(sfec_client.time, "sleep",
                         lambda delay: sleeps.append(delay))
 
@@ -493,11 +498,11 @@ def test_verify_by_invoice_number_400_non_retente(monkeypatch):
     calls = []
     sleeps = []
 
-    def fake_list(page=1, page_size=500):
+    def fake_get(sfec_id):
         calls.append(1)
         raise _HttpError(400, "bad request")
 
-    monkeypatch.setattr(client, "list_invoices", fake_list)
+    monkeypatch.setattr(client, "get_invoice", fake_get)
     monkeypatch.setattr(sfec_client.time, "sleep",
                         lambda delay: sleeps.append(delay))
 

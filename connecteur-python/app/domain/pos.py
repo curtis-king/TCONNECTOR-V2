@@ -9,12 +9,13 @@ from app.storage.db import (
     recalc_ticket_totals, calc_line_ticket_totals,
     log_sync, row_to_dict, rows_to_list, get_setting, compute_cent_tax
 )
-from app.config.manager import get_config
+from app.config.manager import get_config, get_sfec_api_key
+from app.core.utils import is_counter_customer
 
 _MODE_PAIEMENT_TO_SFEC = {
     "especes": "cash",
     "carte": "card",
-    "cheque": "check",
+    "cheque": "cheque",
     "virement": "bank_transfer",
     "mobile_money": "mobile_money",
 }
@@ -121,6 +122,10 @@ def _resolve_ticket_tiers(data):
     """Hydrate les champs fiscaux depuis le contact en base (source fiable)."""
     contact_id = data.get("contact_id")
     code = str(data.get("tiers_code", "") or "").strip()
+    try:
+        sfec_cfg = get_config().get("sfec", {})
+    except Exception:
+        sfec_cfg = {}
     contact = None
     with get_cursor() as cur:
         if contact_id:
@@ -137,6 +142,9 @@ def _resolve_ticket_tiers(data):
         contact = row_to_dict(contact)
         tiers_type = _normalise_tiers_type(
             contact.get("type_raw"), _normalise_tiers_type(contact.get("type")))
+        if is_counter_customer(
+                contact.get("code"), contact.get("nom"), sfec_cfg):
+            tiers_type = "individual"
         return {
             "contact_id": contact["id"],
             "tiers_code": contact.get("code", ""),
@@ -154,6 +162,8 @@ def _resolve_ticket_tiers(data):
         return None, "Contact introuvable"
 
     tiers_type = _normalise_tiers_type(data.get("tiers_type"), "individual")
+    if is_counter_customer(code, data.get("tiers_nom"), sfec_cfg):
+        tiers_type = "individual"
     return {
         "contact_id": None,
         "tiers_code": code,
@@ -483,7 +493,7 @@ def _create_invoice_for_ticket(ticket_id, data, totals):
             from app.sync.connectivity import is_online
             from app.integration.sfec.endpoints import certify_sqlite_invoice
             sfec_cfg = get_config().get("sfec", {})
-            if sfec_cfg.get("enabled") and sfec_cfg.get("api_key") and is_online():
+            if sfec_cfg.get("enabled") and get_sfec_api_key(sfec_cfg) and is_online():
                 cert_inv = {
                     "id": invoice_id, "numero": numero,
                     "reference": "PAIEMENT " + mode_paiement,

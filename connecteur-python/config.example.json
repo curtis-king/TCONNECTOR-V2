@@ -1,5 +1,5 @@
 {
-  "_readme_sfec_api_key": "SECURITE (S1) : la cle API SFEC est lue en PRIORITE depuis la variable d'environnement SFEC_API_KEY si elle est definie ; sinon depuis la valeur sfec.api_key ci-dessous. Copier ce fichier vers config.json (gitignore) et renseigner la cle dans l'un des deux endroits.",
+  "_readme_sfec_api_key": "SECURITE (S1) : les cles API SFEC sont lues en PRIORITE depuis l'environnement si definies. SFEC_API_KEY alimente sfec.api_key (production) ; SFEC_SANDBOX_API_KEY alimente sfec.sandbox_api_key (sandbox). Le mode sandbox n'utilise JAMAIS la cle de production. Copier ce fichier vers config.json (gitignore) et renseigner les cles dans l'un des deux endroits.",
   "db": {
     "server": "localhost",
     "port": 1433,
@@ -24,10 +24,16 @@
   "sfec": {
     "enabled": true,
     "api_key": "YOUR_SFEC_API_KEY",
+    "sandbox_api_key": "YOUR_sandbox_SFEC_API_KEY",
     "base_url": "https://api.sfec.gouv.cg",
     "sandbox_url": "https://sandbox.api.sfec.gouv.cg",
     "use_sandbox": true,
-    "certify_status": "A COMPTABILISER"
+    "certify_status": "A COMPTABILISER",
+    "counter_customer_codes": ["CLI-CPT"],
+    "counter_name_keywords": ["COMPTOIR", "COMPTANT"],
+    "timeout": 30,
+    "lookup_max_pages": 500,
+    "payment_method_map": {}
   },
   "company": {
     "name": "YOUR_COMPANY_NAME",

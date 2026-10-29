@@ -65,6 +65,15 @@ def api_invoices_list():
         sort_by=request.args.get("sort_by") or "date_facture",
         sort_dir=request.args.get("sort_dir") or "DESC"
     )
+    invoices = res.get("invoices", [])
+    states = sqlite_db.get_sfec_states_by_numeros(
+        [inv.get("numero") for inv in invoices]
+    )
+    for inv in invoices:
+        state = states.get(str(inv.get("numero") or "").strip())
+        if state:
+            inv.update(state)
+
     total = res.get("total", 0)
     pages = max(1, (total + limit - 1) // limit)
     filters = {
@@ -116,6 +125,11 @@ def invoice_detail_page(invoice_id):
     inv = invoice_engine.get_invoice(invoice_id)
     if not inv:
         return "<h1>Facture non trouvee</h1><p><a href='/billing'>Retour</a></p>", 404
+    state = sqlite_db.get_sfec_states_by_numeros(
+        [inv.get("numero")]
+    ).get(str(inv.get("numero") or "").strip())
+    if state:
+        inv.update(state)
     lignes_rows = ""
     for l in inv.get("lignes", []):
         lignes_rows += "<tr><td>{}</td><td style='text-align:right'>{}</td><td style='text-align:right'>{:,.2f}</td><td style='text-align:right'>{}</td><td style='text-align:right'>{:,.0f}</td><td style='text-align:right'>{:,.0f}</td><td style='text-align:right'>{:,.0f}</td></tr>".format(
@@ -135,13 +149,23 @@ def invoice_detail_page(invoice_id):
             _esc(inv.get("reference_invoice_id", "") or "-"))    
     if ss:
         sfb = "badge-ok" if ss in ("CERTIFIE", "DEJA_CERTIFIE") else "badge-err" if ss == "ERREUR" else "badge-warn"
+        sfec_label = (
+            "CERTIFIE - écriture Sage en attente"
+            if inv.get("sfec_pending_sage") else ss
+        )
+        if inv.get("sfec_pending_sage"):
+            sfb = "badge-warn"
         sfec_html = '<tr><td>SFEC</td><td><span class="badge {}">{}</span></td></tr><tr><td>N Certif</td><td>{}</td></tr>'.format(
-            sfb, _esc(ss), _esc((inv.get("sfec_num_certif") or "")[:30] or "-"))
+            sfb, _esc(sfec_label), _esc((inv.get("sfec_num_certif") or "")[:30] or "-"))
     statut = (inv.get("statut") or "").lower()
     statut_class = "badge-ok" if statut in ("valide", "a_comptabilise", "comptabilise") else (
         "badge-err" if statut in ("annule", "annulee") else "badge-warn")
     locked = invoice_engine.is_invoice_locked(inv)
-    can_certify = (not locked) and statut not in ("", "brouillon", "draft")
+    can_certify = (
+        not invoice_engine.is_sfec_certified(inv)
+        and inv.get("sfec_statut") not in ("A_SURVEILLER", "EN_COURS")
+        and statut not in ("", "brouillon", "draft")
+    )
     return _page(render_template("billing/detail.html",
         montant_ht_brut=inv.get("montant_ht_brut") or 0,
         montant_restant=inv.get("montant_restant") or 0,
@@ -205,6 +229,7 @@ def _invoice_form_page(inv):
     payment_method = inv.get("payment_method", "bank_transfer") if is_edit else "bank_transfer"
     devise = inv.get("devise", "XAF") if is_edit else "XAF"
     reference_invoice_id = inv.get("reference_invoice_id", "") if is_edit else ""
+    credit_note_on_account = 1 if is_edit and inv.get("credit_note_on_account") else 0
     recipient_rccm = inv.get("recipient_rccm", "") if is_edit else ""
     is_recipient_taxable = inv.get("is_recipient_taxable", 1) if is_edit else 1
     is_recipient_taxable = 1 if is_recipient_taxable is None else int(bool(is_recipient_taxable))
@@ -233,6 +258,8 @@ def _invoice_form_page(inv):
     return _page(render_template("billing/form.html",
         type_doc=type_doc, payment_method=payment_method, devise=devise,
         reference_invoice_id=reference_invoice_id, recipient_rccm=recipient_rccm,
+        credit_note_on_account=credit_note_on_account,
+        cn_on_account_checked="checked" if credit_note_on_account else "",
         certified_sales=certified_sales,
         d_vente="selected" if type_doc == "vente" else "",
         d_avoir="selected" if type_doc == "avoir" else "",

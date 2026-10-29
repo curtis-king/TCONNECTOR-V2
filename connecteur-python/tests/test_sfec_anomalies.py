@@ -19,6 +19,7 @@ def _invoice(lignes, **kw):
         "type_doc": "vente",
         "date_facture": "2026-10-20",
         "nom_tiers": "Client Test",
+        "recipient_niu": "M0000000000000001",
         "montant_ht": sum(l["montant_ht"] for l in lignes),
         "montant_tva": sum(l["montant_tva"] for l in lignes),
         "montant_ttc": sum(l["montant_ttc"] for l in lignes),
@@ -57,8 +58,9 @@ def test_export_anomalies_ne_garde_que_ttc_non_reconstructibles():
     rows = build_rows(invoices)
     by_numero = {row["numero"]: row for row in rows}
 
-    assert set(by_numero) == {"ANOM-TTC-HT", "ANOM-RATIO"}
-    assert "TTC = HT" in by_numero["ANOM-TTC-HT"]["motif"]
+    # Une facture exoneree (TTC = HT, taux 0 %) est valide : elle ne doit
+    # plus apparaitre dans les anomalies.
+    assert set(by_numero) == {"ANOM-RATIO"}
     assert "taxe non ventilable" in by_numero["ANOM-RATIO"]["motif"]
     assert by_numero["ANOM-RATIO"]["ecart"] == pytest.approx(975.0, abs=0.01)
 
@@ -71,7 +73,7 @@ def test_validation_422_avant_tout_appel_http(monkeypatch):
         raise AssertionError("aucun appel HTTP ne doit partir en 422")
 
     monkeypatch.setattr(SfecClient, "certify", fake_certify)
-    inv = _invoice([_line(5000, 0, 5000, taux=0)], numero="ANOM-422")
+    inv = _invoice([_line(150000, 27000, 177375)], numero="ANOM-422")
 
     with pytest.raises(Exception) as exc:
         certify_invoice(inv)
@@ -93,6 +95,12 @@ def test_certify_single_422_marque_a_surveiller(monkeypatch):
     monkeypatch.setattr(engine, "mark_certifying", lambda invoice_id: None)
     monkeypatch.setattr(engine, "mark_to_monitor",
                         lambda invoice_id, reason="": marked.append((invoice_id, reason)))
+
+    class FakeClient:
+        def verify_by_invoice_number(self, numero):
+            return None
+
+    monkeypatch.setattr(engine, "SfecClient", FakeClient)
 
     def reject(invoice):
         exc = Exception("Validation SFEC echouee: TTC = HT")

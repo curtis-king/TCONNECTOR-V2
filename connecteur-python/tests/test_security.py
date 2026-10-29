@@ -159,6 +159,7 @@ def _secret_values():
     return {
         ("db", "password"): cfg.get("db", {}).get("password", ""),
         ("sfec", "api_key"): cfg.get("sfec", {}).get("api_key", ""),
+        ("sfec", "sandbox_api_key"): cfg.get("sfec", {}).get("sandbox_api_key", ""),
         ("dashboard", "login_password"): cfg.get("dashboard", {}).get("login_password", ""),
         ("dashboard", "session_secret"): cfg.get("dashboard", {}).get("session_secret", ""),
     }
