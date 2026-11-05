@@ -87,7 +87,7 @@ def test_code_tiers_sage_est_reconnu_sans_alias():
     assert "recipient_niu" not in payload
 
 
-def test_entreprise_sans_niu_reste_refusee():
+def test_entreprise_sans_niu_devient_particulier():
     payload = db_invoice_to_sfec(_invoice(
         tiers_code="BAGUES",
         nom_tiers="Bague's en or",
@@ -95,9 +95,55 @@ def test_entreprise_sans_niu_reste_refusee():
         recipient_niu="",
     ))
 
-    assert payload["recipient_type"] == "business"
-    assert any("recipient_niu requis" in error
-               for error in validate_sfec_payload(payload))
+    assert payload["recipient_type"] == "individual"
+    assert "recipient_niu" not in payload
+    assert validate_sfec_payload(payload) == []
+
+
+def test_client_sans_niu_est_journalise(caplog):
+    with caplog.at_level("WARNING", logger="t-connector.sfec.endpoints"):
+        db_invoice_to_sfec(_invoice(
+            tiers_code="LOG-NIU-001",
+            nom_tiers="Client sans NIU log",
+            recipient_type_raw="business",
+            recipient_niu="",
+        ))
+
+    assert any(
+        "Client sans NIU" in record.getMessage()
+        and "LOG-NIU-001" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_gouvernement_sans_niu_devient_particulier():
+    payload = db_invoice_to_sfec(_invoice(
+        tiers_code="GOUV-SANS-NIU",
+        nom_tiers="Ministere sans NIU",
+        recipient_type_raw="government",
+        recipient_niu="",
+        recipient_phone="",
+        recipient_email="",
+    ))
+
+    assert payload["recipient_type"] == "individual"
+    assert "recipient_niu" not in payload
+    assert validate_sfec_payload(payload) == []
+
+
+def test_etranger_sans_niu_devient_particulier():
+    payload = db_invoice_to_sfec(_invoice(
+        tiers_code="FOREIGN-SANS-NIU",
+        nom_tiers="Client etranger sans NIU",
+        recipient_type_raw="foreign",
+        recipient_niu="",
+        recipient_phone="",
+        recipient_email="",
+    ))
+
+    assert payload["recipient_type"] == "individual"
+    assert "recipient_niu" not in payload
+    assert validate_sfec_payload(payload) == []
 
 
 def test_niu_invalide_nest_pas_remplace():
@@ -142,8 +188,8 @@ def test_niu_entreprise_reste_uniquement_taxpayer_niu(monkeypatch):
 
     assert "recipient_niu" not in payload
     assert payload["taxpayer_niu"] == "CG123456789012345"
-    assert any("recipient_niu requis" in error
-               for error in validate_sfec_payload(payload))
+    assert payload["recipient_type"] == "individual"
+    assert validate_sfec_payload(payload) == []
 
 
 def test_configuration_des_codes_comptoir_est_prioritaire(monkeypatch):

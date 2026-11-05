@@ -57,6 +57,27 @@ _PAYMENT_METHOD_ALIASES = {
 
 logger = logging.getLogger("t-connector.sfec.endpoints")
 
+# Un client sans NIU est traite comme un particulier. Le log est deduplique
+# par code/nom : sans cela, chaque cycle de certification rejoue les memes
+# centaines de lignes et noie les journaux exploitables.
+_missing_niu_logged = set()
+_missing_niu_log_lock = threading.Lock()
+_MISSING_NIU_LOG_LIMIT = 5000
+
+
+def _log_missing_niu(code, name, source_type):
+    key = str(code or name or "?").strip()
+    with _missing_niu_log_lock:
+        if key in _missing_niu_logged:
+            return
+        if len(_missing_niu_logged) >= _MISSING_NIU_LOG_LIMIT:
+            _missing_niu_logged.clear()
+        _missing_niu_logged.add(key)
+    logger.warning(
+        "Client sans NIU: code=%s nom=%s type_source=%s -> individual",
+        code or "-", name or "-", source_type or "business",
+    )
+
 from app.core.paths import data_dir as _uses_data_dir  # noqa: F401
 
 DATA_DIR = _uses_data_dir()
@@ -635,14 +656,21 @@ def db_invoice_to_sfec(invoice):
 
     recipient_name = raw_name
     recipient_type = _map_recipient_type(raw_type)
+    code_tiers = _safe_str(
+        invoice.get("tiers_code") or invoice.get("code_tiers"))
     counter_customer = is_counter_customer(
-        invoice.get("tiers_code") or invoice.get("code_tiers"),
+        code_tiers,
         raw_name,
         sfec_cfg,
     )
     if counter_customer:
         # Client comptoir / anonyme : particulier sans NIU. On ne modifie
         # aucune donnee client et on n'injecte jamais le NIU entreprise.
+        recipient_type = "individual"
+    elif not raw_niu:
+        # Aucun NIU trouve dans les colonnes lues : la facture est celle
+        # d'un particulier. Le NIU entreprise n'est jamais substitue.
+        _log_missing_niu(code_tiers, recipient_name, recipient_type)
         recipient_type = "individual"
 
     sfec_req = {
@@ -722,8 +750,10 @@ def db_invoice_to_sfec(invoice):
         sfec_req["recipient_address"] = raw_addr
 
     logger.info(
-        "SFEC payload: type=%s counter=%s recipient_niu=%s items=%d amount=%s",
+        "SFEC payload: type=%s counter=%s code=%s nom=%s "
+        "recipient_niu=%s items=%d amount=%s",
         sfec_req["recipient_type"], counter_customer,
+        code_tiers or "-", recipient_name or "-",
         "present" if raw_niu else "absent",
         len(sfec_req["items"]), sfec_req["total_amount"])
 
