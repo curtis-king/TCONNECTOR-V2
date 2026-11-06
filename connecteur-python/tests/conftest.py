@@ -88,6 +88,24 @@ def _init_sqlite():
     with get_cursor() as cur:
         cur.execute("UPDATE utilisateurs SET must_change_pwd = 0")
 
+    # S'assurer que l'admin par defaut peut se connecter dans les tests.
+    # La migration depuis config.json vide dashboard.login_password apres
+    # creation du compte : le mot de passe connu n'est plus dispo dans le
+    # fichier de config. On redéfinit donc un mot de passe connu en base.
+    from app.config.manager import get_config
+    dash = get_config().get("dashboard", {}) or {}
+    email = dash.get("login_email", "admin@example.com")
+    test_password = "Test-Admin-123"
+    with get_cursor() as cur:
+        cur.execute("SELECT id FROM utilisateurs WHERE lower(email) = ?", (email,))
+        row = cur.fetchone()
+        if row:
+            user_auth.set_password(row["id"], test_password, must_change=False)
+        else:
+            user_auth.create_user(
+                nom="Admin", prenom="Test", email=email,
+                password=test_password, role="admin", must_change=False)
+
 
 @pytest.fixture(scope="session")
 def app_instance():
@@ -104,13 +122,18 @@ def app_instance():
 
 @pytest.fixture(scope="session")
 def admin_credentials():
-    """Identifiants admin lus depuis la config (défauts de config.json)."""
+    """Identifiants admin lus depuis la config (défauts de config.json).
+
+    La migration vide dashboard.login_password après création du compte : si
+    le fichier de config est vide, on utilise le mot de passe connu défini
+    dans _init_sqlite().
+    """
     from app.config.manager import get_config
 
     dash = get_config().get("dashboard", {})
     return {
         "email": dash.get("login_email", "admin@example.com"),
-        "password": dash.get("login_password", "CHANGE-ME"),
+        "password": dash.get("login_password") or "Test-Admin-123",
     }
 
 
@@ -162,7 +185,7 @@ def role_client(app_instance):
         if not user_auth.get_user_by_email(email):
             user_auth.create_user(
                 nom="Test", prenom=role.title(), email=email,
-                password=password, role=role,
+                password=password, role=role, must_change=False,
             )
         client = app_instance.test_client()
         clients[role] = _login_client(client, email, password)

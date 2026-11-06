@@ -6,9 +6,9 @@
 <tbody>{{ rows | safe }}{{ empty | safe }}</tbody></table>
 {% if count > 100 %}
 <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px">
-<div>{% if has_prev %}<a class="btn btn-sm" href="{{ url_for('dashboard.pending_page', page=page - 1) }}">Precedent</a>{% endif %}</div>
+<div>{% if has_prev %}<a class="btn btn-sm" href="{{ url_for('dashboard.pending_page', page=page - 1, mpage=monitor_page) }}">Precedent</a>{% endif %}</div>
 <div style="color:#94a3b8">{{ offset + 1 }}-{{ offset + shown }} sur {{ count }} &middot; page {{ page }}/{{ pages }}</div>
-<div>{% if has_next %}<a class="btn btn-sm" href="{{ url_for('dashboard.pending_page', page=page + 1) }}">Suivant</a>{% endif %}</div>
+<div>{% if has_next %}<a class="btn btn-sm" href="{{ url_for('dashboard.pending_page', page=page + 1, mpage=monitor_page) }}">Suivant</a>{% endif %}</div>
 </div>
 {% endif %}
 <div id="cert-status" style="margin-top:12px"></div></div>
@@ -17,7 +17,15 @@
 <p style="font-size:13px;color:#94a3b8;margin-bottom:12px">Factures non reconstructibles ou rejetees par SFEC. Le motif est conserve ; « Relancer » remet le statut a vide pour un seul passage.</p>
 <table><thead><tr><th>Numero</th><th>Date facture</th><th>Detecte le</th><th>Motif</th>
 <th style="text-align:right">Montant TTC</th><th>Action</th></tr></thead>
-<tbody>{{ anomaly_rows | safe }}{{ anomaly_empty | safe }}</tbody></table></div>
+<tbody>{{ anomaly_rows | safe }}{{ anomaly_empty | safe }}</tbody></table>
+{% if anomalies_count > 100 %}
+<div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px">
+<div>{% if monitor_has_prev %}<a class="btn btn-sm" href="{{ url_for('dashboard.pending_page', page=page, mpage=monitor_page - 1) }}">Precedent</a>{% endif %}</div>
+<div style="color:#94a3b8">{{ monitor_offset + 1 }}-{{ monitor_offset + monitor_shown }} sur {{ anomalies_count }} &middot; page {{ monitor_page }}/{{ monitor_pages }}</div>
+<div>{% if monitor_has_next %}<a class="btn btn-sm" href="{{ url_for('dashboard.pending_page', page=page, mpage=monitor_page + 1) }}">Suivant</a>{% endif %}</div>
+</div>
+{% endif %}
+</div>
 
 <script>
 function certifySingle(id){

@@ -48,7 +48,7 @@
 <div><label>Role</label><select id="u-role">{{ role_opts | safe }}</select></div>
 <div><label>Actif</label><select id="u-actif"><option value="1">Oui</option><option value="0">Non</option></select></div>
 </div>
-<div><label id="u-pwd-label">Mot de passe provisoire * (min 10 char.)</label><input type="password" id="u-pwd"></div>
+<div><label id="u-pwd-label">Mot de passe provisoire * (min 10 char.) — changement obligatoire à la 1re connexion</label><input type="password" id="u-pwd"></div>
 <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
 <button type="button" class="btn btn-sm btn-ghost" onclick="hideUserModal()">Annuler</button>
 <button type="submit" class="btn btn-primary">Enregistrer</button>
@@ -61,7 +61,7 @@
 <div class="card" style="width:380px;max-width:95vw">
 <h2>Reinitialiser le mot de passe</h2>
 <input type="hidden" id="resetPwdId">
-<label>Nouveau mot de passe (min 10 caracteres)</label>
+<label>Nouveau mot de passe provisoire (min 10 caracteres) — changement obligatoire à la prochaine connexion</label>
 <input type="password" id="resetPwdValue" autocomplete="new-password">
 <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
 <button class="btn" type="button" onclick="hideResetPwd()">Annuler</button>
@@ -72,7 +72,7 @@ function visible(){var ids=["u-id","u-nom","u-prenom","u-email","u-role","u-acti
 function showNewUser(){
 visible();
 document.getElementById("u-actif").value="1";
-document.getElementById("u-pwd-label").textContent="Mot de passe initial * (min 8 char.)";
+document.getElementById("u-pwd-label").textContent="Mot de passe provisoire * (min 10 char.) — changement obligatoire à la 1re connexion";
 document.getElementById("user-modal-title").textContent="Nouveau compte";
 document.getElementById("user-modal").style.display="flex";
 document.getElementById("u-email").focus();
@@ -128,7 +128,7 @@ var p=document.getElementById("resetPwdValue").value||"";
 if(p.length<10){showToast("Minimum 10 caracteres","err");return;}
 api("POST","/api/utilisateurs/"+id+"/password",{password:p}).then(function(r){
 if(r.success==false){showToast(r.error||"Erreur","err");return;}
-hideResetPwd();showToast("Mot de passe reinitialise","ok");
+hideResetPwd();showToast("Mot de passe reinitialise — changement requis a la prochaine connexion","ok");
 }).catch(function(e){showToast("Erreur: "+e,"err")});
 }
 function toggleActif(id){

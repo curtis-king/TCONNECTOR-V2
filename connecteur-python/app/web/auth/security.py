@@ -116,7 +116,7 @@ def _current_identity():
 
 def _is_sage_connected_user():
     """Compte dont le mot de passe est gere par Sage (provider sage)."""
-    return get_config().get("auth", {}).get("provider", "local") == "sage"
+    return (get_config().get("auth") or {}).get("provider", "local") == "sage"
 
 
 def _login_required(f):
@@ -299,12 +299,21 @@ def _auth_before_request():
         session["user_role"] = live["role"]
         session["user_nom"] = live["nom"]
         session["user_prenom"] = live["prenom"]
-        session["_must_change_pwd"] = bool(live.get("must_change_pwd"))
+        # En mode Sage, le mot de passe local n'est pas la reference :
+        # on n'expose pas un changement qui serait de toute facon refuse.
+        session["_must_change_pwd"] = (
+            bool(live.get("must_change_pwd"))
+            and not _is_sage_connected_user()
+        )
         session["_login_checked"] = True
 
     # Changement de mot de passe obligatoire (AU-17) : seules la page de
     # changement, l'API associée et la déconnexion restent accessibles.
-    if session.get("user_id") and session.get("_must_change_pwd"):
+    # En mode provider=sage, le mot de passe local n'est pas la reference :
+    # imposer son changement bloquerait l'utilisateur sur une page dont
+    # l'API refuse la modification. Le flag reste en base mais ne bloque pas.
+    if (session.get("user_id") and session.get("_must_change_pwd")
+            and not _is_sage_connected_user()):
         allowed = ("/compte/mot-de-passe", "/api/compte/password", "/logout", "/api/csrf")
         if path not in allowed and not path.startswith("/static/"):
             if path.startswith("/api/"):

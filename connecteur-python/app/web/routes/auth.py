@@ -62,7 +62,9 @@ def login_page():
     session["authenticated"] = True
     session["_login_checked"] = True
     session["_pwd_ver"] = user.get("session_version", 0)
-    session["_must_change_pwd"] = bool(user.get("must_change_pwd"))
+    session["_must_change_pwd"] = (
+        bool(user.get("must_change_pwd")) and not _is_sage_connected_user()
+    )
     import time as _time
     session["_last_activity"] = _time.time()
     session.permanent = True
@@ -95,7 +97,10 @@ def logout():
 @bp.route("/compte/mot-de-passe", methods=["GET"])
 @_login_required
 def compte_password_page():
-    return _page(render_template("auth/password.html"))
+    return _page(render_template(
+        "auth/password.html",
+        must_change=bool(session.get("_must_change_pwd")),
+    ))
 
 
 @bp.route("/api/compte/password", methods=["POST"])

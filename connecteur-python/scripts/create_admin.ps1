@@ -16,9 +16,17 @@
     .\scripts\create_admin.ps1 -Email admin@client.cg -Reset
 
 .EXAMPLE
+    .\scripts\create_admin.ps1 -Email admin@client.cg -RequirePasswordChange
+
+.EXAMPLE
     .\scripts\create_admin.ps1 -Email admin@client.cg -Reset -Db "C:\TConnector\data\tconnector.db"
 
 .NOTES
+    Par defaut, le compte doit changer son mot de passe a la prochaine
+    connexion. Utiliser -NoMustChange pour un mot de passe deja personnel.
+    -RequirePasswordChange marque un compte existant sans changer son mot
+    de passe.
+
     Si PowerShell bloque le script :
         powershell -ExecutionPolicy Bypass -File .\scripts\create_admin.ps1 -Email admin@client.cg -Reset
 #>
@@ -32,6 +40,8 @@ param(
 
     [switch]$Reset,
     [switch]$MustChange,
+    [switch]$NoMustChange,
+    [switch]$RequirePasswordChange,
     [switch]$Diagnose,
     [switch]$NoMatrix,
     [switch]$NoUnlock,
@@ -122,6 +132,12 @@ if ($Reset) {
 }
 if ($MustChange) {
     $arguments += "--must-change"
+}
+if ($NoMustChange) {
+    $arguments += "--no-must-change"
+}
+if ($RequirePasswordChange) {
+    $arguments += "--require-password-change"
 }
 if ($Diagnose) {
     $arguments += "--diagnose"

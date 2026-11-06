@@ -32,11 +32,16 @@ def test_pending_rendu_echappe_et_filtre(client, monkeypatch):
     }
     monkeypatch.setattr(dashboard, "get_cache", lambda: cache)
     monkeypatch.setattr(dashboard, "get_metrics", lambda: {"pending_accounting": 2})
+    # Isole le fallback cache : aucune anomalie SQLite dans ce test.
+    monkeypatch.setattr(dashboard.sqlite_db, "fetch_sfec_monitor_items", lambda: [])
     resp = client.get("/pending")
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
     assert "F-OK" in html
-    assert "F-SURV" not in html
+    # Une facture A_SURVEILLER du cache doit rester visible dans la section
+    # "Factures a surveiller", meme sans ligne sfec_anomalies.
+    assert "F-SURV" in html
+    assert "Factures a surveiller (1)" in html
     assert "<script>x</script>" not in html
 
 

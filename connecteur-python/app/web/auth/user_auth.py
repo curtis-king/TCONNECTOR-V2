@@ -324,7 +324,8 @@ def get_user_by_email(email):
         return cur.fetchone()
 
 
-def create_user(nom, prenom, email, password, role="responsable"):
+def create_user(nom, prenom, email, password, role="responsable",
+                must_change=True):
     ensure_schema()
     email = (email or "").strip().lower()
     if not email or "@" not in email:
@@ -337,12 +338,17 @@ def create_user(nom, prenom, email, password, role="responsable"):
         if cur.fetchone():
             raise ValueError("Un compte existe deja avec cet email")
         cur.execute(
-            "INSERT INTO utilisateurs (nom, prenom, email, mot_de_passe, role) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO utilisateurs "
+            "(nom, prenom, email, mot_de_passe, role, must_change_pwd) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             ((nom or "").strip(), (prenom or "").strip(), email,
-             hash_password(password), role)
+             hash_password(password), role, 1 if must_change else 0)
         )
         new_id = cur.lastrowid
-    audit("utilisateur.cree", "Compte cree (role {})".format(role), email=email)
+    audit("utilisateur.cree",
+          "Compte cree (role {}, changement de mot de passe {})".format(
+              role, "requis" if must_change else "non requis"),
+          email=email)
     return new_id
 
 

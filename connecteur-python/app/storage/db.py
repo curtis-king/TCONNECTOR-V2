@@ -751,6 +751,67 @@ def fetch_sfec_anomalies(limit=500):
         return [dict(row) for row in cur.fetchall()]
 
 
+def fetch_sfec_monitor_items(limit=None):
+    """Liste les factures a surveiller, anomalies et statut local confondus.
+
+    Certaines factures sont marquees A_SURVEILLER directement dans Sage, ou
+    l'ont ete avant l'existence de la table sfec_anomalies. Elles doivent
+    rester visibles sur /pending meme sans motif enregistre.
+    """
+    items = []
+    seen = set()
+
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT a.numero, a.motif, a.detected_at,
+                   i.montant_ttc, i.tiers_nom, i.date_facture
+            FROM sfec_anomalies a
+            LEFT JOIN invoices i ON i.numero = a.numero
+            ORDER BY a.detected_at DESC, a.numero
+        """)
+        for row in cur.fetchall():
+            item = dict(row)
+            numero = str(item.get("numero") or "").strip()
+            if not numero or numero in seen:
+                continue
+            seen.add(numero)
+            items.append(item)
+
+        cur.execute("""
+            SELECT numero,
+                   'Statut SFEC : A_SURVEILLER (motif non enregistre)' AS motif,
+                   COALESCE(updated_at, created_at, '') AS detected_at,
+                   montant_ttc, tiers_nom, date_facture
+            FROM invoices
+            WHERE sfec_statut = 'A_SURVEILLER'
+            ORDER BY date_facture DESC, numero
+        """)
+        for row in cur.fetchall():
+            item = dict(row)
+            numero = str(item.get("numero") or "").strip()
+            if not numero or numero in seen:
+                continue
+            seen.add(numero)
+            items.append(item)
+
+    items.sort(
+        key=lambda x: (
+            str(x.get("detected_at") or ""),
+            str(x.get("date_facture") or ""),
+            str(x.get("numero") or ""),
+        ),
+        reverse=True,
+    )
+    if limit is not None:
+        try:
+            limit = max(1, int(limit))
+        except (TypeError, ValueError):
+            limit = None
+        if limit is not None:
+            items = items[:limit]
+    return items
+
+
 def get_sfec_anomaly(numero):
     numero = str(numero or "").strip()
     if not numero:

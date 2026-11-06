@@ -22,6 +22,12 @@ Mot de passe :
     - sinon le script le demande de facon masquee ;
     - sinon --password-stdin permet une automatisation.
 
+Par defaut, le compte doit changer son mot de passe a la prochaine connexion.
+Utiliser --no-must-change pour un mot de passe deja personnel.
+
+Marquer un compte existant sans changer son mot de passe :
+    .\\scripts\\create_admin.ps1 -Email admin@client.cg -RequirePasswordChange
+
 Diagnostic sans modification :
     .\\scripts\\create_admin.ps1 -Email admin@client.cg -Diagnose
 """
@@ -353,7 +359,7 @@ def apply_admin(
     nom=None,
     prenom=None,
     reset=False,
-    must_change=False,
+    must_change=True,
     unlock=True,
     ensure_matrix=True,
     lock_minutes=15,
@@ -473,6 +479,45 @@ def apply_admin(
         "matrix_changed": matrix_changed,
         "must_change": bool(must_change),
         "permissions": len(admin_permissions(conn)),
+    }
+
+
+def mark_password_change_required(conn, email):
+    """Impose le changement de mot de passe sans toucher au mot de passe.
+
+    Utilise pour marquer les comptes admin par defaut deja existants
+    (migration one-shot). Le mot de passe, le role et l'etat du compte ne
+    sont pas modifies ; seule la prochaine connexion devra definir un
+    nouveau mot de passe.
+    """
+    existing = find_user(conn, email)
+    if not existing:
+        raise ScriptError(
+            "Aucun compte avec cet email: {}. Rien n'a ete modifie."
+            .format(email)
+        )
+
+    ensure_schema(conn)
+    with conn:
+        conn.execute(
+            "UPDATE utilisateurs SET must_change_pwd = 1, "
+            "session_version = session_version + 1, "
+            "updated_at = datetime('now') WHERE id = ?",
+            (existing["id"],),
+        )
+        conn.execute(
+            "INSERT INTO audit_log (utilisateur, action, detail, ip) "
+            "VALUES (?, 'admin.changement_mdp_requis', ?, '')",
+            (
+                email,
+                "Changement de mot de passe impose par script CLI "
+                "(sans modification du mot de passe)",
+            ),
+        )
+
+    return {
+        "user_id": existing["id"],
+        "action": "marque",
     }
 
 
@@ -619,7 +664,20 @@ def build_parser():
     parser.add_argument(
         "--must-change",
         action="store_true",
-        help="Force le changement de mot de passe a la premiere connexion",
+        default=True,
+        help="Force le changement de mot de passe a la premiere connexion (defaut)",
+    )
+    parser.add_argument(
+        "--no-must-change",
+        action="store_false",
+        dest="must_change",
+        help="Ne force pas le changement de mot de passe a la premiere connexion",
+    )
+    parser.add_argument(
+        "--require-password-change",
+        action="store_true",
+        help="Marque un compte existant comme devant changer son mot de passe, "
+             "sans modifier le mot de passe ni les droits",
     )
     parser.add_argument(
         "--ensure-matrix",
@@ -682,6 +740,45 @@ def build_parser():
     return parser
 
 
+def _run_require_password_change(config_path, db_path, email, args):
+    """Marque un compte existant sans lire ni modifier son mot de passe."""
+    print("Config : {}".format(config_path))
+    print("DB     : {}".format(db_path))
+
+    db_existed = os.path.isfile(db_path)
+    conn = None
+    try:
+        conn = open_database(db_path, create=False)
+
+        backup_path = None
+        if db_existed and args.backup:
+            backup_path = backup_database(db_path)
+            print("Backup : {}".format(backup_path))
+
+        result = mark_password_change_required(conn, email)
+    except ScriptError as exc:
+        print("ERREUR: {}".format(exc), file=sys.stderr)
+        return 1
+    except (sqlite3.Error, OSError) as exc:
+        print("ERREUR base de donnees: {}".format(exc), file=sys.stderr)
+        print(
+            "Si le service T-CONNECTOR tourne, l'arreter puis relancer le script.",
+            file=sys.stderr,
+        )
+        return 1
+    finally:
+        if conn is not None:
+            conn.close()
+
+    print("Compte : {} (id={})".format(email, result["user_id"]))
+    print(
+        "Action : changement de mot de passe impose a la prochaine connexion "
+        "(mot de passe inchange)."
+    )
+    print("OK")
+    return 0
+
+
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -695,6 +792,9 @@ def main(argv=None):
 
     if args.diagnose:
         return print_diagnosis(config_path, db_path, email)
+
+    if args.require_password_change:
+        return _run_require_password_change(config_path, db_path, email, args)
 
     try:
         password = read_password(args)

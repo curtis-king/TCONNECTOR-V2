@@ -361,7 +361,8 @@ def api_create_compte():
     try:
         new_id = user_auth.create_user(
             data.get("nom", ""), data.get("prenom", ""), data.get("email", ""),
-            data.get("password", ""), data.get("role", "responsable"))
+            data.get("password", ""), data.get("role", "responsable"),
+            must_change=True)
         return jsonify({"success": True, "id": new_id})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
@@ -385,8 +386,11 @@ def api_update_compte(user_id):
             role=data.get("role"), est_actif=data.get("est_actif"),
             acting_user_id=(_current_identity() or {}).get("user_id"))
         if data.get("password"):
+            # Mot de passe defini par un admin : l'utilisateur devra le
+            # remplacer a sa prochaine connexion (AU-17).
             user_auth.set_password(user_id, data["password"],
-                                   resetter=_current_identity().get("email", ""))
+                                   resetter=_current_identity().get("email", ""),
+                                   must_change=True)
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400

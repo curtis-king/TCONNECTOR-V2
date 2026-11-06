@@ -161,6 +161,65 @@ def test_page_pending_affiche_motif_et_bouton_relancer(client, monkeypatch):
         sqlite_db.clear_sfec_anomaly(numero)
 
 
+def test_page_pending_affiche_a_surveiller_sans_anomalie(client, monkeypatch):
+    """Un statut A_SURVEILLER importe de Sage sans motif doit rester visible."""
+    from app.web.routes import dashboard
+
+    numero = "ANOM-SANS-MOTIF-TEST"
+    with sqlite_db.get_cursor() as cur:
+        cur.execute("DELETE FROM invoices WHERE numero = ?", (numero,))
+        cur.execute("""
+            INSERT INTO invoices (
+                numero, date_facture, statut, valide, source, tiers_nom,
+                montant_ttc, sfec_statut
+            ) VALUES (?, '2026-10-20', 'valide', 1, 'sage', 'Client Test',
+                      5000, 'A_SURVEILLER')
+        """, (numero,))
+    cache = {"sales_invoices": [], "sfec_invoices": []}
+    monkeypatch.setattr(dashboard, "get_cache", lambda: cache)
+    try:
+        resp = client.get("/pending")
+        assert resp.status_code == 200
+        html = resp.get_data(as_text=True)
+        assert numero in html
+        assert "motif non enregistre" in html
+        assert "Relancer" in html
+    finally:
+        with sqlite_db.get_cursor() as cur:
+            cur.execute("DELETE FROM invoices WHERE numero = ?", (numero,))
+
+
+def test_page_pending_pagine_les_factures_a_surveiller(client, monkeypatch):
+    """Les A_SURVEILLER au-dela de 100 restent accessibles via mpage."""
+    from app.web.routes import dashboard
+
+    items = [{
+        "numero": "PAG-{:03d}".format(i),
+        "motif": "Motif test",
+        "detected_at": "",
+        "date_facture": "2026-01-01",
+        "montant_ttc": 1000,
+        "tiers_nom": "Client Test",
+    } for i in range(150)]
+    monkeypatch.setattr(dashboard.sqlite_db, "fetch_sfec_monitor_items",
+                        lambda: list(items))
+    monkeypatch.setattr(dashboard, "get_cache",
+                        lambda: {"sales_invoices": [], "sfec_invoices": []})
+
+    resp = client.get("/pending")
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    assert "sur 150" in html
+    assert "page 1/2" in html
+    assert "PAG-149" in html
+
+    resp = client.get("/pending?mpage=2")
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    assert "page 2/2" in html
+    assert "PAG-049" in html
+
+
 def test_relance_remet_a_surveiller_a_zero_pour_une_piece(client, monkeypatch):
     from app.web.routes import dashboard
 

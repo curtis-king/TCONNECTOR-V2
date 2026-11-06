@@ -300,13 +300,57 @@ def pending_page():
     # Proposition 06 : les factures A_SURVEILLER ne sont plus muettes. Le
     # motif est enregistre par mark_to_monitor() et affiche ici avec une
     # action « Relancer » qui remet le statut a NULL pour un seul passage.
+    # Factures a surveiller : anomalies enregistrees + statut local
+    # A_SURVEILLER (importe de Sage ou anterieur a sfec_anomalies) + cache
+    # Sage pour les factures pas encore presentes dans le miroir SQLite.
     try:
-        anomalies = sqlite_db.fetch_sfec_anomalies(limit=500)
+        monitor_items = sqlite_db.fetch_sfec_monitor_items()
     except Exception as exc:  # noqa: BLE001
         logger.warning("Lecture des anomalies SFEC impossible: %s", exc)
-        anomalies = []
+        monitor_items = []
+
+    monitor_seen = {str(i.get("numero") or "").strip() for i in monitor_items}
+    for inv in cache.get("sales_invoices", []):
+        if inv.get("sfec_statut") != "A_SURVEILLER":
+            continue
+        numero = str(inv.get("numero") or "").strip()
+        if not numero or numero in monitor_seen:
+            continue
+        monitor_seen.add(numero)
+        monitor_items.append({
+            "numero": numero,
+            "motif": (pending_reasons.get(inv.get("id"))
+                      or "Statut SFEC : A_SURVEILLER"),
+            "detected_at": (inv.get("date_modification")
+                            or inv.get("date_creation") or ""),
+            "montant_ttc": inv.get("montant_ttc"),
+            "tiers_nom": inv.get("nom_tiers", ""),
+            "date_facture": inv.get("date_facture", ""),
+        })
+
+    monitor_items.sort(
+        key=lambda x: (
+            str(x.get("detected_at") or ""),
+            str(x.get("date_facture") or ""),
+            str(x.get("numero") or ""),
+        ),
+        reverse=True,
+    )
+    try:
+        monitor_page = max(1, int(request.args.get("mpage", 1)))
+    except (TypeError, ValueError):
+        monitor_page = 1
+    monitor_limit = 100
+    monitor_total = len(monitor_items)
+    monitor_pages = max(1, (monitor_total + monitor_limit - 1) // monitor_limit)
+    monitor_page = min(monitor_page, monitor_pages)
+    monitor_offset = (monitor_page - 1) * monitor_limit
+    monitor_page_items = monitor_items[
+        monitor_offset:monitor_offset + monitor_limit
+    ]
+
     anomaly_rows = ""
-    for anomaly in anomalies:
+    for anomaly in monitor_page_items:
         numero = str(anomaly.get("numero") or "")
         montant = anomaly.get("montant_ttc")
         montant_txt = _safe_amount(montant, 2) if montant not in (None, "") else "-"
@@ -339,7 +383,13 @@ def pending_page():
         offset=offset, shown=len(page_rows),
         anomaly_rows=anomaly_rows,
         anomaly_empty=anomaly_empty,
-        anomalies_count=len(anomalies),
+        anomalies_count=monitor_total,
+        monitor_page=monitor_page,
+        monitor_pages=monitor_pages,
+        monitor_has_prev=monitor_page > 1,
+        monitor_has_next=monitor_page < monitor_pages,
+        monitor_offset=monitor_offset,
+        monitor_shown=len(monitor_page_items),
     ))
 
 

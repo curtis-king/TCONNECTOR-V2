@@ -42,7 +42,7 @@ def _make_user(role, password="Test-Password-123"):
     email = "{}{}@example.com".format(PREFIX.lower(), uuid.uuid4().hex[:12])
     user_auth.create_user(
         nom="Securite", prenom="Test", email=email,
-        password=password, role=role,
+        password=password, role=role, must_change=False,
     )
     return email, password
 
@@ -312,6 +312,74 @@ def test_admin_reset_forces_password_change(app_instance, client, temp_user):
     assert c.get("/api/metrics").status_code == 200
 
 
+def test_new_account_forces_password_change_on_first_login(app_instance, client):
+    """Un compte cree depuis l'interface admin doit definir son mot de passe
+    a la premiere connexion, puis retrouver un acces normal."""
+    email = "{}first-{}@example.com".format(PREFIX.lower(), uuid.uuid4().hex[:12])
+    token = _csrf(client)
+    r = client.post("/api/utilisateurs", json={
+        "nom": "Premiere", "prenom": "Connexion", "email": email,
+        "password": "Temporaire-123", "role": "responsable",
+    }, headers={"X-CSRF-Token": token})
+    assert r.status_code == 200, r.get_json()
+    uid = r.get_json()["id"]
+    try:
+        with get_cursor() as cur:
+            cur.execute(
+                "SELECT must_change_pwd FROM utilisateurs WHERE id = ?", (uid,))
+            assert cur.fetchone()["must_change_pwd"] == 1
+
+        c = _login(app_instance, email, "Temporaire-123")
+        r = c.get("/")
+        assert r.status_code in (302, 303)
+        assert "/compte/mot-de-passe" in (r.headers.get("Location") or "")
+        r = c.get("/api/metrics")
+        assert r.status_code == 403
+        assert r.get_json().get("must_change_password") is True
+
+        page = c.get("/compte/mot-de-passe")
+        assert page.status_code == 200
+        assert "Première connexion" in page.get_data(as_text=True)
+
+        token = _csrf(c)
+        r = c.post("/api/compte/password", json={
+            "current": "Temporaire-123", "nouveau": "Personnel-2026",
+        }, headers={"X-CSRF-Token": token})
+        assert r.status_code == 200, r.get_json()
+        assert c.get("/api/metrics").status_code == 200
+    finally:
+        _purge_user(email)
+
+
+def test_sage_provider_does_not_block_must_change_flag(app_instance, temp_user):
+    """En mode provider=sage, le flag local ne doit pas bloquer l'acces :
+    le mot de passe de reference est gere par Sage."""
+    from app.config.manager import get_config, save_config
+    email, password = temp_user("responsable")
+    c = _login(app_instance, email, password)
+    cfg = get_config()
+    old_provider = (cfg.get("auth") or {}).get("provider", "local")
+    try:
+        cfg.setdefault("auth", {})["provider"] = "sage"
+        save_config(cfg)
+        with get_cursor() as cur:
+            cur.execute(
+                "UPDATE utilisateurs SET must_change_pwd = 1 "
+                "WHERE lower(email) = lower(?)", (email,))
+
+        r = c.get("/")
+        assert r.status_code not in (301, 302, 303, 307, 308), (
+            "le flag ne doit pas rediriger vers /compte/mot-de-passe en mode Sage")
+        assert c.get("/api/metrics").status_code == 200
+    finally:
+        cfg.setdefault("auth", {})["provider"] = old_provider
+        save_config(cfg)
+        with get_cursor() as cur:
+            cur.execute(
+                "UPDATE utilisateurs SET must_change_pwd = 0 "
+                "WHERE lower(email) = lower(?)", (email,))
+
+
 def test_sage_provider_blocks_local_password_change(app_instance, temp_user):
     """AU-15 : en mode provider=sage, le changement local est refuse."""
     from app.config.manager import get_config, save_config
@@ -389,7 +457,8 @@ def test_vendeur_link_is_case_insensitive(app_instance):
     from app.storage.db import get_cursor as _cur
     email = "test-sec-vendeur@example.com"
     user_auth.create_user(nom="Vendeur", prenom="Casse", email=email,
-                          password="Test-Password-123", role="caissiere")
+                          password="Test-Password-123", role="caissiere",
+                          must_change=False)
     with _cur() as cur:
         cur.execute(
             "INSERT INTO vendeurs (code, nom, prenom, email, pin, role, est_actif)"

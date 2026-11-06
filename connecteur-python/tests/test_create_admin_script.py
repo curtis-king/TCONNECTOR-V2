@@ -102,7 +102,8 @@ def test_create_admin_and_all_permissions(tmp_path):
         assert row is not None
         assert row["role"] == "admin"
         assert row["est_actif"] == 1
-        assert row["must_change_pwd"] == 0
+        # Par defaut, le mot de passe doit etre change a la premiere connexion.
+        assert row["must_change_pwd"] == 1
         assert row["failed_attempts"] == 0
         assert check_password_hash(row["mot_de_passe"], "AdminClient2026")
 
@@ -179,7 +180,8 @@ def test_reset_unlocks_and_replaces_password(tmp_path):
         ).fetchone()
         assert row["role"] == "admin"
         assert row["est_actif"] == 1
-        assert row["must_change_pwd"] == 0
+        # Une reinitialisation par script impose aussi le changement.
+        assert row["must_change_pwd"] == 1
         assert row["failed_attempts"] == 0
         assert row["locked_until"] is None
         assert check_password_hash(row["mot_de_passe"], "NouveauPass2026")
@@ -279,6 +281,119 @@ def test_backup_is_created_before_reset(tmp_path):
     backups = list((tmp_path / "data").glob("tconnector.db.bak-*"))
     assert backups
     assert "Backup :" in result.stdout
+
+
+def test_no_must_change_allows_personal_password(tmp_path):
+    result, db_path, _ = _run(
+        tmp_path,
+        "AdminClient2026",
+        "--create-db",
+        "--no-must-change",
+        config=_config(),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Changement de mot de passe requis : non" in result.stdout
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT must_change_pwd FROM utilisateurs "
+            "WHERE lower(email) = 'admin@client.cg'"
+        ).fetchone()
+        assert row["must_change_pwd"] == 0
+    finally:
+        conn.close()
+
+
+def test_require_password_change_marks_existing_without_touching_password(tmp_path):
+    first, db_path, _ = _run(
+        tmp_path,
+        "AdminClient2026",
+        "--create-db",
+        config=_config(),
+    )
+    assert first.returncode == 0, first.stderr
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute(
+            "UPDATE utilisateurs SET must_change_pwd = 0, "
+            "session_version = 3 WHERE lower(email) = 'admin@client.cg'"
+        )
+        conn.commit()
+        before = conn.execute(
+            "SELECT mot_de_passe, session_version FROM utilisateurs "
+            "WHERE lower(email) = 'admin@client.cg'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    result, _, _ = _run(
+        tmp_path,
+        "MotDePasseIgnore2026",
+        "--require-password-change",
+        config=_config(),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "mot de passe inchange" in result.stdout
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT mot_de_passe, session_version, must_change_pwd "
+            "FROM utilisateurs WHERE lower(email) = 'admin@client.cg'"
+        ).fetchone()
+        assert row["must_change_pwd"] == 1
+        assert row["mot_de_passe"] == before["mot_de_passe"]
+        assert row["session_version"] == before["session_version"] + 1
+        audit = conn.execute(
+            "SELECT COUNT(*) FROM audit_log "
+            "WHERE action = 'admin.changement_mdp_requis'"
+        ).fetchone()[0]
+        assert audit == 1
+    finally:
+        conn.close()
+
+
+def test_require_password_change_fails_for_unknown_account(tmp_path):
+    first, db_path, _ = _run(
+        tmp_path,
+        "AdminClient2026",
+        "--create-db",
+        config=_config(),
+    )
+    assert first.returncode == 0, first.stderr
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute("DELETE FROM utilisateurs")
+        conn.commit()
+    finally:
+        conn.close()
+
+    result, _, _ = _run(
+        tmp_path,
+        "AdminClient2026",
+        "--require-password-change",
+        config=_config(),
+    )
+    assert result.returncode == 1
+    assert "Aucun compte" in result.stderr
+
+
+def test_require_password_change_without_database_fails(tmp_path):
+    result, db_path, _ = _run(
+        tmp_path,
+        "AdminClient2026",
+        "--require-password-change",
+        config=_config(),
+    )
+    assert result.returncode == 1
+    assert "Base SQLite introuvable" in result.stderr
+    assert not db_path.exists()
 
 
 def test_permissions_list_matches_application():
