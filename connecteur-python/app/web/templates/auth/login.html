@@ -120,14 +120,15 @@ h1{
       <label>Adresse email</label>
       <div class="field-wrap">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4z" opacity="0"/><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m2 7 10 6 10-6"/></svg>
-        <input type="email" name="email" placeholder="admin@example.com" required autofocus>
+        <input type="email" name="email" placeholder="admin@example.com" required autofocus autocomplete="username">
       </div>
     </div>
     <div class="field">
       <label>Mot de passe</label>
       <div class="field-wrap">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-        <input type="password" name="password" placeholder="Entrez votre mot de passe" required>
+        <input type="password" name="password" id="pwd-input" placeholder="Entrez votre mot de passe" required autocomplete="current-password" style="padding-right:42px">
+        <button type="button" onclick="var i=document.getElementById('pwd-input');var s=i.type==='password';i.type=s?'text':'password';this.textContent=s?'🙈':'👁'" aria-label="Afficher ou masquer le mot de passe" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:15px;color:#94a3b8;padding:0">👁</button>
       </div>
     </div>
     <button type="submit" class="btn">
@@ -155,6 +156,6 @@ h1{
     </div>
   </div>
 </div>
-<p class="foot">T-CONNECTOR SFEC &copy; 2025 &mdash; Sodico</p>
+<p class="foot">T-CONNECTOR SFEC &copy; 2026 &mdash; Sodico</p>
 </div>
 </body></html>

@@ -106,7 +106,7 @@ def main():
                     "WHERE numero = ? ORDER BY printed_at DESC LIMIT 1", (numero,))
                 row = cur.fetchone()
             if row and row["status"] in ("IMPRIME", "ERREUR", "ERREUR_IMPRESSION",
-                                         "QUARANTAINE"):
+                                         "QUARANTINE", "REFUS", "NON_CONFORME"):
                 status = row["status"]
                 out_path = row["out_path"]
                 break

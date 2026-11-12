@@ -9,9 +9,17 @@
 </div>
 <div class="card"><h2>Liste des Vendeurs</h2>
 <table><thead><tr><th>Code</th><th>Nom</th><th>Role</th><th>Contact</th><th>Ventes</th><th style='text-align:right'>CA</th><th>Statut</th><th></th></tr></thead>
-<tbody>{{ rows | safe }}</tbody></table></div>
+<tbody>{{ rows | safe }}</tbody></table>
+{% if has_prev or has_next %}
+<div style="display:flex;justify-content:space-between;margin-top:12px">
+<div>{% if has_prev %}<a class="btn btn-sm" href="{{ url_for('directory.vendeurs_page', offset=(offset - limit) if offset > limit else 0) }}">Precedent</a>{% endif %}</div>
+<div style="color:#94a3b8">{{ offset + 1 }}-{{ offset + shown }} sur {{ total }}</div>
+<div>{% if has_next %}<a class="btn btn-sm" href="{{ url_for('directory.vendeurs_page', offset=offset + limit) }}">Suivant</a>{% endif %}</div>
+</div>
+{% endif %}
+</div>
 
-<div id="modal-vendeur" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:100;display:none;align-items:center;justify-content:center">
+<div id="modal-vendeur" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:100;align-items:center;justify-content:center">
 <div class="card" style="width:420px;max-width:95vw">
 <h2 id="modal-title">Nouveau Vendeur</h2>
 <form id="form-vendeur">
@@ -23,14 +31,16 @@
 <div><label>Role</label><select id="v-role"><option value="vendeur">Vendeur</option><option value="vendeuse">Vendeuse</option><option value="caissier">Caissier</option><option value="responsable">Responsable</option></select></div>
 <div><label>Email</label><input type="email" id="v-email"></div>
 <div><label>Telephone</label><input type="text" id="v-tel"></div>
+<div><label>PIN (4-8 chiffres, laisser vide pour conserver)</label><input type="password" id="v-pin" autocomplete="new-password"></div>
+<div><label>Statut</label><select id="v-actif"><option value="1">Actif</option><option value="0">Inactif</option></select></div>
 </div>
 <div style="margin-top:16px">
 <button type="submit" class="btn btn-primary">Enregistrer</button>
 <button type="button" class="btn" onclick="closeModal()" style="margin-left:8px">Annuler</button>
 </div></form></div></div>
 <script>
-function showNewVendeur(){document.getElementById("modal-title").textContent="Nouveau Vendeur";document.getElementById("v-id").value="";document.getElementById("v-code").value="";document.getElementById("v-nom").value="";document.getElementById("v-prenom").value="";document.getElementById("v-role").value="vendeur";document.getElementById("v-email").value="";document.getElementById("v-tel").value="";document.getElementById("modal-vendeur").style.display="flex"}
-function editVendeur(id){api("GET","/api/vendeurs/"+id).then(function(v){document.getElementById("modal-title").textContent="Modifier Vendeur";document.getElementById("v-id").value=v.id;document.getElementById("v-code").value=v.code;document.getElementById("v-nom").value=v.nom;document.getElementById("v-prenom").value=v.prenom||"";document.getElementById("v-role").value=v.role||"vendeur";document.getElementById("v-email").value=v.email||"";document.getElementById("v-tel").value=v.telephone||"";document.getElementById("modal-vendeur").style.display="flex"})}
+function showNewVendeur(){document.getElementById("modal-title").textContent="Nouveau Vendeur";document.getElementById("v-id").value="";document.getElementById("v-code").value="";document.getElementById("v-code").readOnly=false;document.getElementById("v-nom").value="";document.getElementById("v-prenom").value="";document.getElementById("v-role").value="vendeur";document.getElementById("v-email").value="";document.getElementById("v-tel").value="";document.getElementById("v-pin").value="";document.getElementById("v-actif").value="1";document.getElementById("modal-vendeur").style.display="flex"}
+function editVendeur(id){api("GET","/api/vendeurs/"+id).then(function(v){document.getElementById("modal-title").textContent="Modifier Vendeur";document.getElementById("v-id").value=v.id;document.getElementById("v-code").value=v.code;document.getElementById("v-code").readOnly=true;document.getElementById("v-pin").value="";document.getElementById("v-actif").value=v.est_actif?"1":"0";document.getElementById("v-nom").value=v.nom;document.getElementById("v-prenom").value=v.prenom||"";document.getElementById("v-role").value=v.role||"vendeur";document.getElementById("v-email").value=v.email||"";document.getElementById("v-tel").value=v.telephone||"";document.getElementById("modal-vendeur").style.display="flex"})}
 function closeModal(){document.getElementById("modal-vendeur").style.display="none"}
-document.getElementById("form-vendeur").onsubmit=function(e){e.preventDefault();var id=document.getElementById("v-id").value;var d={code:document.getElementById("v-code").value,nom:document.getElementById("v-nom").value,prenom:document.getElementById("v-prenom").value,role:document.getElementById("v-role").value,email:document.getElementById("v-email").value,telephone:document.getElementById("v-tel").value};var url=id?"/api/vendeurs/"+id:"/api/vendeurs";var method=id?"PUT":"POST";api(method,url,d).then(function(r){if(r.success||r.id){showToast("Vendeur sauvegarde","ok");setTimeout(function(){location.reload()},1000)}else{showToast("Erreur: "+(r.error||"inconnue"),"err")}})}
+document.getElementById("form-vendeur").onsubmit=function(e){e.preventDefault();var id=document.getElementById("v-id").value;var d={code:document.getElementById("v-code").value,nom:document.getElementById("v-nom").value,prenom:document.getElementById("v-prenom").value,role:document.getElementById("v-role").value,email:document.getElementById("v-email").value,telephone:document.getElementById("v-tel").value,pin:document.getElementById("v-pin").value,est_actif:document.getElementById("v-actif").value==="1"};var url=id?"/api/vendeurs/"+id:"/api/vendeurs";var method=id?"PUT":"POST";api(method,url,d).then(function(r){if(r.success||r.id){showToast("Vendeur sauvegarde","ok");setTimeout(function(){location.reload()},1000)}else{showToast("Erreur: "+(r.error||"inconnue"),"err")}})}
 </script>

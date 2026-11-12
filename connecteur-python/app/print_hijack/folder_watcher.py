@@ -321,20 +321,31 @@ class FolderWatcher:
             self._move(path, self.quarantine_dir)
             return
 
-        # Garde-fou multi-sites : l'imprimante du site doit etre connectee.
-        # Sinon on n'imprime JAMAIS ailleurs : fichier conserve + alerte.
-        # (Uniquement en mode site + hors dry_run : le legacy laisse
-        # print_pdf gerer l'absence d'imprimante comme avant.)
+        # Garde-fou imprimante : si aucune imprimante n'est configuree, ou si
+        # celle-ci est absente, on conserve le fichier dans IN et on ne genere
+        # pas de PDF conforme a chaque scan (evite l'empilement dans OUT).
+        # Le fichier sera repris des que l'imprimante sera disponible.
         dry_run = self.cfg["dry_run"] or sites_mod.is_dry_run()
-        if site is not None and printer and not dry_run and not sites_mod.printer_connected(printer):
-            logger.error("[WATCH] Imprimante du site '%s' absente/disconnectee "
-                         "(site=%s) - impression bloquee, fichier conserve: %s",
-                         printer, (site or {}).get("name"), name)
-            auto_printer.record_print(file_hash, numero, path, "", printer,
-                                      "IMPRIMANTE_ABSENTE",
-                                      "imprimante '{}' introuvable sur la machine".format(printer),
-                                      sfec_statut, sfec_num)
-            return
+        if not dry_run:
+            if not printer:
+                if not rec or rec["status"] != "IMPRIMANTE_ABSENTE":
+                    logger.error("[WATCH] Aucune imprimante A4 configuree (site actif "
+                                 "ou print_hijack.printer_name) - fichier conserve: %s", name)
+                    auto_printer.record_print(file_hash, numero, path, "", printer,
+                                              "IMPRIMANTE_ABSENTE",
+                                              "aucune imprimante A4 configuree",
+                                              sfec_statut, sfec_num)
+                return
+            if not sites_mod.printer_connected(printer):
+                if not rec or rec["status"] != "IMPRIMANTE_ABSENTE":
+                    logger.error("[WATCH] Imprimante A4 '%s' absente/disconnectee "
+                                 "(site=%s) - impression bloquee, fichier conserve: %s",
+                                 printer, (site or {}).get("name"), name)
+                    auto_printer.record_print(file_hash, numero, path, "", printer,
+                                              "IMPRIMANTE_ABSENTE",
+                                              "imprimante '{}' introuvable sur la machine".format(printer),
+                                              sfec_statut, sfec_num)
+                return
 
         auto_printer.record_print(file_hash, numero, path, "", printer,
                                   "EN_COURS", "", sfec_statut, sfec_num)

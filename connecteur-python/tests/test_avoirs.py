@@ -15,17 +15,10 @@ ici ferait dériver /api/invoices/stats et les listes. D'où :
   - un fixture autouse nettoie les factures/lignes/contacts créés AVANT et
     APRÈS la session de tests.
 
-COMPORTEMENT SERVEUR DIFFÉRENT DU PLAN (documenté, test NON faussé) :
-  - Cas 4 : la création initiale d'un contact RÉUSSIT côté base mais la route
-    /api/contacts (POST) renvoie 400 « local variable 'code' referenced before
-    assignment » — bug PRÉ-EXISTANT d'api_create_contact (directory.py :
-    `code` n'est affecté que dans la branche d'échec). Le contact est bien
-    inséré (commit avant la réponse), donc le 2e POST avec le même NIU
-    déclenche bien la détection de doublon -> 409, qui est ce que vérifie ce
-    test. Le bug de la route (400 au lieu de 200 à la création) est signalé
-    dans docs/checking/audit-plan-6-a-fin.md (section B2), sans correction
-    volontaire (hors périmètre ; déjà couvert par le fix B1 des correctifs
-    ciblés de l'audit).
+COMPORTEMENT SERVEUR DIFFERENT DU PLAN (documenté, test NON faussé) :
+  - Cas 4 : la création initiale d'un contact RÉUSSIT et la route
+    /api/contacts (POST) renvoie désormais 201, conformément à l'API REST.
+    Le 2e POST avec le même NIU déclenche la détection de doublon -> 409.
 """
 import pytest
 
@@ -64,6 +57,10 @@ def _post(client, path, payload, csrf_token):
 
 
 def _post_invoice(client, csrf_token, payload):
+    payload.setdefault("lignes", [
+        {"designation": "Ligne test", "quantite": 1,
+         "prix_unitaire": 1000, "taux_tva": 0},
+    ])
     return _post(client, "/api/invoices", payload, csrf_token)
 
 

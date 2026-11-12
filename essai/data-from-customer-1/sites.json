@@ -1,0 +1,17 @@
+{
+  "paused": false,
+  "dry_run": true,
+  "sites": [
+    {
+      "id": "2e126a3e982e",
+      "name": "bz",
+      "users": [
+        "ARLAND"
+      ],
+      "machine": "IMPCOM",
+      "a4_printer": "IMPCOM (HP Smart Tank 530 series) (redirection de 61)",
+      "ticket_printer": "IMPCOM (HP Smart Tank 530 series) (redirection de 61)",
+      "enabled": true
+    }
+  ]
+}

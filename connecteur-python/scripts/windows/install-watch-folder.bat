@@ -21,7 +21,8 @@ echo   %CD%\%WATCH%\DONE        ^<- originaux traites (archives)
 echo   %CD%\%WATCH%\QUARANTINE  ^<- non identifies / trop volumineux
 echo.
 
-set "SUMATRA=C:\Program Files\SumatraPDF\SumatraPDF.exe"
+set "SUMATRA=%CD%\data\bin\SumatraPDF\SumatraPDF.exe"
+if not exist "%SUMATRA%" set "SUMATRA=C:\Program Files\SumatraPDF\SumatraPDF.exe"
 if not exist "%SUMATRA%" set "SUMATRA=%LOCALAPPDATA%\SumatraPDF\SumatraPDF.exe"
 if exist "%SUMATRA%" (
     echo SumatraPDF : OK ^(%SUMATRA%^)

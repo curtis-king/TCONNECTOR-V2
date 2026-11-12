@@ -52,6 +52,12 @@ def test_print_pdf_dry_run():
     assert ok is True and err == ""
 
 
+def test_print_pdf_without_printer_is_error():
+    ok, err = auto_printer.print_pdf("inexistant.pdf", "", "", dry_run=False)
+    assert ok is False
+    assert "imprimante" in err.lower()
+
+
 def test_compute_sha256(tmp_path):
     f = tmp_path / "a.txt"
     f.write_bytes(b"hello")

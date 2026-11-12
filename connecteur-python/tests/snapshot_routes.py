@@ -124,22 +124,29 @@ def _snapshot_name(index, rule, path):
 
 
 def _mask_sensitive(raw):
-    """Masque la clé API SFEC (S1, audit 2026-09).
+    """Masque les clés API SFEC (S1, audit 2026-09).
 
-    Les snapshots sont trackés par git : on n'y stocke JAMAIS la vraie clé.
-    Masquage appliqué aux deux contextes observés :
-      - JSON  : "api_key": "def1e8…"        (/api/config/export)
-      - HTML  : name="api_key" value="…"    (/config)
-    Le marqueur <SFEC_API_KEY> est stable → les sha256 restent comparables
-    d'une exécution à l'autre, que la clé vienne de l'env ou de config.json.
+    Les snapshots sont trackés par git : on n'y stocke JAMAIS les vraies clés.
+    Masquage appliqué aux contextes observés :
+      - JSON  : "api_key" / "sandbox_api_key"       (/api/config/export)
+      - HTML  : name="api_key" / "sandbox_api_key"  (/config)
+    Les marqueurs sont stables → les sha256 restent comparables d'une
+    exécution à l'autre, que les clés viennent de l'env ou de config.json.
     """
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
         return raw
-    text = re.sub(r'("api_key"\s*:\s*")[^"]*(")', r"\1<SFEC_API_KEY>\2", text)
-    text = re.sub(r'(name="api_key"\s+value=")[^"]*(")',
-                  r"\1<SFEC_API_KEY>\2", text)
+    for key, marker in (
+        ("api_key", "<SFEC_API_KEY>"),
+        ("sandbox_api_key", "<SFEC_SANDBOX_API_KEY>"),
+    ):
+        text = re.sub(
+            r'("{}"\s*:\s*")[^"]*(")'.format(re.escape(key)),
+            r"\1{}\2".format(marker), text)
+        text = re.sub(
+            r'(name="{}"\s+value=")[^"]*(")'.format(re.escape(key)),
+            r"\1{}\2".format(marker), text)
     return text.encode("utf-8")
 
 

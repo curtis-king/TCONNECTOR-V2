@@ -8,6 +8,7 @@ un import direct de app.web.auth.security (aucun import circulaire : la
 sécurité ne dépend d'aucun module de routes).
 """
 
+import copy
 import functools
 import json
 import os
@@ -16,9 +17,17 @@ import threading
 from flask import Blueprint, after_this_request, jsonify, render_template, request, send_file
 from app.config.manager import get_config, save_config
 from app.domain import invoices as invoice_engine, pos as pos_engine
+from app.storage import db as sqlite_db
 from app.integration.sage.database import fetch_tax_rates, list_all_tables, mark_to_monitor, ping_database
 from app.integration.sfec.client import SfecClient
-from app.integration.sfec.endpoints import certify_sqlite_invoice, check_health, preview_sfec_payload, validate_sfec_payload
+from app.integration.sfec.endpoints import (
+    _extract_cert_data as _extract_sfec_cert_data,
+    certify_sqlite_invoice,
+    check_health,
+    preview_sfec_payload,
+    validate_sfec_payload,
+)
+from app.sync.connectivity import is_online
 from app.sync.engine import apply_config, certify_single, get_cache, sync_sfec_invoices
 from app.web.auth import user_auth
 from app.web.auth.security import _login_required, _current_identity
@@ -26,6 +35,38 @@ from app.web.common import _esc, _page
 
 
 bp = Blueprint('config', __name__)
+
+_SECRET_KEYS = {
+    "password", "api_key", "sandbox_api_key", "session_secret",
+    "login_password", "secret", "token", "private_key",
+}
+
+
+def _redact_config(value):
+    """Copie récursive d'une config avec tous les secrets masqués."""
+    if isinstance(value, dict):
+        return {
+            key: ("***" if key.lower() in _SECRET_KEYS and val not in (None, "")
+                  else _redact_config(val))
+            for key, val in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_config(item) for item in value]
+    return value
+
+
+def _merge_import_config(base, incoming):
+    """Fusionne un import sans écraser un secret par le masque '***'."""
+    result = copy.deepcopy(base)
+    for key, val in incoming.items():
+        if key.lower() in _SECRET_KEYS and val == "***":
+            continue
+        if isinstance(val, dict) and isinstance(result.get(key), dict):
+            result[key] = _merge_import_config(result[key], val)
+        else:
+            result[key] = copy.deepcopy(val)
+    return result
+
 
 
 @bp.route("/config", methods=["GET"])
@@ -59,7 +100,7 @@ def config_page():
         port=_esc(db.get("port", 1433)),
         database=_esc(db.get("database", "")),
         user=_esc(db.get("user", "")),
-        password=_esc(db.get("password", "")),
+        password="",
         tc_f=_s(db.get("trusted_connection"), False),
         tc_t=_s(db.get("trusted_connection"), True),
         enc_f=_s(db.get("encrypt"), False),
@@ -71,7 +112,8 @@ def config_page():
         pool_idle_timeout_ms=db.get("pool_idle_timeout_ms", 30000),
         connection_timeout_ms=db.get("connection_timeout_ms", 15000),
         request_timeout_ms=db.get("request_timeout_ms", 30000),
-        api_key=_esc(sfec.get("api_key", "")),
+        api_key="",
+        sandbox_api_key="",
         sb_t=_s(sfec.get("use_sandbox"), True),
         sb_f=_s(sfec.get("use_sandbox"), False),
         en_t=_s(sfec.get("enabled"), True),
@@ -96,8 +138,8 @@ def config_page():
         bank_account=_esc(company.get("bank_account", "")),
         bank_iban=_esc(company.get("bank_iban", "")),
         bank_swift=_esc(company.get("bank_swift", "")),
-        invoice_prefix=_esc(company.get("invoice_prefix", "INV-")),
-        invoice_next_number=_esc(company.get("invoice_next_number", 1)),
+        invoice_prefix=_esc(sqlite_db.get_setting("invoice_prefix", company.get("invoice_prefix", "INV-"))),
+        invoice_next_number=_esc(sqlite_db.get_setting("invoice_next_number", company.get("invoice_next_number", 1))),
         invoice_notes=_esc(company.get("invoice_notes", "")),
         invoice_footer=_esc(company.get("invoice_footer", "")),
         tax_regime=_esc(company.get("tax_regime", "")),
@@ -106,6 +148,7 @@ def config_page():
         pe_t=_s(db.get("polling_enabled"), True),
         pe_f=_s(db.get("polling_enabled"), False),
         poll_ms=db.get("polling_interval_ms", 30000),
+        sage_pull_days=db.get("sage_pull_days", 7),
         max_concurrent=queue.get("max_concurrent", 5),
         max_retries=queue.get("max_retries", 4),
         retry_base_delay_ms=queue.get("retry_base_delay_ms", 2000),
@@ -130,12 +173,9 @@ def config_page():
         ll_e=_s(log_level, "error"),
         dash_port=_esc(dash.get("port", 3000)),
         auth_t=_s(dash.get("auth_enabled"), True),
-        auth_f=_s(dash.get("auth_enabled"), False),
         login_email=_esc(dash.get("login_email", "")),
-        login_password=_esc(dash.get("login_password", "")),
-        session_secret=_esc(dash.get("session_secret", "")),
         session_max_hours=_esc(dash.get("session_max_age_hours", 24)),
-        host=_esc(dash.get("host", "0.0.0.0")),
+        host=_esc(dash.get("host", "127.0.0.1")),
     )
 
     return _page(body)
@@ -147,6 +187,54 @@ def _bool(val):
     if isinstance(val, str):
         return val.lower() in ("true", "1", "yes", "on")
     return bool(val)
+
+
+def _apply_bounded(data, target, specs, errors):
+    """Copie des entiers bornes de data vers target (CF-13/22/23).
+
+    specs : tuples (cle, min, max). Toute valeur hors plage ou non entiere
+    alimente `errors` au lieu d'etre ecrite silencieusement.
+    """
+    for key, lo, hi in specs:
+        if key not in data:
+            continue
+        try:
+            val = int(data[key])
+        except (ValueError, TypeError):
+            errors.append("{}: valeur entiere attendue".format(key))
+            continue
+        if val < lo or val > hi:
+            errors.append("{}: doit etre entre {} et {}".format(key, lo, hi))
+            continue
+        target[key] = val
+
+
+def _validate_url(val, label):
+    """Valide le format d'une URL http(s) (CF-14) et la retourne nettoyee."""
+    from urllib.parse import urlparse
+    url = str(val or "").strip()
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError("{}: URL http(s) invalide".format(label))
+    if parsed.username or parsed.password:
+        raise ValueError("{}: les identifiants dans l'URL sont interdits".format(label))
+    return url
+
+
+def _is_private_host(url):
+    """True si l'hote de l'URL est prive/loopback (sans resolution DNS — les
+    noms internes courants et les IP litterales seulement). Sert a AVERTIR,
+    pas a bloquer : un TCC Server auto-heberge peut etre local."""
+    import ipaddress
+    from urllib.parse import urlparse
+    host = (urlparse(url).hostname or "").lower()
+    if host in ("localhost",) or host.endswith((".local", ".internal", ".lan")):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+        return ip.is_private or ip.is_loopback or ip.is_link_local
+    except ValueError:
+        return False
 
 
 @bp.route("/api/db/test", methods=["GET"])
@@ -161,34 +249,181 @@ def api_sfec_test():
     return jsonify(check_health())
 
 
+def _sage_invoice_id(inv):
+    """Reconstruit l'identifiant du cache Sage : domaine-type-piece."""
+    piece = str(inv.get("sage_piece") or inv.get("numero") or "").strip()
+    if not piece:
+        return ""
+    try:
+        domaine = int(inv.get("sage_domaine"))
+    except (TypeError, ValueError):
+        domaine = 0
+    try:
+        type_doc = int(inv.get("sage_type"))
+    except (TypeError, ValueError):
+        return ""
+    if type_doc <= 0:
+        return ""
+    return "{}-{}-{}".format(domaine, type_doc, piece)
+
+
+def _local_sfec_recovery(inv):
+    """Recupere une certification SFEC existante pour une facture locale.
+
+    Retourne None si SFEC ne connait pas la facture, un resultat de succes si
+    la certification est lisible, ou un resultat en attente si la facture
+    existe mais n'expose pas encore de preuve exploitable.
+    """
+    numero = str(inv.get("numero") or "").strip()
+    if not numero:
+        return None
+    if not (get_config().get("sfec", {}) or {}).get("enabled"):
+        return None
+    try:
+        existing = SfecClient().verify_by_invoice_number(numero)
+    except Exception:  # noqa: BLE001
+        return None
+    if not existing:
+        return None
+
+    cert_number, sig, qr, cert_date = _extract_sfec_cert_data(existing)
+    if not (cert_number or qr):
+        return {
+            "success": False,
+            "pending": True,
+            "error": "Facture presente sur SFEC mais certification illisible: "
+                     "verification replanifiee",
+        }
+
+    sfec_id = str(existing.get("id") or existing.get("sfec_id") or "").strip()
+    try:
+        sqlite_db.update_invoice_sfec(
+            inv["id"],
+            sfec_id=sfec_id,
+            certification_number=cert_number,
+            signature=sig or "",
+            qr_code=qr or "",
+            certification_date=cert_date or "",
+            statut="DEJA_CERTIFIE",
+        )
+        sqlite_db.clear_sfec_anomaly(numero)
+    except Exception:  # noqa: BLE001
+        pass
+
+    return {
+        "success": True,
+        "already_certified": True,
+        "certification_number": cert_number,
+        "certification_date": cert_date or "",
+        "signature": sig or "",
+        "qr_code": qr or "",
+        "identifier": sfec_id,
+        "note": "Facture deja certifiee sur SFEC",
+    }
+
+
+def _certify_local_invoice(inv):
+    """Certifie une facture SQLite et journalise l'action."""
+    statut = (inv.get("statut") or "").lower()
+    if statut in ("", "brouillon", "draft"):
+        return jsonify({"success": False,
+                        "error": "Validez la facture avant de la certifier SFEC"}), 422
+
+    # Une preuve SFEC existe deja : ne pas la transformer en conflit 409.
+    if invoice_engine.is_sfec_certified(inv):
+        try:
+            sqlite_db.clear_sfec_anomaly(inv.get("numero", ""))
+        except Exception:  # noqa: BLE001
+            pass
+        return jsonify({
+            "success": True,
+            "already_certified": True,
+            "certification_number": inv.get("sfec_num_certif", ""),
+            "note": "Facture deja certifiee sur SFEC",
+        })
+
+    # Une facture synchronisee Sage est immuable pour l'edition, mais sa
+    # certification doit passer par le circuit Sage (ecriture dans Sage),
+    # pas par le seul miroir SQLite.
+    if invoice_engine.is_sage_synced(inv):
+        sage_id = _sage_invoice_id(inv)
+        if not sage_id:
+            return jsonify({
+                "success": False,
+                "error": "Facture synchronisee Sage mais identifiant Sage "
+                         "introuvable; lancez une synchronisation Sage.",
+            }), 409
+        try:
+            result = certify_single(sage_id)
+        except Exception as e:  # noqa: BLE001
+            return jsonify({"success": False, "error": str(e)}), 500
+        status = 200
+        if (not result.get("success")
+                and "non trouvee" in str(result.get("error") or "")):
+            status = 409
+        return jsonify(result), status
+
+    if is_online():
+        recovered = _local_sfec_recovery(inv)
+        if recovered is not None:
+            return jsonify(recovered)
+
+    try:
+        result = certify_sqlite_invoice(inv)
+        user_auth.audit("facture.certifiee", "Certification SFEC {} #{}".format(
+            result.get("certification_number", ""), inv.get("numero", "")),
+            email=(_current_identity() or {}).get("email", ""))
+        return jsonify(result)
+    except Exception as e:
+        status = int(getattr(e, "status_code", 0) or 0)
+        if status not in (400, 404, 409, 422):
+            status = 500
+        return jsonify({"success": False, "error": str(e)}), status
+
+
 @bp.route("/api/sfec/certify", methods=["POST"])
 @_login_required
 def api_sfec_certify():
     data = request.get_json(silent=True) or {}
     invoice_id = data.get("invoice_id")
-    if not invoice_id:
+    if invoice_id is None or str(invoice_id).strip() == "":
         return jsonify({"success": False, "error": "invoice_id requis"}), 400
 
-    if str(invoice_id).startswith("INV-"):
+    raw_id = str(invoice_id).strip()
+    by = str(data.get("by") or "").strip().lower()
+
+    # Contrat explicite utilise par la liste billing pour une facture Sage :
+    # le numero de piece est resolu cote serveur ; on ne fait jamais confiance
+    # au seul numero fourni par le navigateur pour construire le payload.
+    if by == "numero":
+        inv = invoice_engine.get_invoice_by_numero(raw_id)
+        if not inv:
+            return jsonify({"success": False,
+                            "error": "Facture '{}' non trouvee".format(raw_id)}), 404
+        return _certify_local_invoice(inv)
+
+    # Contrat historique : INV-<id SQLite>. L'identifiant SFEC reste le
+    # numero de la facture, resolu par sqlite_invoice_to_sfec().
+    if raw_id.startswith("INV-"):
         try:
-            inv_num = int(str(invoice_id).replace("INV-", ""))
+            inv_num = int(raw_id.replace("INV-", "", 1))
         except ValueError:
-            return jsonify({"success": False, "error": "Format ID invalide: {}".format(invoice_id)}), 400
+            # Compatibilite : un numero local peut lui-meme commencer par
+            # INV- (ex. INV-0001). On le resout alors par son numero.
+            inv = invoice_engine.get_invoice_by_numero(raw_id)
+            if inv:
+                return _certify_local_invoice(inv)
+            return jsonify({"success": False,
+                            "error": "Format ID invalide: {}".format(raw_id)}), 400
 
         inv = invoice_engine.get_invoice(inv_num)
         if not inv:
-            return jsonify({"success": False, "error": "Facture SQLite #{} non trouvee".format(inv_num)}), 404
+            return jsonify({"success": False,
+                            "error": "Facture SQLite #{} non trouvee".format(inv_num)}), 404
+        return _certify_local_invoice(inv)
 
-        try:
-            result = certify_sqlite_invoice(inv)
-            user_auth.audit("facture.certifiee", "Certification SFEC {} #{}".format(
-                result.get("sfec_statut", ""), result.get("numero", "")),
-                email=(_current_identity() or {}).get("email", ""))
-            return jsonify(result)
-        except Exception as e:
-            return jsonify({"success": False, "error": str(e)}), 500
-
-    return jsonify(certify_single(invoice_id))
+    # Contrat dashboard : identifiant du cache Sage.
+    return jsonify(certify_single(raw_id))
 
 
 @bp.route("/api/sfec/to-monitor", methods=["POST"])
@@ -199,7 +434,8 @@ def api_sfec_to_monitor():
     if not invoice_id:
         return jsonify({"success": False, "error": "invoice_id requis"}), 400
     try:
-        mark_to_monitor(invoice_id)
+        from app.sync.engine import mark_invoice_to_monitor
+        mark_invoice_to_monitor(invoice_id)
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -259,7 +495,7 @@ def api_sfec_sync():
 def api_sfec_certified_from_api():
     try:
         client = SfecClient()
-        result = client.list_invoices(page=1, page_size=100)
+        result = client.list_invoices(page=1, page_size=20)
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -280,15 +516,7 @@ def api_tables():
 @bp.route("/api/config", methods=["GET"])
 @_login_required
 def api_get_config():
-    cfg = get_config()
-    masked = dict(cfg)
-    for section in ("db", "sfec"):
-        if section in masked:
-            masked[section] = dict(masked[section])
-            for key in ("password", "api_key"):
-                if key in masked[section]:
-                    masked[section][key] = "***"
-    return jsonify(masked)
+    return jsonify(_redact_config(get_config()))
 
 
 @bp.route("/api/config/db", methods=["POST"])
@@ -298,18 +526,26 @@ def api_config_db():
     db = dict(cfg.get("db", {}))
     data = request.get_json(silent=True) or {}
     for key in ("server", "database", "user", "password"):
-        if key in data:
+        if key in data and not (key == "password" and data[key] == ""):
             db[key] = data[key]
-    for key in ("port", "polling_interval_ms", "pool_max", "pool_min",
-                "pool_idle_timeout_ms", "connection_timeout_ms", "request_timeout_ms"):
-        if key in data:
-            try:
-                db[key] = int(data[key])
-            except (ValueError, TypeError):
-                pass
+    # CF-13/CF-23 : plages numeriques validees (refus 400 au lieu d'ignorer).
+    errors = []
+    _apply_bounded(data, db, (
+        ("port", 1, 65535),
+        ("polling_interval_ms", 1000, 3600000),
+        ("pool_max", 1, 100),
+        ("pool_min", 0, 100),
+        ("pool_idle_timeout_ms", 1000, 86400000),
+        ("connection_timeout_ms", 1000, 600000),
+        ("request_timeout_ms", 1000, 3600000),
+    ), errors)
+    if db.get("pool_min", 0) > db.get("pool_max", 1):
+        errors.append("pool_min ne peut pas depasser pool_max")
     for key in ("trusted_connection", "encrypt", "trust_server_certificate", "polling_enabled"):
         if key in data:
             db[key] = _bool(data[key])
+    if errors:
+        return jsonify({"ok": False, "errors": errors}), 400
     cfg["db"] = db
     save_config(cfg)
     return jsonify({"ok": True})
@@ -321,15 +557,38 @@ def api_config_sfec():
     cfg = get_config()
     sfec = dict(cfg.get("sfec", {}))
     data = request.get_json(silent=True) or {}
-    for key in ("api_key", "base_url", "sandbox_url", "certify_status"):
-        if key in data:
+    errors = []
+    warnings = []
+    for key in ("api_key", "sandbox_api_key", "certify_status"):
+        if key in data and not (key in ("api_key", "sandbox_api_key") and data[key] == ""):
             sfec[key] = data[key]
+    # CF-14 : URLs validees (format) + avertissement si hote prive (SSRF) —
+    # non bloquant car le middleware TCC Server peut etre auto-heberge.
+    for key in ("base_url", "sandbox_url"):
+        if key in data:
+            try:
+                sfec[key] = _validate_url(data[key], key)
+            except ValueError as exc:
+                errors.append(str(exc))
+            else:
+                if _is_private_host(sfec[key]):
+                    warnings.append("{} : hote prive/local — verifiez qu'il s'agit bien du serveur SFEC/TCC".format(key))
+    # CF-15 : statut de certification restreint aux valeurs SFEC connues.
+    if "certify_status" in data:
+        allowed = ("SAISI", "CONFIRME", "A COMPTABILISER", "COMPTABILISE", "LETTRE")
+        if str(data["certify_status"]).strip().upper() not in allowed:
+            errors.append("certify_status: valeur attendue parmi {}".format(", ".join(allowed)))
     for key in ("use_sandbox", "enabled"):
         if key in data:
             sfec[key] = _bool(data[key])
+    if errors:
+        return jsonify({"ok": False, "errors": errors}), 400
     cfg["sfec"] = sfec
     save_config(cfg)
-    return jsonify({"ok": True})
+    resp = {"ok": True}
+    if warnings:
+        resp["warnings"] = warnings
+    return jsonify(resp)
 
 
 @bp.route("/api/config/company", methods=["POST"])
@@ -350,6 +609,25 @@ def api_config_company():
             company["invoice_next_number"] = int(data["invoice_next_number"])
         except (ValueError, TypeError):
             pass
+    # CF-09 : la numerotation reelle lit la table settings (generate_invoice_number)
+    # — on y propage le prefixe et le prochain numero saisis dans /config,
+    # sinon ces champs n'avaient aucun effet.
+    try:
+        from app.storage.db import set_setting
+        if "invoice_prefix" in data:
+            prefix = str(data.get("invoice_prefix") or "").strip()
+            if prefix:
+                set_setting("invoice_prefix", prefix)
+                set_setting("invoice_format", prefix + "{:06d}")
+        if "invoice_next_number" in data:
+            try:
+                nxt = int(data["invoice_next_number"])
+                if nxt >= 1:
+                    set_setting("invoice_next_number", str(nxt))
+            except (ValueError, TypeError):
+                pass
+    except Exception:
+        pass
     for key in ("qrcode_enabled",):
         if key in data:
             company[key] = _bool(data[key])
@@ -367,22 +645,25 @@ def api_config_sync():
     db = dict(cfg.get("db", {}))
     if "polling_enabled" in data:
         db["polling_enabled"] = _bool(data["polling_enabled"])
-    if "polling_interval_ms" in data:
-        try:
-            db["polling_interval_ms"] = int(data["polling_interval_ms"])
-        except (ValueError, TypeError):
-            pass
+    errors = []
+    _apply_bounded(data, db, (
+        ("polling_interval_ms", 1000, 3600000),
+        ("sage_pull_days", 0, 3650),
+    ), errors)
     cfg["db"] = db
 
     queue = dict(cfg.get("queue", {}))
-    for key in ("max_concurrent", "max_retries", "retry_base_delay_ms", "max_queue_size", "job_timeout_ms"):
-        if key in data:
-            try:
-                queue[key] = int(data[key])
-            except (ValueError, TypeError):
-                pass
+    _apply_bounded(data, queue, (
+        ("max_concurrent", 1, 50),
+        ("max_retries", 0, 20),
+        ("retry_base_delay_ms", 100, 3600000),
+        ("max_queue_size", 1, 100000),
+        ("job_timeout_ms", 1000, 3600000),
+    ), errors)
     cfg["queue"] = queue
 
+    if errors:
+        return jsonify({"ok": False, "errors": errors}), 400
     save_config(cfg)
     return jsonify({"ok": True})
 
@@ -396,22 +677,31 @@ def api_config_validation():
     validation = dict(cfg.get("validation", {}))
     if "strict_mode" in data:
         validation["strict_mode"] = _bool(data["strict_mode"])
+    errors = []
     if "tolerance_amount" in data:
         try:
-            validation["tolerance_amount"] = float(data["tolerance_amount"])
+            tol = float(data["tolerance_amount"])
+            if tol < 0 or tol > 1000000000:
+                errors.append("tolerance_amount: doit etre entre 0 et 1000000000")
+            else:
+                validation["tolerance_amount"] = tol
         except (ValueError, TypeError):
-            pass
+            errors.append("tolerance_amount: nombre attendu")
     cfg["validation"] = validation
 
     rate_limit = dict(cfg.get("rate_limit", {}))
-    for key in ("daily_max", "per_minute_max", "alert_threshold_percent"):
-        if key in data:
-            try:
-                rate_limit[key] = int(data[key])
-            except (ValueError, TypeError):
-                pass
+    _apply_bounded(data, rate_limit, (
+        ("daily_max", 1, 1000000),
+        ("per_minute_max", 1, 100000),
+        ("alert_threshold_percent", 0, 100),
+    ), errors)
+    # CF-22 : controle croise — la limite minute ne depasse pas la limite jour.
+    if rate_limit.get("per_minute_max", 1) > rate_limit.get("daily_max", 1):
+        errors.append("per_minute_max ne peut pas depasser daily_max")
     cfg["rate_limit"] = rate_limit
 
+    if errors:
+        return jsonify({"ok": False, "errors": errors}), 400
     save_config(cfg)
     return jsonify({"ok": True})
 
@@ -453,24 +743,41 @@ def api_config_system():
         cfg["log_level"] = data["log_level"]
 
     dash = dict(cfg.get("dashboard", {}))
-    for key in ("login_email", "login_password", "session_secret", "host"):
+    for key in ("login_email", "host"):
         if key in data:
             dash[key] = data[key]
+    # Le mot de passe de bootstrap n'est jamais réaffiché ; un champ vide
+    # conserve la valeur existante. Le secret de session n'est plus éditable
+    # depuis l'interface : il est généré/validé par _get_secret_key().
+    if data.get("login_password"):
+        password = str(data["login_password"])
+        if len(password) < 10 or not any(c.isalpha() for c in password) or not any(c.isdigit() for c in password):
+            return jsonify({"ok": False, "error": "Mot de passe trop faible (10 caracteres minimum, lettres et chiffres)"}), 400
+        dash["login_password"] = password
     if "port" in data:
         try:
             dash["port"] = int(data["port"])
         except (ValueError, TypeError):
             pass
     if "auth_enabled" in data:
-        dash["auth_enabled"] = _bool(data["auth_enabled"])
+        if not _bool(data["auth_enabled"]):
+            return jsonify({
+                "ok": False,
+                "error": "La desactivation de l'authentification via l'interface est interdite",
+            }), 400
+        dash["auth_enabled"] = True
     if "session_max_age_hours" in data:
         try:
-            dash["session_max_age_hours"] = int(data["session_max_age_hours"])
+            hours = int(data["session_max_age_hours"])
+            if 1 <= hours <= 24 * 30:
+                dash["session_max_age_hours"] = hours
         except (ValueError, TypeError):
             pass
     cfg["dashboard"] = dash
 
     save_config(cfg)
+    user_auth.audit("config.systeme", "Configuration systeme mise a jour",
+                    email=(_current_identity() or {}).get("email", ""))
     return jsonify({"ok": True})
 
 
@@ -495,7 +802,7 @@ def api_config_reload():
 def api_config_export():
     from flask import send_file, after_this_request
     import tempfile
-    cfg = get_config()
+    cfg = _redact_config(get_config())
     tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8")
     json.dump(cfg, tmp, indent=2, ensure_ascii=False)
     tmp.close()
@@ -532,8 +839,20 @@ def api_config_import():
         if not isinstance(data[section], dict):
             return jsonify({"ok": False, "error": "La section '{}' doit etre un objet".format(section)}), 400
 
+    dashboard = data.get("dashboard")
+    if isinstance(dashboard, dict):
+        if dashboard.get("auth_enabled") is False or str(dashboard.get("auth_enabled")).lower() == "false":
+            return jsonify({
+                "ok": False,
+                "error": "L'import ne peut pas desactiver l'authentification",
+            }), 400
+        dashboard.pop("session_secret", None)
+
     try:
-        save_config(data)
+        merged = _merge_import_config(get_config(), data)
+        save_config(merged)
+        user_auth.audit("config.import", "Configuration importee",
+                        email=(_current_identity() or {}).get("email", ""))
         return jsonify({"ok": True, "message": "Configuration importee avec succes"})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500

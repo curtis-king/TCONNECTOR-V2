@@ -5,6 +5,7 @@ import time
 import sqlite3
 import logging
 import threading
+import weakref
 from datetime import datetime
 from contextlib import contextmanager
 
@@ -13,10 +14,19 @@ logger = logging.getLogger("t-connector.sqlite")
 from app.core.paths import data_dir as _uses_data_dir  # noqa: F401
 
 DATA_DIR = _uses_data_dir()
-DB_PATH = os.path.join(DATA_DIR, "tconnector.db")
+# Chemin surchargeable pour les tests isolés (jamais la base de dev).
+DB_PATH = os.environ.get("TCONNECTOR_DB_PATH") or os.path.join(DATA_DIR, "tconnector.db")
 
-_lock = threading.Lock()
-_conn = None
+# Une connexion sqlite3 n'est PAS reentrante : la partager entre les
+# threads Flask, le scheduler, les workers de certification et le watcher
+# provoquait des SystemError sur commit() et des transactions perdues
+# (audit 2026-10-21). Connexion dediee par thread, WAL pour la concurrence
+# lecteur/lecteur + writer unique.
+_local = threading.local()
+# Cle = thread (weakref) : les connexions des workers ephemères ne sont pas
+# retenues apres la mort du thread. Sert uniquement a l'arret propre.
+_all_conns = weakref.WeakKeyDictionary()
+_all_lock = threading.Lock()
 
 
 def _get_db_path():
@@ -25,38 +35,57 @@ def _get_db_path():
 
 
 def get_connection():
-    global _conn
-    with _lock:
-        if _conn is not None:
+    conn = getattr(_local, "conn", None)
+    if conn is not None:
+        try:
+            conn.execute("SELECT 1")
+            return conn
+        except Exception:
             try:
-                _conn.execute("SELECT 1")
-                return _conn
+                conn.close()
             except Exception:
-                try:
-                    _conn.close()
-                except Exception:
-                    pass
-                _conn = None
+                pass
+            _local.conn = None
+            with _all_lock:
+                _all_conns.pop(threading.current_thread(), None)
 
-        path = _get_db_path()
-        _conn = sqlite3.connect(path, timeout=10, check_same_thread=False)
-        _conn.row_factory = sqlite3.Row
-        _conn.execute("PRAGMA journal_mode=WAL")
-        _conn.execute("PRAGMA foreign_keys=ON")
-        _conn.execute("PRAGMA busy_timeout=5000")
-        logger.info("SQLite connecte: %s", path)
-        return _conn
+    path = _get_db_path()
+    conn = sqlite3.connect(path, timeout=30, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=10000")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    _local.conn = conn
+    with _all_lock:
+        _all_conns[threading.current_thread()] = conn
+    logger.info("SQLite connecte (thread=%s): %s",
+                threading.current_thread().name, path)
+    return conn
 
 
 def close_connection():
-    global _conn
-    with _lock:
-        if _conn is not None:
-            try:
-                _conn.close()
-            except Exception:
-                pass
-            _conn = None
+    conn = getattr(_local, "conn", None)
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        _local.conn = None
+        with _all_lock:
+            _all_conns.pop(threading.current_thread(), None)
+
+
+def close_all_connections():
+    """Ferme toutes les connexions connues (arret propre du process)."""
+    with _all_lock:
+        conns = list(_all_conns.values())
+        _all_conns.clear()
+    for conn in conns:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 @contextmanager
@@ -65,15 +94,35 @@ def get_cursor():
     cur = conn.cursor()
     try:
         yield cur
-        conn.commit()
+        # Ne pas committer un contexte en lecture seule : cela provoquait
+        # "cannot commit - no transaction is active" sur les SELECT.
+        if conn.in_transaction:
+            conn.commit()
     except Exception:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
+        if conn.in_transaction:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         raise
     finally:
         cur.close()
+
+
+def execute_with_retry(cur, sql, params=(), attempts=3):
+    """Execute une ecriture en tolerant un verrou SQLite transitoire."""
+    last = None
+    for i in range(attempts):
+        try:
+            cur.execute(sql, params)
+            return
+        except sqlite3.OperationalError as e:
+            last = e
+            msg = str(e).lower()
+            if "locked" not in msg and "busy" not in msg:
+                raise
+            time.sleep(0.2 * (2 ** i))
+    raise last
 
 
 SCHEMA = """
@@ -189,12 +238,42 @@ SCHEMA = """
                 is_recipient_taxable INTEGER DEFAULT 1,
                 recipient_rccm TEXT DEFAULT '',
                 reference_invoice_id TEXT DEFAULT '',
+                credit_note_on_account INTEGER DEFAULT 0,
                 payment_date TEXT DEFAULT '',
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now')),
                 FOREIGN KEY (contact_id) REFERENCES contacts(id),
                 FOREIGN KEY (vendeur_id) REFERENCES vendeurs(id)
             );
+
+            CREATE TABLE IF NOT EXISTS sfec_invoice_links (
+                numero TEXT PRIMARY KEY,
+                parent_numero TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_sfec_invoice_links_parent
+                ON sfec_invoice_links(parent_numero);
+
+            CREATE TABLE IF NOT EXISTS sfec_anomalies (
+                numero TEXT PRIMARY KEY,
+                motif TEXT NOT NULL DEFAULT '',
+                detected_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_sfec_anomalies_detected
+                ON sfec_anomalies(detected_at DESC);
+
+            CREATE TABLE IF NOT EXISTS sfec_pending_writes (
+                invoice_id TEXT PRIMARY KEY,
+                certification_number TEXT,
+                signature TEXT,
+                qr_code TEXT,
+                certification_date TEXT,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT DEFAULT '',
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_sfec_pending_writes_created
+                ON sfec_pending_writes(created_at);
 
             CREATE TABLE IF NOT EXISTS invoice_lines (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -248,6 +327,14 @@ SCHEMA = """
                 FOREIGN KEY (contact_id) REFERENCES contacts(id),
                 FOREIGN KEY (invoice_id) REFERENCES invoices(id),
                 FOREIGN KEY (vendeur_id) REFERENCES vendeurs(id)
+            );
+
+            -- Anti double-validation POS (PO-25/PO-63) : une cle d'idempotence
+            -- fournie par le client ne cree qu'un seul ticket.
+            CREATE TABLE IF NOT EXISTS pos_idempotency (
+                key TEXT PRIMARY KEY,
+                ticket_id INTEGER NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
             );
 
             CREATE TABLE IF NOT EXISTS pos_ticket_lines (
@@ -389,6 +476,7 @@ def _migrate():
             ("is_recipient_taxable", "INTEGER DEFAULT 1"),
             ("recipient_rccm", "TEXT DEFAULT ''"),
             ("reference_invoice_id", "TEXT DEFAULT ''"),
+            ("credit_note_on_account", "INTEGER DEFAULT 0"),
             ("payment_date", "TEXT DEFAULT ''"),
         ]),
         ("invoice_lines", [
@@ -527,6 +615,29 @@ def _seed_default_settings():
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
                 (key, value)
             )
+    # CF-09 : au premier demarrage, la numerotation effective (settings) est
+    # initialisee depuis la config company si celle-ci la personnalise.
+    try:
+        from app.config.manager import get_config
+        company = get_config().get("company", {}) or {}
+        prefix = str(company.get("invoice_prefix") or "").strip()
+        next_no = company.get("invoice_next_number")
+        with get_cursor() as cur:
+            if prefix and prefix != "FA":
+                cur.execute("SELECT value FROM settings WHERE key = 'invoice_prefix'")
+                row = cur.fetchone()
+                if row and row["value"] == "FA":
+                    cur.execute("UPDATE settings SET value = ? WHERE key = 'invoice_prefix'", (prefix,))
+                    cur.execute("UPDATE settings SET value = ? WHERE key = 'invoice_format'",
+                                (prefix + "{:06d}",))
+            if next_no:
+                cur.execute("SELECT value FROM settings WHERE key = 'invoice_next_number'")
+                row = cur.fetchone()
+                if row and row["value"] == "1" and int(next_no) > 1:
+                    cur.execute("UPDATE settings SET value = ? WHERE key = 'invoice_next_number'",
+                                (str(int(next_no)),))
+    except Exception:
+        pass
 
 
 def get_setting(key, default=""):
@@ -542,6 +653,125 @@ def set_setting(key, value):
             "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))",
             (key, str(value))
         )
+
+
+def cent_tax_rate():
+    """Taux des centimes additionnels, en % (configurable, defaut 5)."""
+    try:
+        return float(get_setting("cent_tax_rate", "5") or 5)
+    except (TypeError, ValueError):
+        return 5.0
+
+
+def compute_cent_tax(tva_collectee):
+    """Centimes additionnels = taux % de la TVA COLLECTEE (toutes tranches).
+
+    Regle legale : decret n° 2023-1737, art. 22 — « la base d'imposition des
+    centimes additionnels est le montant de la TVA collectee. Le taux
+    applicable est de cinq pourcent (5 %). » La base inclut donc la TVA a 18 %
+    ET la TVA a taux reduit (5 %), pas seulement la tranche 18 %.
+    """
+    return round((tva_collectee or 0) * cent_tax_rate() / 100.0, 2)
+
+
+def get_sfec_invoice_link(numero):
+    """Parent manuel d'un avoir (table sfec_invoice_links), ou ''."""
+    numero = str(numero or "").strip()
+    if not numero:
+        return ""
+    with get_cursor() as cur:
+        cur.execute(
+            "SELECT parent_numero FROM sfec_invoice_links WHERE numero = ?",
+            (numero,),
+        )
+        row = cur.fetchone()
+    return (row["parent_numero"] if row else "") or ""
+
+
+def fetch_sfec_invoice_links():
+    """Tous les liens manuels avoir -> facture d'origine."""
+    with get_cursor() as cur:
+        cur.execute("SELECT numero, parent_numero FROM sfec_invoice_links")
+        return {
+            row["numero"]: row["parent_numero"]
+            for row in cur.fetchall()
+            if row["numero"] and row["parent_numero"]
+        }
+
+
+def set_sfec_invoice_link(numero, parent_numero):
+    """Enregistre/remplace le parent manuel d'un avoir."""
+    numero = str(numero or "").strip()
+    parent_numero = str(parent_numero or "").strip()
+    if not numero or not parent_numero:
+        raise ValueError("numero et parent_numero sont obligatoires")
+    with get_cursor() as cur:
+        cur.execute("""
+            INSERT INTO sfec_invoice_links (numero, parent_numero)
+            VALUES (?, ?)
+            ON CONFLICT(numero) DO UPDATE SET
+                parent_numero = excluded.parent_numero,
+                created_at = datetime('now')
+        """, (numero, parent_numero))
+    return True
+
+
+def record_sfec_anomaly(numero, motif):
+    """Enregistre/actualise le motif d'une facture A_SURVEILLER."""
+    numero = str(numero or "").strip()
+    if not numero:
+        return False
+    motif = str(motif or "").strip() or "verification requise"
+    with get_cursor() as cur:
+        cur.execute("""
+            INSERT INTO sfec_anomalies (numero, motif)
+            VALUES (?, ?)
+            ON CONFLICT(numero) DO UPDATE SET
+                motif = excluded.motif,
+                detected_at = datetime('now')
+        """, (numero, motif))
+    return True
+
+
+def fetch_sfec_anomalies(limit=500):
+    """Liste les anomalies SFEC, avec les montants du miroir si disponibles."""
+    try:
+        limit = max(1, int(limit))
+    except (TypeError, ValueError):
+        limit = 500
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT a.numero, a.motif, a.detected_at,
+                   i.montant_ttc, i.tiers_nom, i.date_facture
+            FROM sfec_anomalies a
+            LEFT JOIN invoices i ON i.numero = a.numero
+            ORDER BY a.detected_at DESC, a.numero
+            LIMIT ?
+        """, (limit,))
+        return [dict(row) for row in cur.fetchall()]
+
+
+def get_sfec_anomaly(numero):
+    numero = str(numero or "").strip()
+    if not numero:
+        return None
+    with get_cursor() as cur:
+        cur.execute(
+            "SELECT numero, motif, detected_at FROM sfec_anomalies WHERE numero = ?",
+            (numero,),
+        )
+        row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def clear_sfec_anomaly(numero):
+    """Retire l'anomalie apres certification reussie."""
+    numero = str(numero or "").strip()
+    if not numero:
+        return 0
+    with get_cursor() as cur:
+        cur.execute("DELETE FROM sfec_anomalies WHERE numero = ?", (numero,))
+        return cur.rowcount or 0
 
 
 def update_invoice_sfec(invoice_id, sfec_id="", certification_number="",
@@ -568,6 +798,178 @@ def update_invoice_sfec(invoice_id, sfec_id="", certification_number="",
             invoice_id
         ))
     return True
+
+
+def update_invoice_sfec_by_numero(numero, sfec_id="", certification_number="",
+                                  signature="", qr_code="",
+                                  certification_date="", statut=""):
+    """Met a jour le miroir SQLite a partir du numero de facture Sage/SFEC.
+
+    Utilise apres une recuperation ou une certification SFEC pour que
+    `/billing` reflechisse immediatement l'etat reel, sans attendre le
+    prochain pull Sage.
+    """
+    numero = str(numero or "").strip()
+    if not numero:
+        return False
+    with get_cursor() as cur:
+        cur.execute(
+            "SELECT id FROM invoices WHERE numero = ? ORDER BY id DESC LIMIT 1",
+            (numero,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return False
+    update_invoice_sfec(
+        row["id"],
+        sfec_id=sfec_id,
+        certification_number=certification_number,
+        signature=signature,
+        qr_code=qr_code,
+        certification_date=certification_date,
+        statut=statut,
+    )
+    clear_sfec_anomaly(numero)
+    return True
+
+
+def _pending_sfec_table_available(cur):
+    try:
+        row = cur.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'sfec_pending_writes'"
+        ).fetchone()
+        return bool(row)
+    except sqlite3.Error:
+        return False
+
+
+def get_pending_sfec_write(invoice_id="", numero=""):
+    """Retourne une certification SFEC en attente d'ecriture dans Sage.
+
+    La file est creee par `app.integration.sfec.pending_writes`. Si elle
+    n'existe pas encore, la fonction retourne simplement None.
+    """
+    invoice_id = str(invoice_id or "").strip()
+    numero = str(numero or "").strip()
+    if not invoice_id and not numero:
+        return None
+    with get_cursor() as cur:
+        if not _pending_sfec_table_available(cur):
+            return None
+        if invoice_id:
+            cur.execute(
+                "SELECT * FROM sfec_pending_writes WHERE invoice_id = ?",
+                (invoice_id,),
+            )
+            row = cur.fetchone()
+            if row:
+                return dict(row)
+        if numero:
+            cur.execute(
+                "SELECT * FROM sfec_pending_writes "
+                "WHERE invoice_id LIKE ? ORDER BY created_at DESC LIMIT 1",
+                ("%-" + numero,),
+            )
+            row = cur.fetchone()
+            if row:
+                return dict(row)
+    return None
+
+
+def _empty_sfec_state():
+    return {
+        "sfec_statut": "",
+        "sfec_num_certif": "",
+        "sfec_signature": "",
+        "sfec_qr_code": "",
+        "sfec_date_certif": "",
+        "sfec_id": "",
+        "sfec_pending_sage": False,
+        "sfec_pending_attempts": 0,
+    }
+
+
+def get_sfec_states_by_numeros(numeros):
+    """Etat SFEC effectif par numero de facture.
+
+    Combine le miroir SQLite et la file `sfec_pending_writes`. Une
+    certification connue localement reste visible meme si le pull Sage
+    renvoie encore des champs vides parce que l'ecriture Sage est bloquee.
+    """
+    numbers = []
+    for value in numeros or []:
+        numero = str(value or "").strip()
+        if numero and numero not in numbers:
+            numbers.append(numero)
+    if not numbers:
+        return {}
+
+    states = {}
+    pending_rows = []
+    with get_cursor() as cur:
+        placeholders = ",".join("?" for _ in numbers)
+        cur.execute(
+            "SELECT numero, sfec_statut, sfec_num_certif, sfec_signature, "
+            "sfec_qr_code, sfec_date_certif, sfec_id "
+            "FROM invoices WHERE numero IN ({})".format(placeholders),
+            numbers,
+        )
+        for row in cur.fetchall():
+            data = dict(row)
+            state = _empty_sfec_state()
+            state.update({
+                "sfec_statut": data.get("sfec_statut") or "",
+                "sfec_num_certif": data.get("sfec_num_certif") or "",
+                "sfec_signature": data.get("sfec_signature") or "",
+                "sfec_qr_code": data.get("sfec_qr_code") or "",
+                "sfec_date_certif": data.get("sfec_date_certif") or "",
+                "sfec_id": data.get("sfec_id") or "",
+            })
+            states[data["numero"]] = state
+
+        if _pending_sfec_table_available(cur):
+            cur.execute(
+                "SELECT invoice_id, certification_number, signature, qr_code, "
+                "certification_date, attempts FROM sfec_pending_writes"
+            )
+            pending_rows = [dict(row) for row in cur.fetchall()]
+
+    for pending in pending_rows:
+        invoice_id = str(pending.get("invoice_id") or "")
+        for numero in numbers:
+            if not invoice_id.endswith("-" + numero):
+                continue
+            state = states.setdefault(numero, _empty_sfec_state())
+            state["sfec_pending_sage"] = True
+            state["sfec_pending_attempts"] = int(pending.get("attempts") or 0)
+            state["sfec_num_certif"] = (
+                state.get("sfec_num_certif")
+                or str(pending.get("certification_number") or "")
+            )
+            state["sfec_signature"] = (
+                state.get("sfec_signature")
+                or str(pending.get("signature") or "")
+            )
+            state["sfec_qr_code"] = (
+                state.get("sfec_qr_code")
+                or str(pending.get("qr_code") or "")
+            )
+            state["sfec_date_certif"] = (
+                state.get("sfec_date_certif")
+                or str(pending.get("certification_date") or "")
+            )
+            if state["sfec_num_certif"]:
+                state["sfec_statut"] = "CERTIFIE"
+            elif state["sfec_statut"] not in ("CERTIFIE", "DEJA_CERTIFIE"):
+                state["sfec_statut"] = "EN_COURS"
+            break
+
+    for state in states.values():
+        if (state.get("sfec_num_certif")
+                and state.get("sfec_statut") not in ("CERTIFIE", "DEJA_CERTIFIE")):
+            state["sfec_statut"] = "CERTIFIE"
+    return states
 
 
 def generate_invoice_number():
@@ -665,16 +1067,20 @@ def recalc_invoice_totals(invoice_id):
         row = cur.fetchone()
         if row:
             try:
-                cent_rate = float(get_setting("cent_tax_rate", "5") or 5)
-            except (TypeError, ValueError):
-                cent_rate = 5.0
-            try:
                 stamp_rate = float(get_setting("stamp_duty_rate", "0") or 0)
             except (TypeError, ValueError):
                 stamp_rate = 0.0
-            additional_cent_tax = round(row["tva_t"] * cent_rate / 100.0, 2)
+            # Centimes additionnels : 5 % de la TVA collectee (tva 18 % + tva
+            # reduite), decret n° 2023-1737 art. 22 — cf. compute_cent_tax().
+            additional_cent_tax = compute_cent_tax(row["tva_t"] + row["tva_r"])
             stamp_duty = round(row["total_ttc"] * stamp_rate / 100.0, 2) if stamp_rate else 0.0
             montant_ttc = round(row["total_ttc"] + additional_cent_tax + stamp_duty, 2)
+            cur.execute("SELECT montant_ttc, montant_restant FROM invoices WHERE id = ?", (invoice_id,))
+            ancien = cur.fetchone()
+            deja_paye = 0.0
+            if ancien:
+                deja_paye = max(round((ancien["montant_ttc"] or 0) - (ancien["montant_restant"] or 0), 2), 0.0)
+            montant_restant = max(round(montant_ttc - deja_paye, 2), 0.0)
             cur.execute("""
                 UPDATE invoices SET
                     montant_ht = ?, montant_tva = ?, montant_ttc = ?,
@@ -690,7 +1096,7 @@ def recalc_invoice_totals(invoice_id):
                 WHERE id = ?
             """, (
                 row["total_ht"], row["total_tva"], montant_ttc,
-                montant_ttc,
+                montant_restant,
                 row["total_brut"],
                 row["total_remise_lignes"],
                 row["tva_t"],

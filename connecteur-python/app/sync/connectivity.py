@@ -95,12 +95,12 @@ def is_online():
     return _do_check()
 
 
-def get_status():
-    with _lock:
-        elapsed = time.time() - _last_check
+def get_status(refresh=True):
+    """Etat de connectivite. `refresh=False` ne declenche jamais de test reseau."""
+    if refresh:
+        with _lock:
+            elapsed = time.time() - _last_check
         if elapsed >= _CACHE_TTL:
-            with _lock:
-                pass
             _do_check()
 
     with _lock:

@@ -15,10 +15,14 @@ CHOIX D'AUTH (documenté) :
     migrate_admin_from_config) reproduit le démarrage de main.py afin que
     les routes puissent interroger la base sans 500.
 """
+import atexit
 import logging
 import os
 import re
+import shutil
+import sqlite3
 import sys
+import tempfile
 
 import pytest
 
@@ -26,6 +30,42 @@ import pytest
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
+
+
+# ── Isolation des tests (audit : ne jamais écrire dans la base de dev) ──
+# On travaille sur une COPIE de config.json et de data/tconnector.db.
+# Les variables sont posées AVANT tout import de app.storage.db / config.
+_TEST_ROOT = os.environ.get("TCONNECTOR_TEST_DIR") or tempfile.mkdtemp(
+    prefix="tconnector-pytest-")
+os.environ["TCONNECTOR_TEST_DIR"] = _TEST_ROOT
+
+_TEST_CONFIG = os.path.join(_TEST_ROOT, "config.json")
+_TEST_DB = os.path.join(_TEST_ROOT, "tconnector.db")
+os.environ["TCONNECTOR_CONFIG_FILE"] = _TEST_CONFIG
+os.environ["TCONNECTOR_DB_PATH"] = _TEST_DB
+# La creation automatique de l'admin de bootstrap est desormais explicite
+# (proposition 09). Les tests reproduisent un poste deja initialise.
+os.environ["TCONNECTOR_ALLOW_SEED_ADMIN"] = "1"
+
+if not os.path.exists(_TEST_CONFIG):
+    _src_cfg = os.path.join(PROJECT_ROOT, "config.json")
+    if os.path.exists(_src_cfg):
+        shutil.copy2(_src_cfg, _TEST_CONFIG)
+
+if not os.path.exists(_TEST_DB):
+    _src_db = os.path.join(PROJECT_ROOT, "data", "tconnector.db")
+    if os.path.exists(_src_db):
+        _src = sqlite3.connect(_src_db)
+        _dst = sqlite3.connect(_TEST_DB)
+        try:
+            _src.backup(_dst)
+        finally:
+            _dst.close()
+            _src.close()
+
+if not os.environ.get("TCONNECTOR_KEEP_TEST_TMP"):
+    atexit.register(lambda: shutil.rmtree(_TEST_ROOT, ignore_errors=True))
+
 
 # Réduire le bruit des logs applicatifs pendant les tests
 logging.disable(logging.CRITICAL)
@@ -40,6 +80,13 @@ def _init_sqlite():
 
     user_auth.ensure_schema()
     user_auth.migrate_admin_from_config()
+    # Environnement de test : neutralise le changement de mot de passe forcé
+    # (must_change_pwd=1 est posé sur l'admin migré depuis la config) — sinon
+    # toutes les fixtures authentifiées seraient bloquées sur /compte/mot-de-passe.
+    # Les tests dédiés (AU-17) créent leurs propres comptes avec le flag.
+    from app.storage.db import get_cursor
+    with get_cursor() as cur:
+        cur.execute("UPDATE utilisateurs SET must_change_pwd = 0")
 
 
 @pytest.fixture(scope="session")
@@ -95,3 +142,31 @@ def client(app_instance, admin_credentials):
 def anonymous_client(app_instance):
     """Client de test NON authentifié (pour tester les redirections /login)."""
     return app_instance.test_client()
+
+
+@pytest.fixture(scope="session")
+def role_client(app_instance):
+    """Fabrique de clients authentifiés pour tester la matrice RBAC.
+
+    Les comptes sont créés dans la base temporaire uniquement.
+    """
+    from app.web.auth import user_auth
+
+    password = "Test-Password-123"
+    clients = {}
+
+    def _make(role):
+        if role in clients:
+            return clients[role]
+        email = "test-{}@example.com".format(role)
+        if not user_auth.get_user_by_email(email):
+            user_auth.create_user(
+                nom="Test", prenom=role.title(), email=email,
+                password=password, role=role,
+            )
+        client = app_instance.test_client()
+        clients[role] = _login_client(client, email, password)
+        return clients[role]
+
+    return _make
+

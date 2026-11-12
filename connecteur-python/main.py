@@ -7,9 +7,9 @@ import subprocess
 
 from app.core.paths import base_dir, data_dir
 from app.core.logging_setup import setup_logging
-from app.config.manager import load_config, get_config
+from app.config.manager import load_config, get_config, validate_security_settings
 from app.integration.sage.database import close_pool
-from app.storage.db import init_database, get_cursor
+from app.storage.db import init_database, get_cursor, close_all_connections
 from app.sync.connectivity import check_now, start_background_check, stop_background_check
 from app.sync.scheduler import start_all, stop_all
 from app.web.app import create_app
@@ -36,7 +36,10 @@ def _init_sqlite_and_seed(logger):
         try:
             from app.sync.article_sync import sync_articles_from_sage
             result = sync_articles_from_sage()
-            logger.info("Sync articles Sage au demarrage: %s", result)
+            if not result.get("ok"):
+                logger.error("Referentiel article NON synchronise: %s", result.get("error"))
+            else:
+                logger.info("Sync articles Sage au demarrage: %s", result)
         except Exception as e:
             logger.warning("Sync articles au demarrage: %s", e)
         try:
@@ -65,6 +68,13 @@ def main():
     logger.info("=" * 60)
 
     try:
+        for warning in validate_security_settings(get_config()):
+            logger.warning("SECURITE: %s", warning)
+    except RuntimeError as e:
+        logger.error("SECURITE: %s", e)
+        raise SystemExit(1)
+
+    try:
         from app.core.bootstrap import ensure_runtime_dependencies
         ensure_runtime_dependencies()
     except Exception as e:  # noqa: BLE001
@@ -84,12 +94,13 @@ def main():
     cfg = get_config()
     dash_cfg = cfg.get("dashboard", {})
     dash_port = dash_cfg.get("port", 3000)
-    dash_host = dash_cfg.get("host", "0.0.0.0")
+    dash_host = dash_cfg.get("host", "127.0.0.1")
 
     def shutdown_handler(signum, frame):
         logger.info("Signal recu (%s) - Arret en cours...", signum)
         stop_all()
         close_pool()
+        close_all_connections()
         logger.info("T-CONNECTOR arrete proprement")
         sys.exit(0)
 
@@ -112,11 +123,13 @@ def main():
     except KeyboardInterrupt:
         stop_all()
         close_pool()
+        close_all_connections()
         logger.info("T-CONNECTOR arrete")
     except Exception as e:
         logger.error("Erreur fatale: %s", e)
         stop_all()
         close_pool()
+        close_all_connections()
         raise
 
 

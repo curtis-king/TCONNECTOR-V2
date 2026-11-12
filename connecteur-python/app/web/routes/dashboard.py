@@ -10,15 +10,23 @@ sécurité ne dépend d'aucun module de routes).
 
 import calendar
 import functools
+import json
 import os
 import time
 
+from datetime import datetime, timezone
 from app.core.utils import fmt_money
 from flask import Blueprint, jsonify, render_template, request
-from app.config.manager import get_config
+from app.config.manager import get_config, get_sfec_credentials
 from app.domain import invoices as invoice_engine
 from app.domain import pos as pos_engine
 from app.domain import print_copies
+from app.domain.invoice_print_data import (
+    fetch_sage_lines as _print_sage_lines,
+    normalize_print_line as _normalize_print_line,
+    sfec_invoice_items as _sfec_invoice_items,
+    sfec_item_ht as _sfec_item_ht,
+)
 from app.domain.pdf import (
     CGV_TEXT,
     CGR_TEXT,
@@ -43,31 +51,70 @@ from app.domain.pdf import (
     tirage_stamp,
 )
 from app.integration.sfec.client import SfecClient
-from app.integration.sfec.endpoints import check_health
+from app.integration.sage.database import reset_sfec_monitor
 from app.sync.connectivity import get_status
-from app.sync.engine import get_cache, get_metrics, get_retry_queue
-from app.web.common import _esc, _page
+from app.sync.engine import (
+    certify_single,
+    get_cache,
+    get_metrics,
+    get_retry_queue,
+    polling_active,
+)
+from app.storage import db as sqlite_db
+from app.web.common import _csv_response, _esc, _page
 from app.web.auth.security import _get_csrf_token, _login_required, logger
 
 
 bp = Blueprint('dashboard', __name__)
 
 
+def _local_ts(value):
+    """ISO UTC -> date/heure locale lisible, sans faire echouer la page."""
+    if not value:
+        return "Jamais"
+    try:
+        text = str(value).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone().strftime("%d/%m/%Y %H:%M")
+    except (ValueError, TypeError, OSError):
+        return str(value)[:19].replace("T", " ")
+
+
+def _safe_amount(value, decimals=0):
+    return fmt_money(value, decimals)
+
+
 @bp.route("/", methods=["GET"])
 @_login_required
 def index():
     m = get_metrics()
-    sfec = check_health()
-    conn = get_status()
+    cfg = get_config()
+    sfec_cfg = cfg.get("sfec", {}) or {}
+    conn = get_status(refresh=False)
     retry_q = get_retry_queue()
-
     cache = get_cache()
-    val_count = sum(1 for inv in cache.get("sales_invoices", []) if inv.get("valide", 0) == 1)
+
+    val_count = m.get("pending_accounting", 0)
+    sfec_enabled = bool(sfec_cfg.get("enabled"))
+    sfec_creds = get_sfec_credentials(sfec_cfg)
+    sfec_configured = sfec_enabled and bool(sfec_creds["api_key"])
+    polling = polling_active()
 
     db_ok = "badge-ok" if m.get("db_connected") else "badge-err"
     db_txt = "Connectee" if m.get("db_connected") else "Deconnectee"
-    sfec_ok = "badge-ok" if sfec.get("connected") else "badge-err"
-    sfec_txt = "Connectee" if sfec.get("connected") else "Deconnectee"
+    if not sfec_enabled:
+        sfec_ok, sfec_txt = "badge-err", "Desactivee"
+    elif not sfec_configured:
+        sfec_ok, sfec_txt = "badge-err", "Cle manquante"
+    elif cache.get("last_sfec_sync_at"):
+        sfec_ok, sfec_txt = "badge-ok", "Synchronisee"
+    else:
+        sfec_ok, sfec_txt = "badge-warn", "Jamais synchronisee"
+    sfec_url = sfec_creds["base_url"]
+    poll_ok = "badge-ok" if polling else "badge-err"
+    poll_txt = "Actif" if polling else "Inactif"
     net_cls = "badge-ok" if conn.get("online") else "badge-err"
     net_txt = "EN LIGNE" if conn.get("online") else "HORS LIGNE"
 
@@ -77,19 +124,22 @@ def index():
 
     return _page(render_template("dashboard/index.html",
         sales=m.get("sales_invoices", 0), purchases=m.get("purchase_invoices", 0),
-        val_count=val_count,
+        val_count=val_count, credit_notes=m.get("credit_notes", 0),
         contacts=m.get("contacts", 0), tax=m.get("tax_rates", 0),
         syncs=m.get("sync_count", 0), certs=m.get("certified_count", 0),
-        db_ok=db_ok, db_txt=db_txt, last_sync=_esc(m.get("last_sync_at") or "Jamais"),
-        error=_esc(m.get("last_error") or "Aucune"),
-        sfec_ok=sfec_ok, sfec_txt=sfec_txt, sfec_url=_esc(sfec.get("url", "")),
-        net_cls=net_cls, net_txt=net_txt, retry_html=retry_html
+        db_ok=db_ok, db_txt=db_txt, last_sync=_esc(_local_ts(m.get("last_sync_at"))),
+        error=_esc((m.get("last_error") or "Aucune")[:300]),
+        sfec_ok=sfec_ok, sfec_txt=sfec_txt, sfec_url=_esc(sfec_url),
+        net_cls=net_cls, net_txt=net_txt, retry_html=retry_html,
+        poll_ok=poll_ok, poll_txt=poll_txt
     ))
 
 @bp.route("/invoices", methods=["GET"])
 @_login_required
 def invoices_page():
     inv_type = request.args.get("type", "sale")
+    if inv_type not in ("sale", "purchase", "avoir"):
+        inv_type = "sale"
     cache = get_cache()
 
     if inv_type == "purchase":
@@ -99,23 +149,74 @@ def invoices_page():
     else:
         invoices = [i for i in cache.get("sales_invoices", []) if i.get("type_doc", "vente") != "avoir"]
 
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+    except (TypeError, ValueError):
+        page = 1
+    limit = 100
+    total = len(invoices)
+    pages = max(1, (total + limit - 1) // limit)
+    page = min(page, pages)
+    offset = (page - 1) * limit
+    page_rows = [dict(inv) for inv in invoices[offset:offset + limit]]
+    states = sqlite_db.get_sfec_states_by_numeros(
+        [inv.get("numero") for inv in page_rows]
+    )
+    for inv in page_rows:
+        state = states.get(str(inv.get("numero") or "").strip())
+        if not state:
+            continue
+        # Ne jamais remplacer une certification lue dans Sage par un miroir
+        # local vide. La surcouche locale ne s'applique que si elle apporte
+        # une preuve/pending, ou si Sage n'a encore aucun statut SFEC.
+        if (state.get("sfec_pending_sage")
+                or state.get("sfec_num_certif")
+                or not (inv.get("sfec_num_certif") or inv.get("sfec_statut"))):
+            inv.update(state)
+
     rows = ""
-    for inv in invoices[:200]:
+    for inv in page_rows:
         s = inv.get("statut", "")
-        sb = "badge-ok" if s == "COMPTABILISE" else "badge-warn" if s in ("CONFIRME", "A COMPTABILISER") else ""
+        sb = "badge-ok" if s == "COMPTABILISE" else "badge-info" if s in ("LETTRE", "LETTRÉ", "LETTRE ") else "badge-warn" if s in ("CONFIRME", "A COMPTABILISER") else ""
         ss = inv.get("sfec_statut", "")
-        sfb = "badge-ok" if ss in ("CERTIFIE", "DEJA_CERTIFIE") else "badge-warn" if ss == "EN_COURS" else "badge-err" if ss == "ERREUR" else "badge-info" if ss == "A_SURVEILLER" else ""
-        sftxt = "Certifie" if ss == "CERTIFIE" else "Deja certifie" if ss == "DEJA_CERTIFIE" else "En cours" if ss == "EN_COURS" else "Erreur" if ss == "ERREUR" else "A surveiller" if ss == "A_SURVEILLER" else "A certifier" if inv_type == "sale" else "-"
+        pending_sage = bool(inv.get("sfec_pending_sage"))
+        sfb = (
+            "badge-warn" if pending_sage
+            else "badge-ok" if ss in ("CERTIFIE", "DEJA_CERTIFIE")
+            else "badge-warn" if ss == "EN_COURS"
+            else "badge-err" if ss == "ERREUR"
+            else "badge-info" if ss == "A_SURVEILLER" else ""
+        )
+        sftxt = (
+            "Certifiée SFEC — Sage en attente" if pending_sage
+            else "Certifie" if ss == "CERTIFIE"
+            else "Deja certifie" if ss == "DEJA_CERTIFIE"
+            else "En cours" if ss == "EN_COURS"
+            else "Erreur" if ss == "ERREUR"
+            else "A surveiller" if ss == "A_SURVEILLER"
+            else "A certifier" if inv_type == "sale" else "-"
+        )
         cert_num = inv.get("sfec_num_certif", "") or ""
         val = inv.get("valide", 0)
         val_cls = "badge-ok" if val == 1 else "badge-err"
         val_txt = "Valide" if val == 1 else "Non valide"
-        type_badge_cls = "badge-warn" if inv.get("type_doc") == "avoir" else "badge-info"
-        type_badge_txt = "Avoir" if inv.get("type_doc") == "avoir" else "Vente"
-        rows += "<tr><td>{}</td><td>{}</td><td>{}</td><td><span class='badge {}'>{}</span></td><td style='text-align:right'>{:,.2f}</td><td><span class='badge {}'>{}</span></td><td><span class='badge {}'>{}</span></td><td><span class='badge {}'>{}</span></td><td>{}</td></tr>".format(
+        is_avoir = inv.get("type_doc") == "avoir"
+        sage_type = inv.get("sage_type")
+        try:
+            sage_type = int(sage_type) if sage_type not in (None, "") else None
+        except (TypeError, ValueError):
+            sage_type = None
+        type_badge_cls = "badge-warn" if is_avoir else "badge-info"
+        if is_avoir and sage_type == 8:
+            type_badge_txt = "Retour"
+        elif is_avoir:
+            type_badge_txt = "Avoir"
+        else:
+            type_badge_txt = "Achat" if inv_type == "purchase" else "Vente"
+        rows += "<tr><td>{}</td><td>{}</td><td>{}</td><td><span class='badge {}'>{}</span></td><td style='text-align:right'>{}</td><td><span class='badge {}'>{}</span></td><td><span class='badge {}'>{}</span></td><td><span class='badge {}'>{}</span></td><td>{}</td></tr>".format(
             _esc(inv.get("numero", "")), _esc(inv.get("date_facture", "")), _esc(inv.get("nom_tiers", "")),
             type_badge_cls, type_badge_txt,
-            inv.get("montant_ttc", 0), sb, _esc(s), val_cls, val_txt, sfb, _esc(sftxt), _esc(cert_num or "-")
+            _safe_amount(inv.get("montant_ttc", 0), 2), sb, _esc(s), val_cls, val_txt, sfb, _esc(sftxt), _esc(cert_num or "-")
         )
     sale_cls = "btn-primary" if inv_type == "sale" else ""
     purchase_cls = "btn-primary" if inv_type == "purchase" else ""
@@ -123,7 +224,9 @@ def invoices_page():
     empty = '<tr><td colspan="9" style="text-align:center;color:#64748b">Aucune facture</td></tr>' if not rows else ""
     return _page(render_template("dashboard/invoices.html",
         inv_type=inv_type, sale_cls=sale_cls, purchase_cls=purchase_cls, avoir_cls=avoir_cls,
-        rows=rows, empty=empty
+        rows=rows, empty=empty, total=total, page=page, pages=pages,
+        has_prev=page > 1, has_next=page < pages,
+        offset=offset, shown=len(page_rows)
     ))
 
 
@@ -132,39 +235,161 @@ def invoices_page():
 def pending_page():
     cache = get_cache()
     sfec_cfg = get_config().get("sfec", {})
+    sfec_enabled = bool(sfec_cfg.get("enabled"))
+    sfec_configured = sfec_enabled and bool(
+        get_sfec_credentials(sfec_cfg)["api_key"])
     sfec_ids = set()
-    try:
-        client = SfecClient()
-        sfec_result = client.list_invoices(page=1, page_size=500)
-        for inv in sfec_result.get("invoices", []):
-            seller_inv = inv.get("seller_invoice_number", "") or inv.get("invoice_number", "")
-            if seller_inv:
-                sfec_ids.add(seller_inv)
-    except Exception:
-        pass
-    uncertified = [
-        inv for inv in cache.get("sales_invoices", [])
-        if inv.get("numero", "") not in sfec_ids
-        and inv.get("valide", 0) == 1
-        and inv.get("sfec_statut", "") not in ("EN_COURS", "ERREUR")
-    ]
+    for item in cache.get("sfec_invoices", []):
+        seller_inv = item.get("seller_invoice_number", "") or item.get("invoice_number", "")
+        if seller_inv:
+            sfec_ids.add(seller_inv)
+    sfec_lookup_available = bool(sfec_ids)
+
+    uncertified = []
+    for inv in cache.get("sales_invoices", []):
+        if inv.get("statut_code") != 2:
+            continue
+        local_status = inv.get("sfec_statut", "")
+        if local_status in ("EN_COURS", "ERREUR", "A_SURVEILLER", "CERTIFIE", "DEJA_CERTIFIE"):
+            continue
+        numero = inv.get("numero", "")
+        if sfec_lookup_available and numero in sfec_ids:
+            continue
+        uncertified.append(inv)
     uncertified.sort(key=lambda x: x.get("date_facture", ""), reverse=True)
-    val_count = sum(1 for inv in cache.get("sales_invoices", []) if inv.get("valide", 0) == 1)
+
+    pending_reasons = cache.get("pending_reasons", {}) or {}
+
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+    except (TypeError, ValueError):
+        page = 1
+    limit = 100
+    total_pending = len(uncertified)
+    pages = max(1, (total_pending + limit - 1) // limit)
+    page = min(page, pages)
+    offset = (page - 1) * limit
+    page_rows = uncertified[offset:offset + limit]
+
     rows = ""
-    for inv in uncertified[:200]:
-        badge_avoir = ' <span class="badge badge-warn">Avoir</span>' if inv.get("type_doc") == "avoir" else ""
-        rows += "<tr><td>{}{}</td><td>{}</td><td>{}</td><td style='text-align:right'>{:,.2f}</td><td><button class='btn btn-sm btn-success' onclick=\"certifySingle('{}')\">Certifier</button> <button class='btn btn-sm' style='background:#4a1d96;color:#fff' onclick=\"toMonitor('{}')\">Surveiller</button></td></tr>".format(
-            _esc(inv.get("numero", "")), badge_avoir, _esc(inv.get("date_facture", "")), _esc(inv.get("nom_tiers", "")),
-            inv.get("montant_ttc", 0), inv.get("id", ""), inv.get("id", "")
+    for inv in page_rows:
+        sage_type = inv.get("sage_type")
+        try:
+            sage_type = int(sage_type) if sage_type not in (None, "") else None
+        except (TypeError, ValueError):
+            sage_type = None
+        badge_avoir = ' <span class="badge badge-warn">{}</span>'.format(
+            "Retour" if sage_type == 8 else "Avoir") if inv.get("type_doc") == "avoir" else ""
+        motif = _esc(pending_reasons.get(inv.get("id"), ""))
+        rows += "<tr><td>{}{}</td><td>{}</td><td>{}</td><td style='text-align:right'>{}</td><td>{}</td><td><button class='btn btn-sm btn-success' onclick=\"certifySingle('{}')\">Certifier</button> <button class='btn btn-sm' style='background:#4a1d96;color:#fff' onclick=\"toMonitor('{}')\">Surveiller</button></td></tr>".format(
+            _esc(inv.get("numero", "")), badge_avoir, _esc(inv.get("date_facture", "")),
+            _esc(inv.get("nom_tiers", "")), _safe_amount(inv.get("montant_ttc", 0), 2),
+            motif,
+            inv.get("id", ""), inv.get("id", "")
         )
     sfec_warn = ""
-    if not sfec_cfg.get("enabled"):
+    if not sfec_enabled:
         sfec_warn = '<p class="badge badge-err" style="margin-bottom:12px">SFEC desactivee</p>'
-    empty = '<tr><td colspan="5" style="text-align:center;color:#64748b">Toutes certifiees !</td></tr>' if not rows else ""
+    elif not sfec_configured:
+        sfec_warn = '<p class="badge badge-err" style="margin-bottom:12px">SFEC activee mais cle API manquante</p>'
+    elif not sfec_lookup_available:
+        sfec_warn = ('<p class="badge badge-warn" style="margin-bottom:12px">'
+                     'Liste SFEC indisponible : filtre base sur le statut local, verification impossible</p>')
+    empty = '<tr><td colspan="6" style="text-align:center;color:#64748b">Toutes certifiees !</td></tr>' if not rows else ""
+
+    # Proposition 06 : les factures A_SURVEILLER ne sont plus muettes. Le
+    # motif est enregistre par mark_to_monitor() et affiche ici avec une
+    # action « Relancer » qui remet le statut a NULL pour un seul passage.
+    try:
+        anomalies = sqlite_db.fetch_sfec_anomalies(limit=500)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Lecture des anomalies SFEC impossible: %s", exc)
+        anomalies = []
+    anomaly_rows = ""
+    for anomaly in anomalies:
+        numero = str(anomaly.get("numero") or "")
+        montant = anomaly.get("montant_ttc")
+        montant_txt = _safe_amount(montant, 2) if montant not in (None, "") else "-"
+        retry_arg = _esc(json.dumps(numero))
+        anomaly_rows += (
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td>"
+            "<td style='text-align:right'>{}</td>"
+            "<td><button class='btn btn-sm btn-success' "
+            "onclick=\"relancer({})\">Relancer</button></td></tr>"
+        ).format(
+            _esc(numero),
+            _esc(anomaly.get("date_facture", "")),
+            _esc(anomaly.get("detected_at", "")),
+            _esc(anomaly.get("motif", "")),
+            montant_txt,
+            retry_arg,
+        )
+    anomaly_empty = (
+        '<tr><td colspan="6" style="text-align:center;color:#64748b">'
+        'Aucune anomalie SFEC</td></tr>'
+    ) if not anomaly_rows else ""
+
     return _page(render_template("dashboard/pending.html",
-        count=len(uncertified),
-        sfec_warn=sfec_warn, val_count=val_count, rows=rows, empty=empty
+        count=total_pending,
+        sfec_warn=sfec_warn,
+        val_count=sum(1 for i in cache.get("sales_invoices", [])
+                      if i.get("statut_code") == 2 and i.get("type_doc", "vente") != "avoir"),
+        rows=rows, empty=empty, page=page, pages=pages,
+        has_prev=page > 1, has_next=page < pages,
+        offset=offset, shown=len(page_rows),
+        anomaly_rows=anomaly_rows,
+        anomaly_empty=anomaly_empty,
+        anomalies_count=len(anomalies),
     ))
+
+
+@bp.route("/api/sfec/relancer", methods=["POST"])
+@_login_required
+def api_sfec_relancer():
+    """Relance manuelle d'une anomalie SFEC (proposition 06).
+
+    Le statut Sage est remis a NULL uniquement pour cette piece et seulement
+    s'il vaut A_SURVEILLER. Si la facture est presente dans le cache, on
+    tente immediatement la certification ; sinon le prochain cycle la
+    reprendra.
+    """
+    data = request.get_json(silent=True) or {}
+    numero = str(data.get("numero") or "").strip()
+    if not numero:
+        return jsonify({"success": False, "error": "numero requis"}), 400
+
+    try:
+        reset_sfec_monitor(numero)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Relance SFEC: reset Sage impossible pour %s: %s", numero, exc)
+
+    try:
+        with sqlite_db.get_cursor() as cur:
+            cur.execute(
+                "UPDATE invoices SET sfec_statut = '' "
+                "WHERE numero = ? AND sfec_statut = 'A_SURVEILLER'",
+                (numero,),
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Relance SFEC: reset SQLite impossible pour %s: %s", numero, exc)
+
+    invoice = None
+    for inv in get_cache().get("sales_invoices", []):
+        if str(inv.get("numero") or "") == numero:
+            invoice = inv
+            break
+    if not invoice:
+        return jsonify({
+            "success": True,
+            "queued": True,
+            "message": "Statut remis a vide : reprise au prochain cycle",
+        })
+
+    try:
+        return jsonify(certify_single(invoice.get("id")))
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Relance SFEC echouee pour %s: %s", numero, exc)
+        return jsonify({"success": False, "error": str(exc)}), 500
 
 
 @bp.route("/certified", methods=["GET"])
@@ -195,33 +420,6 @@ def _print_logo_src(company):
     if raw:
         return raw if raw.startswith("data:") else "data:image/png;base64," + raw
     return image_data_uri(company_image_path(company, "logo_file_name"))
-
-
-def _print_sage_lines(numero, type_doc="vente", domaine=None, sage_type=None):
-    """Lignes Sage d'une piece source='sage' absentes de SQLite.
-
-    Les types de document par defaut viennent de la configuration Sage
-    (facture/avoir). Toute erreur (Sage indisponible, table absente) est
-    silencieuse : l'impression doit rester possible sans ces colonnes.
-    """
-    try:
-        from app.integration.sage.database import fetch_doc_lines, get_domain_config
-        cfg = get_domain_config()
-        dom = int(domaine) if domaine not in (None, "") else cfg["vente_domain"]
-        types = []
-        if sage_type not in (None, ""):
-            types.append(int(sage_type))
-        elif type_doc == "avoir":
-            types.extend([cfg["avoir_type"], cfg["facture_type"]])
-        else:
-            types.extend([cfg["facture_type"], cfg["avoir_type"]])
-        for doc_type in types:
-            lignes = fetch_doc_lines(dom, doc_type, numero)
-            if lignes:
-                return lignes
-    except Exception as e:
-        logger.warning("Lignes Sage indisponibles pour %s: %s", numero, e)
-    return []
 
 
 def _print_local_lines(numero, type_doc="vente"):
@@ -279,8 +477,15 @@ def print_certified(invoice_id):
     is_avoir = inv_type == "creditNote"
     local, lignes = _print_local_lines(numero, "avoir" if is_avoir else "vente")
 
+    # Fallback lecture directe des lignes Sage quand la facture n'est pas
+    # (ou plus) en base locale SQLite : affiche quand meme les articles a
+    # l'impression. Teste les types 6/7/8 comme _print_sage_lines.
+    if not lignes and numero:
+        lignes = _print_sage_lines(numero, "avoir" if is_avoir else "vente")
+    lignes = [_normalize_print_line(line) for line in (lignes or [])]
+
     # ---- Lignes : fusion donnees SFEC (montants) + donnees locales (Sage)
-    items = inv.get("items") or []
+    items = _sfec_invoice_items(inv)
     items_rows = []
     total_poids = 0.0
     base18 = base5 = base_exempt = 0.0
@@ -294,10 +499,11 @@ def print_certified(invoice_id):
                           else lg.get("prix_unitaire"), 0.0)
         taux = _print_float(it.get("tax_rate") if it.get("tax_rate") not in (None, "")
                             else lg.get("taux_tva"), 18.0)
-        total_ligne = _print_float(it.get("net_amount") if it.get("net_amount") is not None
-                                   else lg.get("montant_ht"), 0.0)
+        total_ligne = _sfec_item_ht(it)
+        if total_ligne is None:
+            total_ligne = _print_float(lg.get("montant_ht"), 0.0)
         brut_ligne = _print_float(it.get("subtotal") if it.get("subtotal") is not None
-                                  else lg.get("subtotal"), 0.0) or qte * pu
+                                  else lg.get("montant_ht"), 0.0) or qte * pu
         remise = _print_float(it.get("discount_amount"), None)
         if remise is None:
             remise = _print_float(lg.get("remise_montant"), 0.0)
@@ -307,15 +513,39 @@ def print_certified(invoice_id):
         poids = _print_float(lg.get("poids_kg"), 0.0)
         nb_colis = _print_float(lg.get("nb_colis"), 0.0)
         pu_net = (total_ligne / qte) if qte else pu
-        designation = it.get("designation") or lg.get("designation") or ""
+        designation = (
+            it.get("designation")
+            or it.get("description")
+            or it.get("article_design")
+            or lg.get("designation")
+            or lg.get("description")
+            or lg.get("article_design")
+            or ""
+        )
+        reference = (
+            lg.get("code_article")
+            or lg.get("code_produit")
+            or it.get("code_article")
+            or it.get("code_produit")
+            or it.get("article_code")
+            or it.get("reference")
+            or ""
+        )
+        unite = (
+            lg.get("unite")
+            or lg.get("article_unit")
+            or it.get("unite")
+            or it.get("unit")
+            or ""
+        )
 
         items_rows.append({
-            "reference": lg.get("code_article", "") or it.get("article_code", "") or "",
+            "reference": reference,
             "designation": designation,
             "nb_colis": frn_amount(nb_colis, 2) if nb_colis else "",
             "conditionnement": lg.get("conditionnement", "") or "",
             "quantite": frn_amount(qte, 2),
-            "unite": lg.get("unite", "") or "",
+            "unite": unite,
             "poids": frn_amount(poids, 2) if poids else "",
             "remise": fmt_rate(remise_pct) if remise_pct else "Prix Net",
             "pu": frn_amount(pu, 2),
@@ -428,7 +658,13 @@ def print_certified(invoice_id):
         barcode_svg=barcode_svg(numero),
         invoice_date=fr_date(inv.get("invoice_date") or (local or {}).get("date_facture", "")),
         currency=devise,
-        reference=inv.get("reference") or (local or {}).get("reference", "") or "",
+        reference=(
+            next((row.get("reference") for row in items_rows
+                  if row.get("reference")), "")
+            or inv.get("reference")
+            or (local or {}).get("reference", "")
+            or ""
+        ),
         compte=(local or {}).get("tiers_code", "") or "",
         logo_src=_print_logo_src(company),
         seller_name=inv.get("seller_name", company.get("name", "")),
@@ -469,9 +705,18 @@ def print_certified(invoice_id):
 @_login_required
 def sales_page():
     stats = pos_engine.count_tickets()
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+    except (TypeError, ValueError):
+        page = 1
+    limit = 100
 
     ticket_rows = ""
-    result = pos_engine.list_tickets(limit=200)
+    total_rows = stats.get("total", 0)
+    pages = max(1, (total_rows + limit - 1) // limit)
+    if page > pages:
+        page = pages
+    result = pos_engine.list_tickets(limit=limit, offset=(page - 1) * limit)
     for t in result["tickets"]:
         vendeur_txt = "{} {}".format(t.get("vendeur_prenom", "") or "", t.get("vendeur_nom", "") or "").strip() or "-"
         sstatut = t.get("sfec_statut", "") or ""
@@ -490,22 +735,25 @@ def sales_page():
             sfec_cell = '<span class="badge badge-info">Non certifiee</span> <button class="btn btn-sm" onclick="certifySales({})">Certifier</button>'.format(inv_id)
         else:
             sfec_cell = "-"
-        ticket_rows += "<tr><td>{}</td><td>{}</td><td>{}</td><td style='text-align:right'>{:,.0f}</td><td>{}</td><td>{}</td><td>{}</td><td><a href='/pos/ticket/{}/print' class='btn btn-sm' target='_blank'>Voir</a></td></tr>".format(
-            _esc(t.get("numero", "")), _esc(t.get("date_ticket", "")[:16]),
-            _esc(t.get("tiers_nom", "")), t.get("montant_ttc", 0),
+        ticket_rows += "<tr><td>{}</td><td>{}</td><td>{}</td><td style='text-align:right'>{}</td><td>{}</td><td>{}</td><td>{}</td><td><a href='/pos/ticket/{}/print' class='btn btn-sm' target='_blank' rel='noopener noreferrer'>Voir</a></td></tr>".format(
+            _esc(t.get("numero", "")), _esc((t.get("date_ticket") or "")[:16]),
+            _esc(t.get("tiers_nom", "")), _safe_amount(t.get("montant_ttc", 0), 2),
             _esc(t.get("mode_paiement", "")), _esc(vendeur_txt), sfec_cell, t.get("id", "")
         )
 
     vendeurs = pos_engine.list_vendeurs()
     vendeur_options = '<option value="">Tous</option>'
     for v in vendeurs:
-        vendeur_options += '<option value="{}">{} {}</option>'.format(v["id"], v.get("prenom", ""), v["nom"])
+        vendeur_options += '<option value="{}">{} {}</option>'.format(
+            v["id"], _esc(v.get("prenom", "")), _esc(v.get("nom", "")))
 
     return _page(render_template("directory/sales.html",
         total=stats.get("total", 0), tickets_jour=stats.get("tickets_jour", 0),
         ca_jour=stats.get("ca_jour", 0), ca_total=stats.get("ca_total", 0),
         count=result.get("total", 0), rows=ticket_rows,
-        vendeur_opts=vendeur_options
+        vendeur_opts=vendeur_options, page=page, pages=pages,
+        has_prev=page > 1, has_next=page < pages,
+        offset=(page - 1) * limit, shown=len(result.get("tickets", []))
     ))
 
 
@@ -529,6 +777,7 @@ def impressions_page():
         "ATTENTE_CERTIF": ("badge-warn", "Attente certif"),
         "NON_CONFORME": ("badge-warn", "Non conforme"),
         "SKIP_DEDUP": ("badge-info", "Doublon"),
+        "IMPRIMANTE_ABSENTE": ("badge-err", "Imprimante absente"),
         "QUARANTINE": ("badge-err", "Quarantaine"),
         "REFUS": ("badge-err", "Refuse"),
         "ERREUR": ("badge-err", "Erreur"),
@@ -566,16 +815,72 @@ def impressions_page():
              'Aucune impression</td></tr>') if not rows else ""
     return _page(render_template("dashboard/impressions.html",
                                  count=len(records), rows=rows, empty=empty))
+def _sqlite_alive():
+    try:
+        with sqlite_db.get_cursor() as cur:
+            cur.execute("SELECT 1 AS ok")
+            return bool(cur.fetchone())
+    except Exception:
+        return False
 
 
 @bp.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok"})
+    """Supervision locale : detail reserve a la boucle locale (proposition 09)."""
+    from app.core.health import collect_health, is_loopback
+
+    allow_remote = os.environ.get("TCONNECTOR_HEALTH_ALLOW_REMOTE") == "1"
+    if not allow_remote and not is_loopback(request.remote_addr):
+        return jsonify({"error": "not found"}), 404
+    payload = collect_health()
+    return jsonify(payload), 200 if payload.get("ok") else 503
 
 
 @bp.route("/ready", methods=["GET"])
 def ready():
-    return jsonify({"ready": True})
+    db_ok = _sqlite_alive()
+    cfg = get_config()
+    sfec_cfg = cfg.get("sfec", {}) or {}
+    sfec_state = "disabled"
+    if sfec_cfg.get("enabled"):
+        sfec_state = ("configured"
+                      if get_sfec_credentials(sfec_cfg)["api_key"]
+                      else "missing_api_key")
+    cache = get_cache()
+    payload = {
+        "ready": bool(db_ok),
+        "checks": {
+            "sqlite": "up" if db_ok else "down",
+            "config": "loaded" if cfg else "empty",
+            "sage_cache": "populated" if cache.get("db_connected") else "empty",
+            "sfec": sfec_state,
+        },
+    }
+    return jsonify(payload), 200 if db_ok else 503
 
-
-
+@bp.route("/sales/export", methods=["GET"])
+@_login_required
+def sales_export():
+    """Export CSV (max 5000 lignes) des tickets POS avec les memes filtres que la liste."""
+    def _clean(name, default):
+        v = request.args.get(name, "") or None
+        return v or default
+    res = pos_engine.list_tickets(
+        date_from=_clean("date_from", None),
+        date_to=_clean("date_to", None),
+        vendeur_id=_clean("vendeur_id", None),
+        search=_clean("search", None),
+        limit=5000, offset=0)
+    rows = []
+    for t in res.get("tickets", []):
+        vendeur = "{} {}".format(t.get("vendeur_prenom", "") or "",
+                                 t.get("vendeur_nom", "") or "").strip()
+        rows.append([
+            t.get("numero", ""), (t.get("date_ticket") or "")[:16],
+            t.get("tiers_nom", ""), t.get("mode_paiement", ""),
+            t.get("montant_ttc", ""), vendeur,
+            t.get("invoice_numero", ""), t.get("sfec_statut", ""),
+        ])
+    header = ["ticket", "date", "client", "paiement", "montant TTC",
+              "vendeur", "facture", "statut SFEC"]
+    return _csv_response("ventes-pos.csv", header, rows)

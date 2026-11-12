@@ -13,13 +13,22 @@
     <div class="stat" style="flex:1"><div class="value">{{ nb_fournis }}</div><div class="label">Fournisseurs</div></div>
     <div class="stat" style="flex:1"><div class="value">{{ nb_total }}</div><div class="label">Total</div></div>
   </div>
-  <div style="margin-bottom:12px">
-    <input type="text" id="searchContact" placeholder="Rechercher un contact..." oninput="filterContacts()" style="max-width:400px">
-  </div>
+  <form method="get" action="{{ url_for('directory.clients_page') }}" style="margin-bottom:12px;display:flex;gap:8px">
+    <input type="text" id="searchContact" name="search" value="{{ search }}" placeholder="Rechercher code, nom ou email..." style="max-width:400px">
+    <button class="btn btn-primary" type="submit">Rechercher</button>
+    {% if search %}<a class="btn" href="{{ url_for('directory.clients_page') }}">Effacer</a>{% endif %}
+  </form>
   <table>
     <thead><tr><th>Code</th><th>Type</th><th>Nom</th><th>NIU</th><th>Email</th><th>Telephone</th><th>Ville</th><th>Statut</th><th>Actions</th></tr></thead>
     <tbody id="contactsBody">{{ rows | safe }}</tbody>
   </table>
+  {% if has_prev or has_next %}
+  <div style="display:flex;justify-content:space-between;margin-top:12px">
+    <div>{% if has_prev %}<a class="btn btn-sm" href="{{ url_for('directory.clients_page', search=search, offset=(offset - limit) if offset > limit else 0) }}">Precedent</a>{% endif %}</div>
+    <div style="color:#94a3b8">{{ offset + 1 }}-{{ offset + shown }} sur {{ total }}</div>
+    <div>{% if has_next %}<a class="btn btn-sm" href="{{ url_for('directory.clients_page', search=search, offset=offset + limit) }}">Suivant</a>{% endif %}</div>
+  </div>
+  {% endif %}
 </div>
 
 <div id="contactModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:1000;align-items:center;justify-content:center">
@@ -53,8 +62,8 @@
 
 {{ toast | safe }}
 <script>
-window.CSRF_TOKEN = {{ csrf_json | safe }};
-var contacts = {{ contacts_json | safe }};
+window.CSRF_TOKEN = {{ csrf_token | tojson }};
+var contacts = {{ contacts | tojson }};
 
 function filterContacts() {
   var q = document.getElementById("searchContact").value.toLowerCase();
@@ -74,6 +83,7 @@ function showModal(contact) {
     document.getElementById("modalTitle").textContent = "Editer Contact";
     document.getElementById("editId").value = contact.id;
     document.getElementById("fCode").value = contact.code || "";
+    document.getElementById("fCode").readOnly = true;
     document.getElementById("fType").value = contact.type || "client";
     document.getElementById("fNom").value = contact.nom || "";
     document.getElementById("fNiu").value = contact.niu || "";
@@ -85,6 +95,7 @@ function showModal(contact) {
     document.getElementById("modalTitle").textContent = "Nouveau Client";
     document.getElementById("editId").value = "";
     document.getElementById("fCode").value = "";
+    document.getElementById("fCode").readOnly = false;
     document.getElementById("fNom").value = "";
     document.getElementById("fNiu").value = "";
     document.getElementById("fVille").value = "";
@@ -134,12 +145,12 @@ is_taxable: document.getElementById("fTaxable").checked ? 1 : 0,
     adresse: document.getElementById("fAdresse").value
   };
   if(!data.nom) { showToast("Nom requis","err"); return; }
+  if(!editId && !String(data.code||"").trim()) { showToast("Code requis","err"); return; }
   var url = "/api/contacts";
   var method = "POST";
   if(editId) { url = "/api/contacts/" + editId; method = "PUT"; }
   api(method, url, data)
     .then(function(d){
-      if(d.success) { showToast(editId ? "Contact modifie" : "Contact cree","ok"); setTimeout(function(){location.reload()},800); }
       if(d.success) { showToast(editId ? "Contact modifie" : "Contact cree","ok"); setTimeout(function(){location.reload()},800); }
   else if(d.field === "niu") { showToast("NIU deja utilise: " + d.existing_value, "err"); }
   else showToast(d.error || "Erreur","err");

@@ -88,8 +88,33 @@ function checkConnectivity() {
 }
 checkConnectivity();
 setInterval(checkConnectivity, 15000);
-function api(m,u,b){function call(t){var h={"Content-Type":"application/json"};if(t){window.CSRF_TOKEN=t;h["X-CSRF-Token"]=t}return fetch(u,{method:m,headers:h,body:b?JSON.stringify(b):undefined}).then(function(r){return r.json().then(function(d){if((r.status===400||r.status===403)&&d&&d.error&&d.error.indexOf("CSRF")>=0&&!t){return fetch("/api/csrf").then(function(r){return r.json()}).then(function(x){return call(x.token)})}return d})})}if(window.CSRF_TOKEN)return call(window.CSRF_TOKEN);return fetch("/api/csrf").then(function(r){return r.json()}).then(function(d){return call(d.token)})}
-function syncNow(){showToast("Sync en cours...","info");api("POST","/api/sync").then(function(d){showToast(d.message||"OK","ok");setTimeout(function(){location.reload()},2000)})}
+function api(m,u,b){function call(t){var h={"Content-Type":"application/json"};if(t){window.CSRF_TOKEN=t;h["X-CSRF-Token"]=t}return fetch(u,{method:m,headers:h,body:b?JSON.stringify(b):undefined}).then(function(r){if(r.status===401&&u.indexOf("/api/")===0){location.href="/login";throw new Error("session expiree")}return r.json().then(function(d){if((r.status===400||r.status===403)&&d&&d.error&&d.error.indexOf("CSRF")>=0&&!t){return fetch("/api/csrf").then(function(r){return r.json()}).then(function(x){return call(x.token)})}return d})})}if(window.CSRF_TOKEN)return call(window.CSRF_TOKEN);return fetch("/api/csrf").then(function(r){return r.json()}).then(function(d){return call(d.token)})}
+function syncNow(){
+  showToast("Sync en cours...","info");
+  api("GET","/api/metrics").then(function(before){
+    var base=before&&before.last_sync_at;
+    api("POST","/api/sync").then(function(d){
+      if(d&&d.ok===false){showToast(d.error||"Sync impossible","err");return}
+      var started=Date.now(),attempts=0;
+      function poll(){
+        attempts++;
+        setTimeout(function(){
+          api("GET","/api/metrics").then(function(m){
+            if(m&&m.last_sync_at&&m.last_sync_at!==base){
+              showToast("Sync terminee","ok");setTimeout(function(){location.reload()},600);return
+            }
+            if(attempts>=30){showToast("Sync toujours en cours, verifiez plus tard","warn");return}
+            poll();
+          }).catch(function(){
+            if(attempts>=30){showToast("Sync: etat indisponible","warn");return}
+            poll();
+          });
+        },2000);
+      }
+      poll();
+    });
+  });
+}
 function switchTab(id){document.querySelectorAll(".tab-btn").forEach(function(b){b.classList.remove("active")});document.querySelectorAll(".tab-content").forEach(function(c){c.classList.remove("active")});document.getElementById("tab-btn-"+id).classList.add("active");document.getElementById("tab-"+id).classList.add("active")}
 function saveForm(formId, url, next){var f=document.getElementById(formId);var d=new FormData(f);var obj={};d.forEach(function(v,k){obj[k]=v});api("POST",url,obj).then(function(r){if(r.ok){showToast("Sauvegarde OK","ok");if(next)next()}else{showToast("Erreur: "+(r.error||"inconnue"),"err")}}).catch(function(e){showToast("Erreur reseau: "+e,"err")})}
 function toggleSidebar(){var s=document.querySelector(".sidebar");if(!s)return;var c=s.classList.toggle("collapsed");try{localStorage.setItem("tconn_sidebar",c?"1":"0")}catch(e){}}

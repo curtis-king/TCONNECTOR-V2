@@ -1,5 +1,5 @@
 {
-  "_readme_sfec_api_key": "SECURITE (S1) : la cle API SFEC est lue en PRIORITE depuis la variable d'environnement SFEC_API_KEY si elle est definie ; sinon depuis la valeur sfec.api_key ci-dessous. Copier ce fichier vers config.json (gitignore) et renseigner la cle dans l'un des deux endroits.",
+  "_readme_sfec_api_key": "SECURITE (S1) : les cles API SFEC sont lues en PRIORITE depuis l'environnement si definies. SFEC_API_KEY alimente sfec.api_key (production) ; SFEC_SANDBOX_API_KEY alimente sfec.sandbox_api_key (sandbox). Le mode sandbox n'utilise JAMAIS la cle de production. Copier ce fichier vers config.json (gitignore) et renseigner les cles dans l'un des deux endroits.",
   "db": {
     "server": "localhost",
     "port": 1433,
@@ -15,29 +15,52 @@
     "connection_timeout_ms": 15000,
     "request_timeout_ms": 30000,
     "polling_interval_ms": 60000,
-    "polling_enabled": true
+    "polling_enabled": true,
+    "sage_pull_days": 7,
+    "sage_facture_type": 6,
+    "sage_avoir_type": 7,
+    "sage_retour_type": 8
   },
   "sfec": {
     "enabled": true,
     "api_key": "YOUR_SFEC_API_KEY",
+    "sandbox_api_key": "YOUR_sandbox_SFEC_API_KEY",
     "base_url": "https://api.sfec.gouv.cg",
     "sandbox_url": "https://sandbox.api.sfec.gouv.cg",
     "use_sandbox": true,
-    "certify_status": "A COMPTABILISER"
+    "certify_status": "A COMPTABILISER",
+    "counter_customer_codes": ["CLI-CPT"],
+    "counter_name_keywords": ["COMPTOIR", "COMPTANT"],
+    "timeout": 30,
+    "lookup_max_pages": 500,
+    "payment_method_map": {}
   },
   "company": {
     "name": "YOUR_COMPANY_NAME",
+    "slogan": "",
     "address": "YOUR_ADDRESS",
     "city": "Brazzaville",
     "country": "Congo",
     "phone": "",
     "email": "",
+    "website": "",
     "tax_number": "YOUR_NIU",
+    "rc_number": "",
+    "logo_base64": "",
+    "logo_file_name": "",
     "currency": "XAF",
+    "currency_symbol": "FCFA",
+    "default_payment_terms": "Net 30",
     "bank_name": "",
     "bank_account": "",
+    "bank_iban": "",
+    "bank_swift": "",
     "invoice_prefix": "INV-",
-    "invoice_next_number": 1
+    "invoice_next_number": 1,
+    "invoice_notes": "",
+    "invoice_footer": "",
+    "tax_regime": "",
+    "qrcode_enabled": true
   },
   "queue": {
     "max_concurrent": 5,
@@ -48,7 +71,16 @@
   },
   "validation": {
     "strict_mode": true,
-    "tolerance_amount": 0.01
+    "tolerance_amount": 0.01,
+    "ttc_sage_tolerance": 1.0,
+    "max_additional_tax_rate": 10,
+    "cent_tax_rate": 5,
+    "additional_tax_codes": {
+      "3": "TAR"
+    },
+    "additional_tax_labels": {
+      "3": "Taxe supplementaire 3 %"
+    }
   },
   "notifications": {
     "enabled": true,
@@ -74,14 +106,19 @@
     "login_password": "CHANGE-THIS",
     "session_max_age_hours": 24
   },
+  "pos": {
+    "stock_control": true
+  },
   "print_hijack": {
     "enabled": false,
-    "printer_name": "YOUR_PRINTER_NAME",
-    "sumatra_path": "C:/Users/YOUR_USER/AppData/Local/SumatraPDF/SumatraPDF.exe",
     "watch_dir": "data/WATCH/IN",
     "out_dir": "data/WATCH/OUT",
     "done_dir": "data/WATCH/DONE",
     "quarantine_dir": "data/WATCH/QUARANTINE",
+    "printer_name": "YOUR_PRINTER_NAME",
+    "sumatra_path": "C:/Users/YOUR_USER/AppData/Local/SumatraPDF/SumatraPDF.exe",
+    "sumatra_min_version": "3.5.2",
+    "auto_install_sumatra": true,
     "stable_delay_s": 2,
     "stable_retries": 5,
     "poll_interval_s": 5,

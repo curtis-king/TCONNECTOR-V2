@@ -7,9 +7,11 @@ sont servis via url_for('static', ...) dans les templates (étape A7 :
 externalisation, plus d'injection inline).
 """
 
+import csv
 import html
+import io
 
-from flask import render_template, request, session, url_for
+from flask import Response, render_template, request, session, url_for
 
 from app.web.auth import user_auth
 from app.web.auth.security import _current_identity, _get_csrf_token
@@ -19,6 +21,25 @@ def _esc(val):
     if val is None:
         return ""
     return html.escape(str(val))
+
+
+def _csv_safe(val):
+    """Neutralise l'injection CSV/Excel (=, +, -, @, tab, CR) en tete de cellule."""
+    txt = "" if val is None else str(val)
+    if txt[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + txt
+    return txt
+
+
+def _csv_response(filename, header, rows):
+    """Reponse CSV avec BOM UTF-8 et separateur ';' (Excel FR)."""
+    buf = io.StringIO()
+    writer = csv.writer(buf, delimiter=";")
+    writer.writerow(header)
+    for row in rows:
+        writer.writerow([_csv_safe(v) for v in row])
+    return Response("\ufeff" + buf.getvalue(), mimetype="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": 'attachment; filename="{}"'.format(filename)})
 
 
 def _static_tags():
@@ -107,8 +128,11 @@ def _sidebar(path="../.."):
         nav_parts.append('<li class="nav-label">' + group_name + "</li>")
         nav_parts.extend(_item(*item) for item in group_items)
     nav = "".join(nav_parts)
-    nav += ('<li><a href="/logout" class="logout-link"><span class="icon">{icon}</span><span class="label">Deconnexion</span></a></li>').format(
-        icon=SIDEBAR_ICONS["logout"]
+    nav += ('<li><form method="post" action="/logout" class="logout-form">'
+            '<input type="hidden" name="_csrf" value="{token}">'
+            '<button type="submit" class="logout-link"><span class="icon">{icon}</span>'
+            '<span class="label">Deconnexion</span></button></form></li>').format(
+        icon=SIDEBAR_ICONS["logout"], token=_esc(_get_csrf_token())
     )
 
     return """<div class="sidebar">
@@ -162,11 +186,15 @@ def _base_context():
               '<span class="user-chip"><span class="ava">{initial}</span>'
               '<span>{email}<span style="color:#64748b;font-weight:500"> &middot; {role_label}</span></span></span>'
               '<a class="btn btn-sm btn-ghost no-print" href="/compte/mot-de-passe">Mot de passe</a>'
-              '<a class="btn btn-sm btn-ghost no-print" href="/logout">Deconnexion</a>'
+              '<form method="post" action="/logout" class="inline-logout">'
+              '<input type="hidden" name="_csrf" value="{csrf}">'
+              '<button type="submit" class="btn btn-sm btn-ghost no-print">Deconnexion</button>'
+              '</form>'
               '</div></div>').format(
         title=_esc(page_label),
         sync=('<button class="btn btn-sm btn-primary no-print" onclick="syncNow()">Synchroniser</button>' if page_key != "config" else ""),
-        initial=_esc(initial), email=_esc(email), role_label=_esc(role_label)
+        initial=_esc(initial), email=_esc(email), role_label=_esc(role_label),
+        csrf=_esc(_get_csrf_token())
     )
     return {
         "page_label": _esc(page_label),
