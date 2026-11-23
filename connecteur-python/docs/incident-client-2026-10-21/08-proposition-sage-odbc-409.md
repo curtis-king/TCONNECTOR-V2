@@ -371,9 +371,10 @@ Un timeout de connexion plus court (8 s) évite de bloquer un worker 15 s, puisq
 Nouveau module `app/integration/sfec/pending_writes.py` et table `sfec_pending_writes` (également créée par `init_database()`) :
 
 - `enqueue()` mémorise `invoice_id`, `certification_number`, `signature`, `qr_code`, `certification_date`, `attempts`, `last_error`.
-- `flush(limit=20)` rejoue les écritures Sage non abouties. Une ligne réussie est supprimée ; un échec incrémente `attempts`. À **10 échecs**, `mark_to_monitor()` est appelé une fois, la ligne reste pour l'audit mais n'est plus rejouée (`WHERE attempts < MAX_ATTEMPTS`).
+- `flush(limit=20)` rejoue les écritures Sage non abouties. Une ligne réussie est supprimée ; un échec incrémente `attempts`.
+- **Sémantique réelle des échecs (corrigée le 2026-11-09)** : une erreur **transitoire** (verrou Sage, coupure réseau) est rejouée **sans limite**, même après `MAX_ATTEMPTS` (`MAX_ATTEMPTS` ne sert qu'à espacer les logs). Aucun `A_SURVEILLER` n'est posé, une certification valide ne doit pas être perdue. Une erreur **définitive** (`PermanentSfecWriteError` : facture absente, ID invalide) marque la ligne `blocked = 1`, la conserve pour l'audit et appelle `mark_to_monitor()` une fois. Voir `docs/corrections/solution-reprise-automatique-sfec.md`.
 - `flush()` accepte un callback `on_success` ; le moteur l'utilise pour remettre `sfec_statut = CERTIFIE` et `sfec_num_certif` dans le cache sans import circulaire.
-- `_flush_pending_writes()` est appelé au début de chaque passe d'auto-certification, avant les contrôles SFEC : l'écriture Sage ne dépend pas d'Internet et une certification obtenue hors ligne n'est pas perdue.
+- `_flush_pending_writes()` est appelé **au début de `sync_all()` et de `sync_incremental()`**, donc même si le pull Sage échoue (correctif 2026-11-09), ainsi qu'au début de chaque passe d'auto-certification (throttlé à 30 s) : l'écriture Sage ne dépend pas d'Internet et une certification obtenue hors ligne n'est pas perdue.
 - Les trois chemins d'écriture (`_certify_single_worker`, `_process_retry_queue`, `certify_single`) mettent désormais la certification en file si l'écriture Sage échoue. Le cache passe en `EN_COURS` jusqu'au prochain `flush` réussi. Si même SQLite échoue, l'erreur d'origine est propagée et le retry normal est conservé.
 - `write_sfec_to_invoice()` n'est pas modifié : l'écriture reste idempotente et ne touche que les colonnes `SFEC_*`.
 
@@ -429,6 +430,6 @@ Les critères de la §6 ne peuvent pas être validés uniquement en local : ils 
 - [ ] 0 `DEJA_CERTIFIE` sans `SFEC_NUM_CERTIF` après la première passe de récupération.
 - [ ] Les 22 factures du 21/10 passent `CERTIFIE` (contrôle dans `sfec-certified.json` et dans `F_DOCENTETE`).
 - [ ] `error.log` ne contient plus de trace `409` non suivie d'une récupération.
-- [ ] `sfec_pending_writes` est vide en régime nominal ; toute ligne restante est soit en cours de retry, soit abandonnée après 10 essais et visible dans `/pending` avec un motif.
+- [ ] `sfec_pending_writes` est vide en régime nominal ; toute ligne restante est soit en cours de retry transitoire (verrou), soit `blocked = 1` après une erreur définitive et visible dans `/health` (`pending_writes_blocked`) et `/pending` avec un motif.
 
 Aucun `config.json` n'a été modifié : les valeurs recommandées (`connection_timeout_ms: 8000`, `pool_min: 2`, `pool_max: 6`) restent à appliquer sur le poste client si elles ne le sont pas déjà.

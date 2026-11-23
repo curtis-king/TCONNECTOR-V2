@@ -24,6 +24,7 @@ import traceback
 import pyodbc
 
 from app.config.manager import get_db_config
+from app.integration.sage.database import _server_clause
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,11 +46,9 @@ def _build_conn(cfg, target_db=None):
     database = target_db or cfg.get("database", "")
     parts = [
         "DRIVER={{{}}}".format(driver),
-        "SERVER={}".format(cfg["server"]),
+        "SERVER={}".format(_server_clause(cfg["server"], cfg.get("port", 1433))),
         "DATABASE={}".format(database),
     ]
-    if "\\" not in cfg["server"]:
-        parts.append("PORT={}".format(cfg.get("port", 1433)))
     if cfg.get("trusted_connection"):
         parts.append("Trusted_Connection=yes")
     else:

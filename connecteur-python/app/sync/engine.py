@@ -57,6 +57,13 @@ _SFEC_LOOKUP_TTL = 300
 _certify_run_lock = threading.Lock()
 _startup_reset_done = False
 
+# Le rejeu des ecritures Sage est une tache de fond independante du pull :
+# il doit s'executer meme quand la lecture Sage echoue. Throttle pour ne pas
+# multiplier les tentatives ODBC sur un intervalle de polling court.
+_FLUSH_MIN_INTERVAL_S = 30
+_flush_lock = threading.Lock()
+_last_flush_ts = None
+
 # Backoff en memoire des erreurs transitoires (reseau, verrou Sage, 502).
 # Aucune ecriture 'ERREUR' en base : une facture doit pouvoir reessayer.
 _retry_after = {}
@@ -209,13 +216,30 @@ def _pending_write_done(invoice_id, cert_number=""):
                 invoice_id, cert_number or "-")
 
 
-def _flush_pending_writes():
-    """Rejoue les certifications qui n'avaient pas pu etre ecrites dans Sage."""
+def _flush_pending_writes(force=False):
+    """Rejoue les certifications qui n'avaient pas pu etre ecrites dans Sage.
+
+    Appele au debut de chaque cycle de sync ET de chaque passe de
+    certification. Le throttle evite de rejouer deux fois par cycle quand
+    l'intervalle de polling est court.
+    """
+    global _last_flush_ts
+    now = time.monotonic()
+    with _flush_lock:
+        if (not force and _last_flush_ts is not None
+                and (now - _last_flush_ts) < _FLUSH_MIN_INTERVAL_S):
+            return 0
+        _last_flush_ts = now
     try:
         return flush(limit=20, on_success=_pending_write_done)
     except Exception as e:  # noqa: BLE001
         logger.warning("Rejeu des ecritures SFEC en attente echoue: %s", e)
         return 0
+
+
+def flush_pending_writes(force=True):
+    """Point d'entree public (API /api/sfec/pending/flush)."""
+    return _flush_pending_writes(force=force)
 
 
 def _log_certify_error(numero, message):
@@ -725,6 +749,9 @@ def _process_retry_queue():
 
 
 def sync_all():
+    # Rejeu independant du pull : une panne de lecture Sage ne doit pas
+    # bloquer l'ecriture des certifications deja obtenues.
+    _flush_pending_writes()
     with _lock:
         try:
             logger.info("Sync complet depuis Sage 100...")
@@ -756,7 +783,7 @@ def sync_all():
             _cache["db_connected"] = False
             _cache["last_error"] = str(e)
             logger.error("Erreur sync complet: %s", e)
-            return
+            return False
 
     try:
         auto_certify_invoices()
@@ -767,6 +794,7 @@ def sync_all():
         sync_sfec_invoices()
     else:
         logger.debug("Sync SFEC ignoree: pas de connexion internet")
+    return True
 
 
 def sync_sfec_invoices():
@@ -811,6 +839,8 @@ def sync_sfec_invoices():
 
 
 def sync_incremental():
+    # Meme garantie que sync_all() : le rejeu ne depend pas du pull.
+    _flush_pending_writes()
     with _lock:
         try:
             if _cache["last_sync_at"]:
@@ -851,12 +881,13 @@ def sync_incremental():
             _cache["db_connected"] = False
             _cache["last_error"] = str(e)
             logger.error("Erreur sync incrementale: %s", e)
-            return
+            return False
 
     try:
         auto_certify_invoices()
     except Exception as e:
         logger.error("Erreur auto-certification (incrementale): %s", e)
+    return True
 
 
 def _build_sfec_lookup():

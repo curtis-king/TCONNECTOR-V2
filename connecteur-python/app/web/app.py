@@ -2,7 +2,7 @@
 
 Étape A7 : create_app() construit l'instance Flask de zéro — plus d'instance
 globale à l'import. La sécurité est branchée via app.web.auth.security.
-init_security(app), les helpers partagés vivent dans app.web.common, et les 7
+init_security(app), les helpers partagés vivent dans app.web.common, et les 6
 blueprints (app/web/routes/) sont enregistrés ici. Importer ce module ne
 construit aucune application ; c'est main.py (ou les tests) qui appelle
 create_app().
@@ -36,7 +36,6 @@ def create_app():
     from app.web.routes import dashboard as _rt_dashboard_pages
     from app.web.routes import directory as _rt_directory
     from app.web.routes import pos as _rt_pos
-    from app.web.routes import sites as _rt_sites
     from app.web.routes import sync_api as _rt_sync_api
 
     app.register_blueprint(_rt_config.bp)  # domaine configuration (/config, /api/config*, /api/db, /api/sfec, /api/tables, /api/tax-rates)
@@ -46,6 +45,5 @@ def create_app():
     app.register_blueprint(_rt_billing.bp)    # facturation (/billing*, /api/invoices*)
     app.register_blueprint(_rt_pos.bp)        # point de vente (/pos*, /api/products*, /api/pos*)
     app.register_blueprint(_rt_directory.bp)  # annuaire (/clients, /vendeurs, /utilisateurs, /api/contacts*, /api/vendeurs*, /api/utilisateurs*)
-    app.register_blueprint(_rt_sites.bp)      # multi-sites impression (/sites, /api/sites*, /api/print/kill-switch)
 
     return app

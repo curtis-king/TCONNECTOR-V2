@@ -53,6 +53,16 @@ _TRANSIENT_MARKERS = (
 )
 
 
+class PermanentSfecWriteError(ValueError):
+    """Ecriture SFEC impossible et non rejouable.
+
+    Distincte d'un verrou ou d'une coupure reseau : rejouer ne changera rien
+    (facture absente de Sage, identifiant invalide, table introuvable). La
+    file `sfec_pending_writes` conserve la ligne pour l'audit mais cesse de
+    la rejouer afin de ne pas boucler indefiniment.
+    """
+
+
 def _is_transient(exc):
     """Vrai pour une erreur ODBC/reseau qui peut reussir apres retry."""
     msg = str(exc).lower()
@@ -366,6 +376,29 @@ def ensure_sfec_columns(tbl=None):
     return True
 
 
+def _server_clause(server, port):
+    """Retourne la valeur SERVER=... avec le port intégré.
+
+    Les pilotes MS ODBC 17/18 ignorent la clé « PORT=... » : le port doit être
+    collé au nom d'hôte (SERVER=tcp:hote,1444). Les instances nommées
+    (hote\\instance) et les serveurs portant déjà un port sont laissés tels
+    quels pour ne pas casser les configurations existantes.
+    """
+    server = (server or "").strip()
+    if not server or "\\" in server:
+        return server
+    prefixed = server.lower().startswith("tcp:")
+    host = server[4:] if prefixed else server
+    if "," in host:
+        return server
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        return server
+    clause = "{},{}".format(host, port)
+    return "tcp:" + clause if prefixed else clause
+
+
 def _build_conn_string(cfg):
     import pyodbc as _pyodbc
     available = [d.strip() for d in _pyodbc.drivers()]
@@ -381,11 +414,9 @@ def _build_conn_string(cfg):
 
     parts = [
         "DRIVER={{{}}}".format(driver),
-        "SERVER={}".format(cfg["server"]),
+        "SERVER={}".format(_server_clause(cfg["server"], cfg.get("port", 1433))),
         "DATABASE={}".format(cfg["database"]),
     ]
-    if "\\" not in cfg["server"]:
-        parts.append("PORT={}".format(cfg.get("port", 1433)))
     if cfg.get("trusted_connection"):
         parts.append("Trusted_Connection=yes")
     else:
@@ -1875,8 +1906,13 @@ def _merge_article_stock(articles, article_tbl):
 def _parse_invoice_id(invoice_id):
     parts = invoice_id.split("-")
     if len(parts) < 3:
-        raise ValueError("ID facture invalide: {}".format(invoice_id))
-    return int(parts[0]), int(parts[1]), "-".join(parts[2:])
+        raise PermanentSfecWriteError(
+            "ID facture invalide: {}".format(invoice_id))
+    try:
+        return int(parts[0]), int(parts[1]), "-".join(parts[2:])
+    except ValueError:
+        raise PermanentSfecWriteError(
+            "ID facture invalide: {}".format(invoice_id))
 
 
 def write_sfec_to_invoice(invoice_id, certification_number, signature, qr_code, certification_date):
@@ -1884,7 +1920,7 @@ def write_sfec_to_invoice(invoice_id, certification_number, signature, qr_code, 
     t = get_table_map()
     tbl = t.get("documents", "")
     if not tbl:
-        raise ValueError("Table documents introuvable")
+        raise PermanentSfecWriteError("Table documents introuvable")
 
     domaine, type_doc, piece = _parse_invoice_id(invoice_id)
 
@@ -1912,7 +1948,7 @@ def write_sfec_to_invoice(invoice_id, certification_number, signature, qr_code, 
     with get_cursor() as cur:
         cur.execute(sql, params)
         if cur.rowcount == 0:
-            raise ValueError(
+            raise PermanentSfecWriteError(
                 "WRITE FAILED: 0 ligne pour {} (domaine={}, type={}, piece={})".format(
                     invoice_id, domaine, type_doc, piece))
 

@@ -95,10 +95,19 @@ Ajout de :
 
 ### 4.3 `app/integration/sfec/pending_writes.py`
 
-- Une certification déjà obtenue n’est plus abandonnée après `MAX_ATTEMPTS`.
-- Le nombre de tentatives reste suivi pour l’exploitation.
-- Aucun `mark_to_monitor()` n’est déclenché pour une certification valide dont
-  seule l’écriture Sage est bloquée.
+- Une certification déjà obtenue n'est plus abandonnée après `MAX_ATTEMPTS`.
+- Le nombre de tentatives reste suivi pour l'exploitation.
+- Aucun `mark_to_monitor()` n'est déclenché pour une certification valide dont
+  seule l'écriture Sage est bloquée.
+
+> **Mise à jour 2026-11-09** — voir
+> `docs/corrections/solution-reprise-automatique-sfec.md`.
+>
+> - Le rejeu est découplé de la réussite du pull Sage : il a lieu au début de
+>   `sync_all()` et de `sync_incremental()`, même si la lecture Sage échoue.
+> - Une erreur **définitive** (`PermanentSfecWriteError`) marque la ligne
+>   `blocked = 1` et appelle `mark_to_monitor()` une fois ; elle n'est plus
+>   rejouée. Les verrous transitoires restent rejoués sans limite.
 
 ### 4.4 `app/sync/engine.py`
 
@@ -153,9 +162,11 @@ exécutables sans accès DNS à `sandbox.api.sfec.gouv.cg`.
 
 Pour une facture déjà certifiée mais bloquée par un verrou Sage :
 
-1. fermer la facture ou la session Sage qui verrouille l’enregistrement ;
-2. relancer une synchronisation ou redémarrer le connecteur ;
-3. laisser `sfec_pending_writes` rejouer l’écriture ;
+1. fermer la facture ou la session Sage qui verrouille l'enregistrement ;
+2. forcer le rejeu sans attendre le prochain cycle :
+   `POST /api/sfec/pending/flush` (ou relancer une synchronisation) ;
+3. laisser `sfec_pending_writes` rejouer l'écriture ; contrôler
+   `GET /api/sfec/pending` (`total`, `blocked`, `retrying`) ;
 4. vérifier dans Sage :
 
 ```sql

@@ -270,6 +270,7 @@ SCHEMA = """
                 certification_date TEXT,
                 attempts INTEGER NOT NULL DEFAULT 0,
                 last_error TEXT DEFAULT '',
+                blocked INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT DEFAULT (datetime('now'))
             );
             CREATE INDEX IF NOT EXISTS idx_sfec_pending_writes_created
@@ -523,35 +524,6 @@ def _migrate():
             logger.warning(
                 "Migration: index idx_contacts_niu_unique - echec, verifier les doublons NIU (%s)", e
             )
-
-        # Print hijacking (watch dossier PDF) : registre anti-redondance.
-        try:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS processed_pdf_prints (
-                    file_hash TEXT PRIMARY KEY,
-                    numero TEXT DEFAULT '',
-                    src_path TEXT DEFAULT '',
-                    out_path TEXT DEFAULT '',
-                    printer TEXT DEFAULT '',
-                    status TEXT DEFAULT '',
-                    error TEXT DEFAULT '',
-                    printed_at TEXT DEFAULT (datetime('now'))
-                )
-            """)
-            cur.execute("""
-                CREATE INDEX IF NOT EXISTS idx_processed_pdf_prints_numero
-                ON processed_pdf_prints(numero, printed_at)
-            """)
-            # Colonnes certification (ajout non destructif sur bases existantes).
-            for col in ("sfec_statut", "sfec_num_certif", "first_seen_at"):
-                try:
-                    cur.execute(
-                        "ALTER TABLE processed_pdf_prints ADD COLUMN {} TEXT DEFAULT ''".format(col)
-                    )
-                except Exception:
-                    pass  # colonne deja presente
-        except Exception as e:
-            logger.warning("Migration: table processed_pdf_prints - %s", e)
 
         # Migration settings avoirs : anciennes cles erronees -> cles seedees
         for old_key, new_key, default in (

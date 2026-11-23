@@ -12,9 +12,12 @@ sécurité ne dépend d'aucun module de routes).
 import threading
 from flask import Blueprint, jsonify, request
 from app.integration.sage.database import fetch_certified_invoices, fetch_ledger_accounts
+from app.integration.sfec.pending_writes import pending_stats
 from app.sync import bidirectional as sync_bidirectional
 from app.sync.connectivity import get_status
-from app.sync.engine import get_cache, get_metrics, get_retry_queue, sync_all
+from app.sync.engine import (
+    flush_pending_writes, get_cache, get_metrics, get_retry_queue, sync_all,
+)
 from app.web.auth import user_auth
 from app.web.auth.security import _login_required, _apply_session_security, _current_identity, _get_csrf_token, logger
 
@@ -22,6 +25,7 @@ from app.web.auth.security import _login_required, _apply_session_security, _cur
 bp = Blueprint('sync_api', __name__)
 
 _sync_guard = threading.Lock()
+_flush_guard = threading.Lock()
 
 
 @bp.route("/api/metrics", methods=["GET"])
@@ -55,6 +59,37 @@ def api_sync():
         _sync_guard.release()
         return jsonify({"ok": False, "error": "Impossible de lancer la sync"}), 500
     return jsonify({"ok": True, "message": "Sync lancee"})
+
+
+@bp.route("/api/sfec/pending", methods=["GET"])
+@_login_required
+def api_sfec_pending():
+    """Etat de la file d'ecriture SFEC -> Sage (total, bloquees, rejouables)."""
+    return jsonify(pending_stats())
+
+
+@bp.route("/api/sfec/pending/flush", methods=["POST"])
+@_login_required
+def api_sfec_pending_flush():
+    """Force le rejeu des certifications en attente, sans attendre un sync."""
+    if not _flush_guard.acquire(blocking=False):
+        return jsonify({"ok": False,
+                        "error": "Un rejeu est deja en cours"}), 409
+
+    def _run():
+        try:
+            flush_pending_writes(force=True)
+        finally:
+            _flush_guard.release()
+
+    try:
+        threading.Thread(target=_run, daemon=True).start()
+    except Exception:
+        _flush_guard.release()
+        return jsonify({"ok": False,
+                        "error": "Impossible de lancer le rejeu"}), 500
+    return jsonify({"ok": True,
+                    "message": "Rejeu des ecritures SFEC lance"}), 202
 
 
 @bp.route("/api/articles/sync", methods=["POST"])

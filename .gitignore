@@ -13,6 +13,7 @@ dist/
 
 # Runtime data & secrets
 connecteur-python/config.json
+connecteur-python/config.json.bak*
 connecteur-python/data/
 *.log
 *.db

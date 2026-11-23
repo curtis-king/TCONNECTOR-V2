@@ -5,7 +5,6 @@ Sage n'est declenche ici : le cache du moteur evite d'ouvrir une connexion
 ODBC a chaque appel de supervision.
 """
 import logging
-import os
 from datetime import datetime, timezone
 
 from app.config.manager import get_config, get_sfec_api_key
@@ -14,7 +13,6 @@ from app.storage import db as sqlite_db
 logger = logging.getLogger("t-connector.health")
 
 # Seuils de la proposition 09 (§6).
-MAX_WATCH_IN = 20
 MAX_PENDING_WRITES = 50
 MAX_MINUTES_WITHOUT_SFEC = 60
 
@@ -27,22 +25,6 @@ def is_loopback(remote_addr):
     if addr.startswith("::ffff:"):
         addr = addr[7:]
     return addr == "127.0.0.1" or addr.startswith("127.")
-
-
-def _count_watch_in():
-    try:
-        from app.print_hijack import get_print_hijack_config
-        folder = get_print_hijack_config()["watch_dir"]
-        if not os.path.isdir(folder):
-            return 0
-        return sum(
-            1 for name in os.listdir(folder)
-            if name.lower().endswith(".pdf")
-            and os.path.isfile(os.path.join(folder, name))
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.debug("Comptage WATCH/IN impossible: %s", e)
-        return 0
 
 
 def _parse_iso(value):
@@ -86,32 +68,28 @@ def collect_health(now=None):
     except Exception as e:  # noqa: BLE001
         logger.debug("Health: moteur indisponible: %s", e)
 
-    pending_prints = 0
-    try:
-        from app.print_hijack import auto_printer
-        pending_prints = auto_printer.count_attente_certif()
-    except Exception as e:  # noqa: BLE001
-        logger.debug("Health: comptage impressions impossible: %s", e)
-
-    pending_writes = 0
-    try:
-        from app.integration.sfec.pending_writes import pending_count
-        pending_writes = pending_count()
-    except Exception as e:  # noqa: BLE001
-        logger.debug("Health: comptage ecritures differees impossible: %s", e)
-
-    watch_in = _count_watch_in()
     last_sync = cache.get("last_sync_at")
     last_sfec_sync = cache.get("last_sfec_sync_at")
     pending_accounting = int(metrics.get("pending_accounting", 0) or 0)
 
+    pending_writes = 0
+    pending_writes_blocked = 0
+    try:
+        from app.integration.sfec.pending_writes import pending_stats
+        stats = pending_stats()
+        pending_writes = int(stats.get("total", 0) or 0)
+        pending_writes_blocked = int(stats.get("blocked", 0) or 0)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("Health: comptage ecritures differees impossible: %s", e)
+
     alerts = []
-    if watch_in > MAX_WATCH_IN:
-        alerts.append("WATCH/IN contient {} PDF (> {})".format(
-            watch_in, MAX_WATCH_IN))
     if pending_writes > MAX_PENDING_WRITES:
         alerts.append("sfec_pending_writes={} (> {})".format(
             pending_writes, MAX_PENDING_WRITES))
+    if pending_writes_blocked > 0:
+        alerts.append(
+            "sfec_pending_writes: {} ecriture(s) bloquee(s) definitivement"
+            .format(pending_writes_blocked))
     if pending_accounting > 0:
         age = _minutes_since(last_sfec_sync, now)
         if age is None or age > MAX_MINUTES_WITHOUT_SFEC:
@@ -142,9 +120,8 @@ def collect_health(now=None):
         "sfec_enabled": bool(sfec_cfg.get("enabled")),
         "last_sync": last_sync,
         "last_sfec_sync": last_sfec_sync,
-        "pending_prints": pending_prints,
         "pending_writes": pending_writes,
+        "pending_writes_blocked": pending_writes_blocked,
         "pending_accounting": pending_accounting,
-        "watch_in": watch_in,
         "alerts": alerts,
     }

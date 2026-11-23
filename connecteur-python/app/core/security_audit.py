@@ -28,11 +28,6 @@ def _config_path(config_path=None):
     return CONFIG_FILE
 
 
-def _sites_path():
-    from app.print_hijack.sites import SITES_FILE
-    return SITES_FILE
-
-
 def _file_mode(path):
     try:
         return oct(os.stat(path).st_mode & 0o777)
@@ -48,7 +43,6 @@ def audit_security(config_path=None, db_path=None):
     report = {
         "config_path": path,
         "config_mode": _file_mode(path),
-        "sites_mode": _file_mode(_sites_path()),
         "config_permissions_ok": False,
         "dashboard": {},
         "test_accounts": [],
@@ -110,7 +104,7 @@ def apply_security_audit(config_path=None, db_path=None):
     """Durcit les permissions et desactive prudemment les comptes de test."""
     report = audit_security(config_path, db_path)
     changed = {"files": [], "accounts": []}
-    for path in (_config_path(config_path), _sites_path()):
+    for path in (_config_path(config_path),):
         try:
             if os.path.exists(path):
                 os.chmod(path, 0o600)
