@@ -8,6 +8,8 @@ from datetime import datetime
 from contextlib import contextmanager, nullcontext
 from app.config.manager import get_db_config
 from app.core.constants import CONNECT_RETRY_DELAYS_S
+from app.integration.sage.errors import SageSchemaError
+from app.integration.sage.sql import quote_ident
 
 
 def _safe_float(val, default=0.0):
@@ -374,14 +376,16 @@ def ensure_sfec_columns(tbl=None):
                 key = col_name.upper()
                 if key not in col_map:
                     try:
-                        cur.execute("ALTER TABLE [{}] ADD [{}] {}".format(tbl, col_name, col_type))
+                        cur.execute("ALTER TABLE {} ADD {} {}".format(
+                            quote_ident(tbl), quote_ident(col_name), col_type))
                         logger.info("Colonne SFEC creee: %s %s", col_name, col_type)
                         changes += 1
                     except Exception as add_err:
                         logger.warning("Impossible d'ajouter %s: %s", col_name, add_err)
                 elif not _sfec_type_match(col_type, col_map[key][0], col_map[key][1]):
                     try:
-                        cur.execute("ALTER TABLE [{}] ALTER COLUMN [{}] {}".format(tbl, col_name, col_type))
+                        cur.execute("ALTER TABLE {} ALTER COLUMN {} {}".format(
+                            quote_ident(tbl), quote_ident(col_name), col_type))
                         logger.info("Colonne SFEC alteree: %s %s", col_name, col_type)
                         changes += 1
                     except Exception as alter_err:
@@ -712,7 +716,7 @@ def discover_tables():
                         FROM {}
                         GROUP BY DO_Domaine, DO_Type
                         ORDER BY DO_Domaine, DO_Type
-                    """.format(table_map["documents"]))
+                    """.format(quote_ident(table_map["documents"])))
                     for row in cur.fetchall():
                         domain_label = "Vente" if row[0] == 0 else "Achat" if row[0] == 1 else "Domaine {}".format(row[0])
                         logger.info("  %s Type %s: %s documents", domain_label, row[1], row[2])
@@ -879,7 +883,8 @@ def fetch_sales_invoices(updated_from=None, limit=None):
         email_select = "ISNULL(c.CT_EMail, '') AS recipient_email" if "CT_EMAIL" in tp_cols else "'' AS recipient_email"
         addr_select = "ISNULL(c.CT_Adresse, '') AS recipient_address" if "CT_ADRESSE" in tp_cols else "'' AS recipient_address"
         classif_select = "ISNULL(c.CT_Statistique05, '') AS recipient_type_raw" if "CT_STATISTIQUE05" in tp_cols else "'' AS recipient_type_raw"
-        join_clause = "LEFT JOIN {} c ON d.{} = c.CT_Num".format(t["third_party"], tiers_col)
+        join_clause = "LEFT JOIN {} c ON d.{} = c.CT_Num".format(
+            quote_ident(t["third_party"]), tiers_col)
     elif tiers_col:
         tiers_select = "d.{} AS code_tiers".format(tiers_col)
         nom_tiers_select = "'' AS nom_tiers"
@@ -979,7 +984,8 @@ def fetch_sales_invoices(updated_from=None, limit=None):
         niu=niu_select, phone=phone_select, email=email_select, addr=addr_select,
         classif=classif_select,
         net=net_select, valide=valide_select, dates=date_select,
-        sfec=sfec_select, ttc_expr=ttc_expr, tva_expr=tva_expr, tbl=t["documents"], join=join_clause, where=where
+        sfec=sfec_select, ttc_expr=ttc_expr, tva_expr=tva_expr,
+        tbl=quote_ident(t["documents"]), join=join_clause, where=where
     )
 
     try:
@@ -1080,7 +1086,7 @@ def _fetch_sales_invoices_fallback(dc, t):
         FROM {tbl} d
         WHERE d.DO_Domaine = {vd} AND d.DO_Type IN ({types_in})
         ORDER BY d.DO_Piece DESC
-    """.format(tbl=t["documents"], vd=dc["vente_domain"], types_in=types_in,
+    """.format(tbl=quote_ident(t["documents"]), vd=dc["vente_domain"], types_in=types_in,
                credit_in=credit_in, ttc_expr=ttc_expr, tva_expr=tva_expr)
 
     try:
@@ -1148,7 +1154,8 @@ def _doc_lines_query_parts():
 
     joins = []
     if art_tbl:
-        joins.append("LEFT JOIN {} a ON a.AR_Ref = l.AR_Ref".format(art_tbl))
+        joins.append("LEFT JOIN {} a ON a.AR_Ref = l.AR_Ref".format(
+            quote_ident(art_tbl)))
         article_cols = """
             , ISNULL(a.AR_Design, '') AS article_design
             , ISNULL(a.FA_CodeFamille, '') AS article_famille
@@ -1184,7 +1191,8 @@ def _doc_lines_query_parts():
     cond_tbl = t.get("colonne", "")
     cond_cols = _TABLE_COLUMNS.get(cond_tbl.upper(), set()) if cond_tbl else set()
     if cond_tbl and "CO_LIBELLE" in cond_cols and "CO_NO" in line_cols:
-        joins.append("LEFT JOIN {} cond ON cond.CO_No = l.CO_No".format(cond_tbl))
+        joins.append("LEFT JOIN {} cond ON cond.CO_No = l.CO_No".format(
+            quote_ident(cond_tbl)))
         extra_cols += ", ISNULL(cond.CO_Libelle, '') AS conditionnement"
     else:
         extra_cols += ", '' AS conditionnement"
@@ -1272,7 +1280,7 @@ def fetch_doc_lines(domaine, type_doc, piece):
                   AND l.DO_Type = ?
                   AND l.DO_Piece = ?
                 ORDER BY l.DL_Ligne
-            """.format(tbl=t["document_lines"], article_cols=parts["article_cols"],
+            """.format(tbl=quote_ident(t["document_lines"]), article_cols=parts["article_cols"],
                        extra_cols=parts["extra_cols"], join=parts["join_clause"]),
                 domaine, type_doc, domaine, type_doc, piece)
             columns = [desc[0] for desc in cur.description]
@@ -1330,7 +1338,7 @@ def fetch_doc_lines_batch(domaine, keys, chunk_size=200, cursor=None):
                     {join}
                     WHERE {conds}
                     ORDER BY l.DO_Piece, l.DL_Ligne
-                """.format(tbl=t["document_lines"], article_cols=parts["article_cols"],
+                """.format(tbl=quote_ident(t["document_lines"]), article_cols=parts["article_cols"],
                            extra_cols=parts["extra_cols"], join=parts["join_clause"],
                            conds=conds), params)
                 columns = [desc[0] for desc in cur.description]
@@ -1381,7 +1389,8 @@ def fetch_purchase_invoices(updated_from=None, limit=None):
         email_select = "ISNULL(c.CT_EMail, '') AS recipient_email" if "CT_EMAIL" in tp_cols else "'' AS recipient_email"
         addr_select = "ISNULL(c.CT_Adresse, '') AS recipient_address" if "CT_ADRESSE" in tp_cols else "'' AS recipient_address"
         classif_select = "ISNULL(c.CT_Statistique05, '') AS recipient_type_raw" if "CT_STATISTIQUE05" in tp_cols else "'' AS recipient_type_raw"
-        join_clause = "LEFT JOIN {} c ON d.{} = c.CT_Num".format(t["third_party"], tiers_col)
+        join_clause = "LEFT JOIN {} c ON d.{} = c.CT_Num".format(
+            quote_ident(t["third_party"]), tiers_col)
     elif tiers_col:
         tiers_select = "d.{} AS code_tiers".format(tiers_col)
         nom_tiers_select = "'' AS nom_tiers"
@@ -1463,7 +1472,7 @@ def fetch_purchase_invoices(updated_from=None, limit=None):
         niu=niu_select, phone=phone_select, email=email_select, addr=addr_select,
         classif=classif_select,
         net=net_select, dates=date_select, ttc_expr=ttc_expr, tva_expr=tva_expr,
-        tbl=t["documents"], join=join_clause, where=where
+        tbl=quote_ident(t["documents"]), join=join_clause, where=where
     )
 
     try:
@@ -1542,7 +1551,8 @@ def _fetch_purchase_invoices_fallback(dc, t):
         FROM {tbl} d
         WHERE d.DO_Domaine = {ad}
         ORDER BY d.DO_Date DESC
-    """.format(tbl=t["documents"], ad=dc["achat_domain"], at=dc["avoir_type"], ttc_expr=ttc_expr, tva_expr=tva_expr)
+    """.format(tbl=quote_ident(t["documents"]), ad=dc["achat_domain"],
+               at=dc["avoir_type"], ttc_expr=ttc_expr, tva_expr=tva_expr)
 
     try:
         with get_cursor() as cur:
@@ -1657,7 +1667,7 @@ def fetch_contacts(type_filter=None):
                 nom=name_select, type=type_select, client_flag=client_flag, fourni_flag=fourni_flag,
                 email=email_select, phone=phone_select,
                 niu=niu_select, create=create_select, modif=modif_select,
-                tbl=t["third_party"], where=where, order=order_by
+                tbl=quote_ident(t["third_party"]), where=where, order=order_by
             ), params)
             columns = [desc[0] for desc in cur.description]
             return [dict(zip(columns, [str(v) if v is not None else "" for v in row])) for row in cur.fetchall()]
@@ -1708,7 +1718,7 @@ def fetch_contact_by_code(code):
                 WHERE c.CT_Num = ?
             """.format(
                 nom=name_expr, adresse=addr_expr, telephone=phone_expr,
-                email=email_expr, niu=niu_expr, tbl=table,
+                email=email_expr, niu=niu_expr, tbl=quote_ident(table),
             ), (code,))
             row = cur.fetchone()
             if not row:
@@ -1754,7 +1764,8 @@ def fetch_tax_rates():
                 FROM {tbl}
                 {where}
                 ORDER BY {p}Code
-            """.format(p=p, tbl=t["tax_rate"], intitule=intitule_select, taux=taux_select, where=where_inactif))
+            """.format(p=p, tbl=quote_ident(t["tax_rate"]), intitule=intitule_select,
+               taux=taux_select, where=where_inactif))
             columns = [desc[0] for desc in cur.description]
             return [dict(zip(columns, [str(v) if v is not None else "" for v in row])) for row in cur.fetchall()]
     except Exception as e:
@@ -1789,7 +1800,8 @@ def fetch_ledger_accounts():
                     {collectif}
                 FROM {tbl}
                 ORDER BY CG_Num
-            """.format(tbl=t["chart_of_accounts"], classe=classe_select, collectif=collectif_select))
+            """.format(tbl=quote_ident(t["chart_of_accounts"]), classe=classe_select,
+               collectif=collectif_select))
             columns = [desc[0] for desc in cur.description]
             return [dict(zip(columns, [str(v) if v is not None else "" for v in row])) for row in cur.fetchall()]
     except Exception as e:
@@ -1858,7 +1870,8 @@ def fetch_articles(limit=None):
         limit=limit_clause, ref=ref_s, design=design_s, famille=famille_s,
         nature=nature_s, type=type_s, prix_vente=prix_vente_s,
         prix_achat=prix_achat_s, unite=unite_s,
-        inactif=inactif_s, barcode=barcode_s, tva=tva_s, tbl=article_tbl
+        inactif=inactif_s, barcode=barcode_s, tva=tva_s,
+        tbl=quote_ident(article_tbl)
     )
 
     try:
@@ -1943,6 +1956,10 @@ def write_sfec_to_invoice(invoice_id, certification_number, signature, qr_code, 
     tbl = t.get("documents", "")
     if not tbl:
         raise PermanentSfecWriteError("Table documents introuvable")
+    try:
+        tbl = quote_ident(tbl)
+    except SageSchemaError as e:
+        raise PermanentSfecWriteError(str(e))
 
     domaine, type_doc, piece = _parse_invoice_id(invoice_id)
 
@@ -1964,7 +1981,7 @@ def write_sfec_to_invoice(invoice_id, certification_number, signature, qr_code, 
             SFEC_DATE_CERTIF1 = ?,
             SFEC_STATUT = 'CERTIFIE'
         WHERE DO_Domaine = ? AND DO_Type = ? AND DO_Piece = ?
-    """.format(tbl)
+    """.format(quote_ident(tbl))
     params = [cert_num50, cert_num50, cert_num69, sig_str, qr_str, date_str, date_str, domaine, type_doc, piece]
 
     with get_cursor() as cur:
@@ -2008,7 +2025,7 @@ def reset_stuck_en_cours(reset_errors=False):
                   AND DO_Domaine = 0
                   AND SFEC_DATE_CERTIF IS NULL
                   AND (SFEC_NUM_CERTIF IS NULL OR SFEC_NUM_CERTIF = '')
-            """.format(t["documents"], placeholders), statuts)
+            """.format(quote_ident(t["documents"]), placeholders), statuts)
             if cur.rowcount > 0:
                 logger.info("Statuts %s remis a NULL: %d factures",
                             "EN_COURS/ERREUR" if reset_errors else "EN_COURS",
@@ -2038,7 +2055,7 @@ def reset_sfec_monitor(piece):
                   AND SFEC_STATUT = 'A_SURVEILLER'
                   AND SFEC_DATE_CERTIF IS NULL
                   AND (SFEC_NUM_CERTIF IS NULL OR SFEC_NUM_CERTIF = '')
-            """.format(t["documents"], types_in), piece)
+            """.format(quote_ident(t["documents"]), types_in), piece)
             return cur.rowcount or 0
     except Exception as e:
         logger.debug("reset_sfec_monitor echoue pour %s: %s", piece, e)
@@ -2059,7 +2076,7 @@ def mark_certifying(invoice_id):
                 UPDATE {} SET SFEC_STATUT = 'EN_COURS'
                 WHERE DO_Domaine = ? AND DO_Type = ? AND DO_Piece = ?
                   AND (SFEC_STATUT IS NULL OR SFEC_STATUT <> 'CERTIFIE')
-            """.format(t["documents"]), domaine, type_doc, piece)
+            """.format(quote_ident(t["documents"])), domaine, type_doc, piece)
     except Exception as e:
         logger.debug("mark_certifying echoue pour %s: %s", invoice_id, e)
 
@@ -2088,7 +2105,7 @@ def mark_to_monitor(invoice_id, reason=""):
                 UPDATE {} SET SFEC_STATUT = 'A_SURVEILLER'
                 WHERE DO_Domaine = ? AND DO_Type = ? AND DO_Piece = ?
                   AND (SFEC_STATUT IS NULL OR SFEC_STATUT <> 'CERTIFIE')
-            """.format(t["documents"]), domaine, type_doc, piece)
+            """.format(quote_ident(t["documents"])), domaine, type_doc, piece)
             if cur.rowcount > 0:
                 logger.warning("Facture mise A_SURVEILLER: %s - %s",
                                invoice_id, motif)
@@ -2110,7 +2127,7 @@ def mark_certified(invoice_id, note="CERTIFIE"):
                 UPDATE {} SET SFEC_STATUT = ?
                 WHERE DO_Domaine = ? AND DO_Type = ? AND DO_Piece = ?
                   AND (SFEC_STATUT IS NULL OR SFEC_STATUT NOT IN ('CERTIFIE', ?))
-            """.format(t["documents"]), note, domaine, type_doc, piece, note)
+            """.format(quote_ident(t["documents"])), note, domaine, type_doc, piece, note)
         logger.info("Facture marquee %s: %s", note, invoice_id)
         if note == "CERTIFIE":
             try:
@@ -2136,7 +2153,7 @@ def mark_certification_failed(invoice_id, error_msg):
                 UPDATE {} SET SFEC_STATUT = 'ERREUR'
                 WHERE DO_Domaine = ? AND DO_Type = ? AND DO_Piece = ?
                   AND (SFEC_STATUT IS NULL OR SFEC_STATUT NOT IN ('CERTIFIE', 'DEJA_CERTIFIE'))
-            """.format(t["documents"]), domaine, type_doc, piece)
+            """.format(quote_ident(t["documents"])), domaine, type_doc, piece)
     except Exception as e:
         logger.debug("mark_certification_failed echoue pour %s: %s", invoice_id, e)
     logger.warning("Facture marquee ERREUR certification SFEC: %s - %s", invoice_id, error_msg)
@@ -2172,7 +2189,7 @@ def fetch_certified_invoices():
                 WHERE DO_Domaine = ?
                   AND DO_Type IN ({types_ph})
                   AND SFEC_STATUT IN ('CERTIFIE', 'DEJA_CERTIFIE')
-            """.format(t["documents"], credit_ph=credit_ph, types_ph=types_ph),
+            """.format(quote_ident(t["documents"]), credit_ph=credit_ph, types_ph=types_ph),
                        params)
             columns = [desc[0] for desc in cur.description]
             return [dict(zip(columns, [str(v) if v is not None else "" for v in row])) for row in cur.fetchall()]

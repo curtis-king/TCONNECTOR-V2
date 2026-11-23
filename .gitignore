@@ -29,3 +29,7 @@ Thumbs.db
 # Donnees d'exploitation a la racine (extraites d'instance, logs, archives)
 /data/
 data.zip
+
+# Artefacts de test
+connecteur-python/.coverage
+connecteur-python/htmlcov/
