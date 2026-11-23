@@ -10,6 +10,9 @@ import pyodbc
 
 from app.config.manager import get_db_config
 from app.core.constants import CONNECT_RETRY_DELAYS_S
+from app.integration.sage.errors import (
+    SageError, classify_sage_error, is_transient as _is_transient_typed,
+)
 
 logger = logging.getLogger("t-connector.db")
 
@@ -24,21 +27,10 @@ _pool_queue = None
 
 _pool_size = 0
 
-# Erreurs ODBC transitoires : un retry court evite de bloquer un worker et de
-# transformer un timeout reseau isole en "Configuration base de donnees
-# incomplete" (audit 2026-10-21 : 704 Login timeout, 19 le 21/10).
-
-_TRANSIENT_MARKERS = (
-    "timeout expired", "hyt00", "08001", "08s01",
-    "communication link failure", "en cours d'utilisation",
-    "80003", "server is unavailable",
-    "configuration base de donnees incomplete",
-)
-
 def _is_transient(exc):
-    """Vrai pour une erreur ODBC/reseau qui peut reussir apres retry."""
-    msg = str(exc).lower()
-    return any(marker in msg for marker in _TRANSIENT_MARKERS)
+    """Délégué à la taxonomie d'erreurs (marqueurs conservés en transition)."""
+    return _is_transient_typed(exc)
+
 
 def _pool_capacity():
     try:
@@ -60,7 +52,7 @@ def _connect():
                           autocommit=True)
     try:
         conn.timeout = max(1, int(cfg.get("request_timeout_ms", 30000) or 30000) // 1000)
-    except Exception:
+    except (AttributeError, TypeError, ValueError):  # pilote sans support
         pass
     return conn
 
@@ -85,10 +77,11 @@ def _connect_with_retry(attempts=None):
     for i in range(max(1, attempts)):
         try:
             return _connect()
-        except Exception as e:  # noqa: BLE001
-            last = e
-            if not _is_transient(e):
-                raise
+        except Exception as e:  # frontiere : pyodbc (types varies)
+            err = classify_sage_error(e)
+            if not _is_transient(err):
+                raise err from e
+            last = err
             if i >= attempts - 1:
                 break
             delay = CONNECT_RETRY_DELAYS_S[min(i, len(CONNECT_RETRY_DELAYS_S) - 1)]
@@ -109,7 +102,7 @@ def _ensure_pool():
                 try:
                     _pool_queue.put(_connect())
                     _pool_size += 1
-                except Exception as e:
+                except (SageError, pyodbc.Error) as e:
                     level = logging.WARNING if _is_transient(e) else logging.ERROR
                     logger.log(level, "Pool Sage: connexion initiale echouee: %s", e)
                     break
@@ -120,7 +113,7 @@ def _healthy(conn):
     try:
         conn.execute("SELECT 1")
         return True
-    except Exception:
+    except (SageError, pyodbc.Error):
         return False
 
 def _checkout_timeout_s():
@@ -141,7 +134,7 @@ def _checkout(hi):
     if conn is not None and not _healthy(conn):
         try:
             conn.close()
-        except Exception:
+        except pyodbc.Error:
             pass
         with _pool_lock:
             _pool_size = max(0, _pool_size - 1)
@@ -152,7 +145,7 @@ def _checkout(hi):
                 try:
                     conn = _connect_with_retry()
                     _pool_size += 1
-                except Exception as e:
+                except (SageError, pyodbc.Error) as e:
                     level = logging.WARNING if _is_transient(e) else logging.ERROR
                     logger.log(level,
                                "Pool Sage: connexion a la demande echouee: %s", e)
@@ -162,7 +155,7 @@ def _checkout(hi):
             if not _healthy(conn):
                 try:
                     conn.close()
-                except Exception:
+                except pyodbc.Error:
                     pass
                 with _pool_lock:
                     _pool_size = max(0, _pool_size - 1)
@@ -176,14 +169,14 @@ def _checkin(conn):
         return
     try:
         conn.rollback()
-    except Exception:
+    except pyodbc.Error:
         pass
     try:
         _pool_queue.put(conn, block=False)
-    except Exception:
+    except queue.Full:
         try:
             conn.close()
-        except Exception:
+        except pyodbc.Error:
             pass
         with _pool_lock:
             global _pool_size
@@ -272,7 +265,7 @@ class _SafeCursor:
     def close(self):
         try:
             self._cursor.close()
-        except Exception:
+        except pyodbc.Error:
             pass
 
 def _server_clause(server, port):
@@ -335,10 +328,10 @@ def get_pool():
             try:
                 _pool.execute("SELECT 1")
                 return _pool
-            except Exception:
+            except (SageError, pyodbc.Error):
                 try:
                     _pool.close()
-                except Exception:
+                except pyodbc.Error:
                     pass
                 _pool = None
 
@@ -356,7 +349,7 @@ def close_pool():
         if _pool is not None:
             try:
                 _pool.close()
-            except Exception:
+            except pyodbc.Error:
                 pass
             _pool = None
         q, _pool_queue = _pool_queue, None
@@ -368,7 +361,7 @@ def close_pool():
             break
         try:
             conn.close()
-        except Exception:
+        except pyodbc.Error:
             pass
     logger.info("Connexion SQL Server fermee")
 
@@ -383,16 +376,16 @@ def get_cursor():
             raw = conn.cursor()
             try:
                 raw.arraysize = 1000
-            except Exception:
+            except (AttributeError, TypeError):
                 pass
             cursor = _SafeCursor(raw)
             try:
                 yield cursor
                 conn.commit()
-            except Exception:
+            except Exception:  # frontiere : rollback avant de propager
                 try:
                     conn.rollback()
-                except Exception:
+                except pyodbc.Error:
                     pass
                 raise
             finally:
@@ -401,16 +394,16 @@ def get_cursor():
     raw = conn.cursor()
     try:
         raw.arraysize = 1000
-    except Exception:
+    except (AttributeError, TypeError):
         pass
     cursor = _SafeCursor(raw)
     try:
         yield cursor
         conn.commit()
-    except Exception:
+    except Exception:  # frontiere : rollback avant de propager
         try:
             conn.rollback()
-        except Exception:
+        except pyodbc.Error:
             pass
         raise
     finally:

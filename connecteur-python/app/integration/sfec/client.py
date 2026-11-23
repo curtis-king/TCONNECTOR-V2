@@ -8,6 +8,9 @@ from urllib.parse import quote, urlencode
 import requests
 
 from app.config.manager import get_sfec_config, get_sfec_credentials
+from app.integration.sfec.errors import (  # noqa: F401  (re-export)
+    NetworkOfflineError, SfecError, SfecNetworkError, build_http_error,
+)
 from app.sync.connectivity import is_online, check_now
 
 logger = logging.getLogger("t-connector.sfec")
@@ -42,7 +45,7 @@ def _retry_delay(exc, attempt):
 
 def _is_retryable_verify_error(exc):
     """Erreurs qui justifient de relire SFEC (reseau, timeout, 429, 5xx)."""
-    if isinstance(exc, NetworkOfflineError):
+    if isinstance(exc, (NetworkOfflineError, SfecNetworkError)):
         return True
     try:
         status_code = int(getattr(exc, "status_code", 0) or 0)
@@ -54,13 +57,6 @@ def _is_retryable_verify_error(exc):
     return any(marker in msg for marker in (
         "timeout", "timed out", "connexion", "connection", "reseau", "network",
     ))
-
-
-class NetworkOfflineError(Exception):
-    def __init__(self, message="Pas de connexion internet disponible"):
-        self.message = message
-        self.status_code = 0
-        super().__init__(self.message)
 
 
 class SfecClient:
@@ -114,37 +110,41 @@ class SfecClient:
                 resp = requests.get(url, headers=headers, timeout=self.timeout)
             else:
                 raise ValueError("Method HTTP non supportee: {}".format(method))
-        except requests.exceptions.Timeout:
-            raise Exception("SFEC API: timeout apres {}s".format(self.timeout))
+        except requests.exceptions.Timeout as e:
+            raise SfecNetworkError(
+                "SFEC API: timeout apres {}s".format(self.timeout)) from e
         except requests.exceptions.ConnectionError as e:
             logger.warning("SFEC: erreur connexion reseau, verification internet...")
             if not is_online():
-                raise NetworkOfflineError("Connexion internet perdue pendant la requete SFEC")
-            raise Exception("SFEC API: erreur de connexion - {}".format(e))
+                raise NetworkOfflineError(
+                    "Connexion internet perdue pendant la requete SFEC") from e
+            raise SfecNetworkError(
+                "SFEC API: erreur de connexion - {}".format(e)) from e
         except requests.exceptions.RequestException as e:
             if not is_online():
-                raise NetworkOfflineError("Connexion internet perdue pendant la requete SFEC")
-            raise Exception("SFEC API: erreur reseau - {}".format(e))
+                raise NetworkOfflineError(
+                    "Connexion internet perdue pendant la requete SFEC") from e
+            raise SfecNetworkError(
+                "SFEC API: erreur reseau - {}".format(e)) from e
 
         if not resp.ok:
             error_body = resp.text
             logger.error("SFEC API error %s: %s", resp.status_code, error_body)
-            exc = Exception("SFEC API {}: {}".format(resp.status_code, error_body))
-            exc.status_code = resp.status_code
-            exc.error_body = error_body
             try:
                 error_json = resp.json()
-            except Exception:
+            except ValueError:  # frontiere : corps non JSON
                 error_json = None
-            exc.error_json = error_json if isinstance(error_json, dict) else {}
+            if not isinstance(error_json, dict):
+                error_json = {}
+            exc = build_http_error(
+                resp.status_code, error_body, error_json,
+                retry_after=resp.headers.get("Retry-After"),
+            )
             exc.error_message = (
-                exc.error_json.get("error")
-                or exc.error_json.get("message")
+                error_json.get("error")
+                or error_json.get("message")
                 or error_body
             )
-            retry_after = resp.headers.get("Retry-After")
-            if retry_after is not None:
-                exc.retry_after = retry_after
             raise exc
 
         try:

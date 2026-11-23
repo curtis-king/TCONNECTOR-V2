@@ -20,6 +20,9 @@ from app.config.manager import get_config
 from app.integration.sage.database import (
     write_sfec_to_invoice, mark_to_monitor, PermanentSfecWriteError,
 )
+from app.integration.sage.errors import (
+    SageUnavailableError, classify_sage_error,
+)
 from app.storage.db import get_cursor
 
 logger = logging.getLogger("t-connector.sfec.pending")
@@ -49,16 +52,13 @@ def pending_log_every():
     return _config_int("sfec", "pending_log_every", 10, 1, 1000)
 
 # Erreurs qui condamnent tout le lot : inutile de tenter les 19 autres
-# lignes, elles echoueront de la meme facon (Sage injoignable).
-_CONNECTION_ERROR_MARKERS = (
-    "communication link failure", "login timeout", "hyt00", "08001",
-    "server is unavailable", "configuration base de donnees incomplete",
-)
-
-
+# lignes, elles echoueront de la meme facon (Sage injoignable). Un simple
+# verrou (`SageLockedError`) n'en fait pas partie : la ligne suivante peut
+# passer.
 def _is_connection_error(exc):
-    msg = str(exc).lower()
-    return any(marker in msg for marker in _CONNECTION_ERROR_MARKERS)
+    if isinstance(exc, SageUnavailableError):
+        return True
+    return isinstance(classify_sage_error(exc), SageUnavailableError)
 
 
 def _ensure_columns(cur):
@@ -193,11 +193,11 @@ def flush(limit=None, on_success=None):
                     invoice_id,
                     "Ecriture SFEC impossible: {}".format(str(e)[:180]),
                 )
-            except Exception as me:  # noqa: BLE001
+            except Exception as me:  # frontiere : marquage best-effort
                 logger.debug("Marquage anomalie SFEC %s echoue: %s",
                              invoice_id, me)
             continue
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:  # frontiere : tout echec doit conserver la ligne
             attempts = (row["attempts"] or 0) + 1
             with get_cursor() as cur:
                 cur.execute("""
@@ -238,7 +238,7 @@ def flush(limit=None, on_success=None):
         if on_success is not None:
             try:
                 on_success(invoice_id, row["certification_number"])
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:  # frontiere : callback best-effort
                 logger.debug("Callback ecriture SFEC %s echoue: %s", invoice_id, e)
 
     if done:

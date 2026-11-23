@@ -63,7 +63,7 @@ Mesures reprises sur la branche `upgrade/qualite-code`.
 | `engine.py` | 1 821 | 1 453 | `state`, `invoice_rules`, `retry`, `sfec_errors` extraits |
 | `database.py` | 2 151 | 268 | façade ; implémentations dans `connection`, `schema`, `queries/*` |
 | Plus gros module applicatif | 2 151 | 1 453 (`engine.py`) | cible ≤ 600 hors orchestration |
-| `except Exception` | 257 | 257 | traitement prévu au LOT 3 |
+| `except Exception` | 257 | 238 | 19 convertis ; règle `# frontiere` documentée |
 | `datetime.utcnow()` | 15 | 0 | `app/core/timeutil.py` |
 | `print()` applicatifs | 7 | 0 | `seed.py` → logger |
 | SQL `.format(identifiant)` | 10 | 0 | `quote_ident()` (LOT 5) |
@@ -324,6 +324,30 @@ messages pyodbc).
 **Effort.** 3–4 j/h (progressif, peut chevaucher LOT 1/2). **Risque.** Moyen :
 une erreur mal classée peut changer une politique de retry. Mitigation :
 table de mapping testée + conservation temporaire des marqueurs texte.
+
+**Implémenté le 2026-11-23 (branche `upgrade/qualite-code`).**
+
+- `app/integration/sage/errors.py` : `SageError`, `SageUnavailableError`,
+  `SageLockedError`, `SageSchemaError`, `SageWriteConflictError`,
+  `PermanentSfecWriteError` (reclassé sous `SageWriteConflictError` en
+  conservant `ValueError`), `classify_sage_error()` et `is_transient()`.
+- `app/integration/sfec/errors.py` : `SfecError`, `SfecNetworkError`,
+  `SfecRejectedError`, `SfecAlreadyCertifiedError`, `SfecAuthError`,
+  `SfecHttpError`, `NetworkOfflineError`, `build_http_error()`. Les attributs
+  `status_code` / `error_body` / `error_json` / `retry_after` sont conservés.
+- Points d'émission convertis : `connection._connect_with_retry` (erreur
+  typée, `raise ... from`), `client._request` (timeout/réseau → `SfecNetworkError`,
+  statuts → sous-classe dédiée).
+- Points de capture convertis dans `connection.py` (22 → 4 `except Exception`,
+  les 4 restants encadrent un `yield` : rollback avant propagation) et
+  `pending_writes.py` (`_is_connection_error` s'appuie sur
+  `SageUnavailableError` au lieu des seuls marqueurs).
+- Règle de revue adoptée : tout `except Exception` restant porte un commentaire
+  `# frontiere` (process, logging, best-effort, rollback).
+- Compteur global : 257 → 238. La cible ≤ 80 reste un objectif des lots
+  suivants : `engine.py` (51) et `pdf.py` (13) concentrent l'essentiel.
+  Aucun comportement de retry n'est modifié par défaut (table de mapping
+  couverte par `tests/test_error_taxonomy.py`).
 
 ---
 
