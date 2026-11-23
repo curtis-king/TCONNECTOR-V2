@@ -11,6 +11,7 @@ import queue
 
 import pytest
 
+from app.integration.sage import connection as sage_conn
 from app.integration.sage import database as sage_db
 from app.integration.sfec import client as sfec_client
 from app.integration.sfec import endpoints as sfec_endpoints
@@ -68,10 +69,10 @@ def test_connect_with_retry_deux_echecs_puis_succes(monkeypatch):
             raise Exception("Login timeout expired")
         return sentinel
 
-    monkeypatch.setattr(sage_db, "_connect", fake_connect)
-    monkeypatch.setattr(sage_db.time, "sleep", lambda delay: sleeps.append(delay))
+    monkeypatch.setattr(sage_conn, "_connect", fake_connect)
+    monkeypatch.setattr(sage_conn.time, "sleep", lambda delay: sleeps.append(delay))
 
-    assert sage_db._connect_with_retry(attempts=3) is sentinel
+    assert sage_conn._connect_with_retry(attempts=3) is sentinel
     assert len(calls) == 3
     assert sleeps == [1, 3]
 
@@ -84,11 +85,11 @@ def test_connect_with_retry_ne_retente_pas_42000(monkeypatch):
         calls.append(1)
         raise Exception("[42000] Invalid column name")
 
-    monkeypatch.setattr(sage_db, "_connect", fake_connect)
-    monkeypatch.setattr(sage_db.time, "sleep", lambda delay: sleeps.append(delay))
+    monkeypatch.setattr(sage_conn, "_connect", fake_connect)
+    monkeypatch.setattr(sage_conn.time, "sleep", lambda delay: sleeps.append(delay))
 
     with pytest.raises(Exception, match="42000"):
-        sage_db._connect_with_retry()
+        sage_conn._connect_with_retry()
     assert len(calls) == 1
     assert sleeps == []
 
@@ -96,13 +97,13 @@ def test_connect_with_retry_ne_retente_pas_42000(monkeypatch):
 def test_get_pool_utilise_la_connexion_avec_retry(monkeypatch):
     sentinel = object()
     calls = []
-    monkeypatch.setattr(sage_db, "_pool", None)
-    monkeypatch.setattr(sage_db, "get_db_config",
+    monkeypatch.setattr(sage_conn, "_pool", None)
+    monkeypatch.setattr(sage_conn, "get_db_config",
                         lambda: {"server": "srv", "database": "db"})
-    monkeypatch.setattr(sage_db, "_connect_with_retry",
+    monkeypatch.setattr(sage_conn, "_connect_with_retry",
                         lambda: calls.append(1) or sentinel)
 
-    assert sage_db.get_pool() is sentinel
+    assert sage_conn.get_pool() is sentinel
     assert calls == [1]
 
 
@@ -110,14 +111,14 @@ def test_checkout_utilise_la_connexion_avec_retry(monkeypatch):
     sentinel = object()
     fake_queue = queue.Queue()
     calls = []
-    monkeypatch.setattr(sage_db, "_pool_queue", fake_queue)
-    monkeypatch.setattr(sage_db, "_pool_size", 0)
-    monkeypatch.setattr(sage_db, "_connect_with_retry",
+    monkeypatch.setattr(sage_conn, "_pool_queue", fake_queue)
+    monkeypatch.setattr(sage_conn, "_pool_size", 0)
+    monkeypatch.setattr(sage_conn, "_connect_with_retry",
                         lambda: calls.append(1) or sentinel)
 
-    assert sage_db._checkout(2) is sentinel
+    assert sage_conn._checkout(2) is sentinel
     assert calls == [1]
-    assert sage_db._pool_size == 1
+    assert sage_conn._pool_size == 1
 
 
 # ── File d'ecriture differee ────────────────────────────────────────────────

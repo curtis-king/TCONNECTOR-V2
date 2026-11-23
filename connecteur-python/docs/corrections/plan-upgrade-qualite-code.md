@@ -61,7 +61,8 @@ Mesures reprises sur la branche `upgrade/qualite-code`.
 | Lignes `tests/` | 8 884 | — | 348 tests collectés (+35) |
 | Suite de tests | verte | verte | 348 passed, ~1 min (Sage isolé) |
 | `engine.py` | 1 821 | 1 453 | `state`, `invoice_rules`, `retry`, `sfec_errors` extraits |
-| `database.py` | 2 151 | 2 211 | + `sql.py` (`quote_ident`), `errors.py` |
+| `database.py` | 2 151 | 268 | façade ; implémentations dans `connection`, `schema`, `queries/*` |
+| Plus gros module applicatif | 2 151 | 1 453 (`engine.py`) | cible ≤ 600 hors orchestration |
 | `except Exception` | 257 | 257 | traitement prévu au LOT 3 |
 | `datetime.utcnow()` | 15 | 0 | `app/core/timeutil.py` |
 | `print()` applicatifs | 7 | 0 | `seed.py` → logger |
@@ -229,6 +230,38 @@ requêtes, écritures, marquages SFEC, maintenance.
 
 **Effort.** 4–5 j/h. **Risque.** Élevé (SQL dynamique, fallbacks), atténué par
 les 313 tests et la façade.
+
+**Implémenté le 2026-11-23 (branche `upgrade/qualite-code`).**
+
+| Module | Contenu effectivement déplacé | Lignes |
+|--------|-------------------------------|--------|
+| `connection.py` | pool pyodbc (`_pool*`, `_connect*`, `_checkout`, `_checkin`, `_ensure_pool`), `_SafeRow`/`_SafeCursor`, `_sanitize_db_val`, `_server_clause`, `_build_conn_string`, `get_pool`, `close_pool`, `get_cursor`, `ping_database`, `_is_transient` | 431 |
+| `schema.py` | `_TABLE_MAP`/`_TABLE_COLUMNS`/`_DOMAIN_CONFIG`/`_SFEC_COLUMNS`, `_sfec_type_match`, `ensure_sfec_columns`, `_discover_columns`, `_has_col`, `_col_expr`, `_detect_sfec_columns`, `_status_label`, `discover_tables`, `get_table_map`, `get_domain_config`, `_doc_types`/`sales_doc_types`/`credit_doc_types`, `_get_tiers_col`, `_tiers_name_expr`, `_refresh_sfec_columns`, `list_all_tables` | 367 |
+| `queries/invoices.py` | `fetch_sales_invoices` (+ fallback), `fetch_purchase_invoices` (+ fallback) | 571 |
+| `queries/document_lines.py` | `_doc_lines_query_parts`, `_parse_doc_line`, `fetch_doc_lines`, `fetch_doc_lines_batch` | 224 |
+| `queries/certifications.py` | `fetch_certified_invoices` | 53 |
+| `queries/contacts.py` | `fetch_contacts`, `fetch_contact_by_code` | 152 |
+| `queries/articles.py` | `fetch_articles`, `_merge_article_stock` | 137 |
+| `queries/references.py` | `fetch_tax_rates`, `fetch_ledger_accounts` (+ ré-export `list_all_tables`) | 85 |
+| `values.py` | `_safe_float`, `_DEFAULT_DEVISE_MAP`, `get_devise_map`, `_map_devise` | 25 |
+| `errors.py` | `PermanentSfecWriteError` ajouté à la taxonomie | 25 |
+| `database.py` | **façade** : écritures/marquages SFEC + ré-exports | 268 |
+
+Écarts assumés par rapport à la cible initiale :
+
+- `_safe_float` et les conversions de devises vont dans `values.py` (et non
+  `schema.py`) : ce sont des conversions de valeurs, pas du schéma.
+- Les écritures/marquages SFEC **restent** dans `database.py` au lieu de
+  `writer.py`. `writer.py` est déjà autonome et importe `database` ; y déplacer
+  les écritures créerait un cycle. `database.py` reste donc la façade des
+  écritures et ne fait plus que ~230 lignes de logique.
+- `queries/invoices.py` est scindé en trois (`invoices`, `document_lines`,
+  `certifications`) pour respecter la cible « aucun fichier > 600 lignes ».
+- `queries/invoices.py` ré-expose les écritures via un `__getattr__` tardif,
+  sans cycle `database → queries.invoices`.
+- Un seul test a été adapté : `tests/test_sage_odbc_409.py` patche désormais
+  `connection` pour les 4 tests du pool (les fonctions ont changé de module).
+  Aucun comportement n'est modifié.
 
 ---
 
