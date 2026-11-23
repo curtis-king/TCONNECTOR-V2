@@ -51,6 +51,23 @@ Mesures relevées le 2026-11-09 sur `connecteur-python/`.
 | Routes HTTP | 111 | 109 + 2 (`/api/sfec/pending*`) |
 | Config polling | 120 000 ms | `config.json` client ; défaut code 30 000 ms |
 
+### 2.1 Photo après les lots 1 à 6 (2026-11-23)
+
+Mesures reprises sur la branche `upgrade/qualite-code`.
+
+| Indicateur | Baseline | Après | Commentaire |
+|------------|----------|-------|-------------|
+| Lignes `app/` | 18 707 | 19 018 | + tests d'exploitation et modules extraits |
+| Lignes `tests/` | 8 884 | — | 348 tests collectés (+35) |
+| Suite de tests | verte | verte | 348 passed, ~1 min (Sage isolé) |
+| `engine.py` | 1 821 | 1 453 | `state`, `invoice_rules`, `retry`, `sfec_errors` extraits |
+| `database.py` | 2 151 | 2 211 | + `sql.py` (`quote_ident`), `errors.py` |
+| `except Exception` | 257 | 257 | traitement prévu au LOT 3 |
+| `datetime.utcnow()` | 15 | 0 | `app/core/timeutil.py` |
+| `print()` applicatifs | 7 | 0 | `seed.py` → logger |
+| SQL `.format(identifiant)` | 10 | 0 | `quote_ident()` (LOT 5) |
+| Routes HTTP | 111 | 101 | dont 2 d'exploitation SFEC |
+
 ### Façades déjà présentes (important)
 
 Le découpage est **déjà amorcé** : les modules cibles existent mais ne
@@ -153,6 +170,30 @@ polling. État global (`_cache`, `_retry_queue`, verrous) partagé partout.
   (`tests/test_engine_public_api.py`) qui vérifie la présence des symboles.
 
 **Effort.** 3–4 j/h. **Risque.** Moyen (état global), atténué par la façade.
+
+**Implémenté le 2026-11-23 (branche `upgrade/qualite-code`).**
+
+| Module | Contenu effectivement déplacé | Lignes |
+|--------|-------------------------------|--------|
+| `app/sync/state.py` | `_cache`, `_lock`, `_stop_event`, `_retry_queue`, `_retry_lock`, `_certify_run_lock`, `_retry_after`, `_retry_attempts`, `_RETRY_BACKOFF_S`, `_logged_errors`, `get_cache()`, `get_retry_queue()`, `polling_active()` et setters du thread | 74 |
+| `app/sync/invoice_rules.py` | tous les helpers avoirs (`_as_float` → `_build_credit_note_index`) | 279 |
+| `app/sync/retry.py` | `_should_retry`, `_has_certification_proof`, `_needs_certification_recovery`, `_schedule_retry`, `_reset_retry`, `_log_certify_error` | 47 |
+| `app/sync/sfec_errors.py` | `_sfec_error_json`, `overcredit_details`, `overcredit_message`, `on_account_reference_conflict` | 70 |
+| `app/sync/engine.py` | orchestration : pull, certification, écritures en attente, polling, façade des imports | 1 453 |
+
+Choix assumé par rapport à la cible initiale : `certification.py`, `pending.py`,
+`pull.py` et `polling.py` ne sont **pas** créés dans ce lot. Les tests
+(`tests/test_certification_retry.py`, `test_sage_odbc_409.py`,
+`test_sfec_avoirs.py`, …) remplacent directement des noms de `engine`
+(`engine.certify_invoice`, `engine.SfecClient`, `engine.write_sfec_to_invoice`,
+`engine._cache`, …). Déplacer l'orchestration casserait ces points
+d'injection et imposerait de réécrire une dizaine de fichiers de test dans un
+lot censé ne rien changer au comportement. `engine.py` reste donc la façade
+d'orchestration (1 453 lignes), avec un état et des règles désormais isolés.
+
+`invoice_rules.py` résout ses dépendances d'E/S via `_dependency(name)`, qui
+lit `app.sync.engine` à l'appel : les substitutions de test continuent de
+fonctionner, y compris pour les fonctions déplacées.
 
 ---
 
