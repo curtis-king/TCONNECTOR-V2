@@ -98,6 +98,8 @@ def _defaults():
             "pool_idle_timeout_ms": 30000,
             "connection_timeout_ms": 15000,
             "request_timeout_ms": 30000,
+            "connect_retry_attempts": 3,
+            "pool_checkout_timeout_ms": 30000,
             "polling_interval_ms": 30000,
             "polling_enabled": True,
             "sage_pull_days": 7,

@@ -71,7 +71,7 @@ def test_connect_with_retry_deux_echecs_puis_succes(monkeypatch):
     monkeypatch.setattr(sage_db, "_connect", fake_connect)
     monkeypatch.setattr(sage_db.time, "sleep", lambda delay: sleeps.append(delay))
 
-    assert sage_db._connect_with_retry() is sentinel
+    assert sage_db._connect_with_retry(attempts=3) is sentinel
     assert len(calls) == 3
     assert sleeps == [1, 3]
 

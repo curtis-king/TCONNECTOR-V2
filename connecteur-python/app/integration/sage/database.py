@@ -95,13 +95,24 @@ def _connect():
     return conn
 
 
-def _connect_with_retry(attempts=3):
+def _connect_retry_attempts():
+    """Nombre de tentatives de connexion ODBC (defaut 3, borne 1-5)."""
+    try:
+        value = int(get_db_config().get("connect_retry_attempts", 3) or 3)
+    except (TypeError, ValueError):
+        return 3
+    return max(1, min(value, 5))
+
+
+def _connect_with_retry(attempts=None):
     """Ouvre une connexion ODBC en retentant les erreurs transitoires.
 
     Backoff 1/3 s (la troisieme tentative n'attend pas apres son echec).
     Une erreur definitive (42000 hors verrou, config invalide autre) remonte
     immediatement sans retry.
     """
+    if attempts is None:
+        attempts = _connect_retry_attempts()
     last = None
     for i in range(max(1, attempts)):
         try:
@@ -147,10 +158,20 @@ def _healthy(conn):
         return False
 
 
+def _checkout_timeout_s():
+    """Attente max d'un connecteur du pool (defaut 30 s, borne 0-300 s)."""
+    try:
+        value = int(get_db_config().get("pool_checkout_timeout_ms", 30000) or 30000)
+    except (TypeError, ValueError):
+        value = 30000
+    return max(0, min(value, 300000)) / 1000.0
+
+
 def _checkout(hi):
     global _pool_size
+    timeout = _checkout_timeout_s()
     try:
-        conn = _pool_queue.get(block=True, timeout=30)
+        conn = _pool_queue.get(block=True, timeout=timeout)
     except queue.Empty:
         conn = None
     if conn is not None and not _healthy(conn):
@@ -173,7 +194,7 @@ def _checkout(hi):
                                "Pool Sage: connexion a la demande echouee: %s", e)
     if conn is None:
         try:
-            conn = _pool_queue.get(block=True, timeout=30)
+            conn = _pool_queue.get(block=True, timeout=timeout)
             if not _healthy(conn):
                 try:
                     conn.close()

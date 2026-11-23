@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    name: Tests unitaires (Linux)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: connecteur-python
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # pyodbc importe unixODBC même lorsque aucun serveur Sage n'est joignable.
+      - name: Installer unixODBC
+        run: sudo apt-get update && sudo apt-get install -y unixodbc
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: |
+            connecteur-python/requirements.txt
+            connecteur-python/requirements-dev.txt
+
+      - name: Installer les dépendances
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      # config.json est gitignoré : on part de l'exemple versionné.
+      # tests/conftest.py neutralise de toute façon la connexion Sage.
+      - name: Préparer la configuration de test
+        run: cp config.example.json config.json
+
+      - name: Tests
+        # Couverture informative pour l'instant : le seuil bloquant (60 %)
+        # sera activé au lot 7, après découpage des gros modules.
+        run: |
+          python -m pytest tests --ignore=tests/perf \
+            -m "not sandbox and not integration" \
+            --cov=app.sync --cov=app.integration \
+            --cov-report=term-missing:skip-covered
+
+  audit:
+    name: Audit dépendances
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: connecteur-python
+    # Non bloquant au démarrage : les vulnérabilités du legacy sont traitées
+    # dans un lot dédié, sans bloquer les correctifs en cours.
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: pip install pip-audit -r requirements.txt
+      - run: pip-audit -r requirements.txt

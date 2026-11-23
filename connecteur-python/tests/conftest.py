@@ -16,6 +16,7 @@ CHOIX D'AUTH (documenté) :
     les routes puissent interroger la base sans 500.
 """
 import atexit
+import json
 import logging
 import os
 import re
@@ -65,6 +66,40 @@ if not os.path.exists(_TEST_DB):
 
 if not os.environ.get("TCONNECTOR_KEEP_TEST_TMP"):
     atexit.register(lambda: shutil.rmtree(_TEST_ROOT, ignore_errors=True))
+
+
+def _isolate_sage():
+    """Ne jamais interroger le Sage client pendant les tests unitaires.
+
+    La config de test est une copie de `config.json` : sans cette isolation,
+    un poste ayant un tunnel vers Sage fait exécuter de vraies requêtes (et
+    parfois de vraies écritures) pendant la suite. On pointe donc par défaut
+    sur un port fermé, avec une seule tentative de connexion : l'échec est
+    immédiat et les routes retombent sur leur comportement dégradé.
+
+    Les tests d'intégration qui nécessitent un vrai Sage passent
+    `TCONNECTOR_TEST_REAL_SAGE=1` (cf. `pytest.ini`, marqueur `integration`).
+    """
+    if os.environ.get("TCONNECTOR_TEST_REAL_SAGE") == "1":
+        return
+    try:
+        with open(_TEST_CONFIG, "r", encoding="utf-8") as fh:
+            cfg = json.load(fh)
+    except (OSError, ValueError):
+        return
+    db = cfg.setdefault("db", {})
+    db["server"] = "tcp:127.0.0.1"
+    db["port"] = 1
+    db["trusted_connection"] = False
+    db["connection_timeout_ms"] = 1000
+    db["request_timeout_ms"] = 1000
+    db["connect_retry_attempts"] = 1
+    db["pool_checkout_timeout_ms"] = 50
+    with open(_TEST_CONFIG, "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh, indent=2, ensure_ascii=False)
+
+
+_isolate_sage()
 
 
 # Réduire le bruit des logs applicatifs pendant les tests
