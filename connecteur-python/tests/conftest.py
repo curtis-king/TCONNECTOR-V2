@@ -67,6 +67,19 @@ if not os.path.exists(_TEST_DB):
 if not os.environ.get("TCONNECTOR_KEEP_TEST_TMP"):
     atexit.register(lambda: shutil.rmtree(_TEST_ROOT, ignore_errors=True))
 
+# Identité admin utilisée par les fixtures. `_init_sqlite()` réécrit
+# toujours ce mot de passe en base : les identifiants de test ne dépendent
+# donc pas du contenu de config.json (dont l'exemple contient un
+# placeholder invalide pour un vrai login).
+_TEST_ADMIN_EMAIL = "admin@example.com"
+_TEST_ADMIN_PASSWORD = "Test-Admin-123"
+
+
+def _test_admin_email(config_email):
+    """Retombe sur une adresse valide si la config contient un placeholder."""
+    value = str(config_email or "").strip()
+    return value if "@" in value else _TEST_ADMIN_EMAIL
+
 
 def _isolate_sage():
     """Ne jamais interroger le Sage client pendant les tests unitaires.
@@ -129,8 +142,8 @@ def _init_sqlite():
     # fichier de config. On redéfinit donc un mot de passe connu en base.
     from app.config.manager import get_config
     dash = get_config().get("dashboard", {}) or {}
-    email = dash.get("login_email", "admin@example.com")
-    test_password = "Test-Admin-123"
+    email = _test_admin_email(dash.get("login_email"))
+    test_password = _TEST_ADMIN_PASSWORD
     with get_cursor() as cur:
         cur.execute("SELECT id FROM utilisateurs WHERE lower(email) = ?", (email,))
         row = cur.fetchone()
@@ -167,8 +180,8 @@ def admin_credentials():
 
     dash = get_config().get("dashboard", {})
     return {
-        "email": dash.get("login_email", "admin@example.com"),
-        "password": dash.get("login_password") or "Test-Admin-123",
+        "email": _test_admin_email(dash.get("login_email")),
+        "password": _TEST_ADMIN_PASSWORD,
     }
 
 

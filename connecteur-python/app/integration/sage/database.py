@@ -13,7 +13,6 @@ verrou `_db_lock` et les helpers d'identifiants) et ré-exporte le reste pour
 ne casser aucun import existant.
 """
 import logging
-import threading
 from contextlib import contextmanager  # noqa: F401  (compat)
 
 from app.integration.sage.connection import (  # noqa: F401
@@ -68,11 +67,11 @@ def _parse_invoice_id(invoice_id):
 def write_sfec_to_invoice(invoice_id, certification_number, signature, qr_code, certification_date):
     _refresh_sfec_columns()
     t = get_table_map()
-    tbl = t.get("documents", "")
-    if not tbl:
+    raw_tbl = t.get("documents", "")
+    if not raw_tbl:
         raise PermanentSfecWriteError("Table documents introuvable")
     try:
-        tbl = quote_ident(tbl)
+        tbl = quote_ident(raw_tbl)
     except SageSchemaError as e:
         raise PermanentSfecWriteError(str(e))
 
@@ -96,7 +95,7 @@ def write_sfec_to_invoice(invoice_id, certification_number, signature, qr_code, 
             SFEC_DATE_CERTIF1 = ?,
             SFEC_STATUT = 'CERTIFIE'
         WHERE DO_Domaine = ? AND DO_Type = ? AND DO_Piece = ?
-    """.format(quote_ident(tbl))
+    """.format(tbl)
     params = [cert_num50, cert_num50, cert_num69, sig_str, qr_str, date_str, date_str, domaine, type_doc, piece]
 
     with get_cursor() as cur:

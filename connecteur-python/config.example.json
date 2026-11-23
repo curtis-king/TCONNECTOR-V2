@@ -102,7 +102,7 @@
     "host": "0.0.0.0",
     "auth_enabled": true,
     "session_secret": "CHANGE-THIS-TO-A-RANDOM-SECRET",
-    "login_email": "admin",
+    "login_email": "admin@example.com",
     "login_password": "CHANGE-THIS",
     "session_max_age_hours": 24
   },

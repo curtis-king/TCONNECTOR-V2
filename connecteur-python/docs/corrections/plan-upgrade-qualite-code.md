@@ -51,15 +51,16 @@ Mesures relevées le 2026-11-09 sur `connecteur-python/`.
 | Routes HTTP | 111 | 109 + 2 (`/api/sfec/pending*`) |
 | Config polling | 120 000 ms | `config.json` client ; défaut code 30 000 ms |
 
-### 2.1 Photo après les lots 1 à 6 (2026-11-23)
+### 2.1 Photo après les lots 1 à 7 (2026-11-23)
 
 Mesures reprises sur la branche `upgrade/qualite-code`.
 
 | Indicateur | Baseline | Après | Commentaire |
 |------------|----------|-------|-------------|
-| Lignes `app/` | 18 707 | 19 018 | + tests d'exploitation et modules extraits |
-| Lignes `tests/` | 8 884 | — | 348 tests collectés (+35) |
-| Suite de tests | verte | verte | 348 passed, ~1 min (Sage isolé) |
+| Lignes `app/` | 18 707 | 19 213 | modules extraits + typage d'erreurs |
+| Lignes `tests/` | 8 884 | — | 373 `def test_`, 487 tests collectés (+139) |
+| Suite de tests | verte | verte | 481 passed, 1 skipped, ~1 min (Sage isolé) |
+| Couverture `app/sync` + `app/integration` | non mesurée | **50,6 %** | plancher CI 50 %, cible 60 % |
 | `engine.py` | 1 821 | 1 453 | `state`, `invoice_rules`, `retry`, `sfec_errors` extraits |
 | `database.py` | 2 151 | 268 | façade ; implémentations dans `connection`, `schema`, `queries/*` |
 | Plus gros module applicatif | 2 151 | 1 453 (`engine.py`) | cible ≤ 600 hors orchestration |
@@ -526,6 +527,37 @@ CI versionné n'a été identifié.
    diff uniquement.
 
 **Effort.** 4–6 j/h, dépend de l'accès Sage/SFEC. **Risque.** Faible.
+
+**Implémenté le 2026-11-23 (branche `upgrade/qualite-code`).**
+
+| Livrable | Fichier | Contenu |
+|----------|---------|---------|
+| Contrat HTTP SFEC | `tests/test_sfec_http_contract.py` | payload transmis tel quel (facture, avoir, exonération), clés obligatoires, 400/401/403/409/422 → classes, réseau → `SfecNetworkError`, `verify_by_invoice_number` idempotent (404 sans retry, 5xx rejoué) |
+| Contrat API d'exploitation | `tests/test_sfec_api_contract.py` | `/api/sfec/pending` (401 sans session, 3 compteurs), `/api/sfec/pending/flush` (401, CSRF 400, 202, 409 concurrence, 500 si thread en échec et verrou libéré) |
+| Contrat Sage réel (opt-in) | `tests/test_sage_contract_integration.py` | marqueur `integration` + `TCONNECTOR_TEST_REAL_SAGE=1` ; ping/schéma, lectures ventes/achats, références, écriture sur facture absente (0 ligne, lecture seule) |
+| Contrat d'écriture | `tests/test_sage_write_contract.py` | SQL réellement exécuté : nom de table quoté **une seule fois**, schéma qualifié, 0 ligne → `PermanentSfecWriteError`, table/ID invalides sans accès base |
+| CI | `.github/workflows/ci.yml` | plancher de couverture 50 %, rapport XML en artefact, job `ruff` (bloquant `E9,F63,F7,F82`, style informatif) |
+| Config lint | `connecteur-python/ruff.toml`, `requirements-dev.txt` | sélection figée `E4,E7,E9,F`, `ruff>=0.9` |
+
+Deux régressions réelles découvertes par ces contrats, corrigées dans le lot :
+
+1. **CI inutilisable** : `config.example.json` contenait
+   `login_email: "admin"` (adresse invalide). Le `migrate_admin_from_config()`
+   du conftest levait `ValueError` → 96 erreurs de fixtures avec la config
+   d'exemple. L'exemple est corrigé et le conftest utilise désormais une
+   identité de test indépendante des placeholders (`admin@example.com` /
+   `Test-Admin-123`).
+2. **Écriture SFEC cassée en réel** : `write_sfec_to_invoice` bracket-quotait
+   deux fois l'identifiant de table (`[F_DOCENTETE]` re-quoté → rejet
+   `SageSchemaError`). Aucun test à base de mocks ne le voyait ; le contrat
+   d'écriture inspecte maintenant le SQL exécuté.
+
+Arbitrage sur la couverture : le seuil de 60 % du plan n'est pas atteignable
+sans écrire des tests de complaisance sur les modules Sage (lecture réelle
+non disponible en CI). La couverture mesurée est de **50,6 %** sur
+`app/sync` + `app/integration` ; le plancher CI est fixé à 50 % (non-régression)
+et doit être relevé progressivement. Les contrats Sage réels restent opt-in,
+exécutés en local avant livraison, jamais bloquants en CI.
 
 ---
 

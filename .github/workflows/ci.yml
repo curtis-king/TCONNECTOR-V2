@@ -37,13 +37,51 @@ jobs:
         run: cp config.example.json config.json
 
       - name: Tests
-        # Couverture informative pour l'instant : le seuil bloquant (60 %)
-        # sera activé au lot 7, après découpage des gros modules.
+        # Plancher de non-régression : 50 % sur app/sync + app/integration
+        # (mesuré à 50,1 % le 2026-11-23). Cible du plan : 60 %, à relever
+        # progressivement. Le rapport XML est conservé en artefact.
         run: |
           python -m pytest tests --ignore=tests/perf \
             -m "not sandbox and not integration" \
             --cov=app.sync --cov=app.integration \
-            --cov-report=term-missing:skip-covered
+            --cov-report=term-missing:skip-covered \
+            --cov-report=xml \
+            --cov-fail-under=50
+
+      - name: Téléverser le rapport de couverture
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: couverture-app-sync-integration
+          path: connecteur-python/coverage.xml
+          if-no-files-found: ignore
+
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: connecteur-python
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Installer ruff
+        run: pip install "ruff>=0.9"
+
+      # Bloquant : uniquement les erreurs de correction (nom indéfini,
+      # syntaxe invalide, import cassé). Le legacy passe déjà ces règles.
+      - name: Erreurs bloquantes
+        run: ruff check --select E9,F63,F7,F82 app tests scripts
+
+      # Non bloquant : style du legacy, corrigé progressivement. Le seuil du
+      # plan (« diff uniquement ») est appliqué en revue ; la CI se contente
+      # de rapporter pour ne pas bloquer sur du code non touché.
+      - name: Style (informatif)
+        continue-on-error: true
+        run: ruff check app tests scripts
 
   audit:
     name: Audit dépendances
