@@ -55,3 +55,15 @@ Sage/SFEC est disponible.
 sur `E9,F63,F7,F82` (syntaxe, nom indéfini, import cassé) et rapporte le style
 du legacy sans bloquer. Les nouveaux modules et tests doivent passer
 `ruff check` sans erreur.
+
+## Performance
+
+```bash
+pytest tests/perf -m perf
+```
+
+Le banc est entièrement mocké (Sage + SFEC en mémoire, 0 réseau). Les seuils
+sont dans `tests/perf/thresholds.json` et les mesures dans
+`tests/perf/perf-results.jsonl`. Il n'est pas exécuté en CI ; il sert à
+objectiver une régression avant toute optimisation (cf. LOT 8 du plan).
+

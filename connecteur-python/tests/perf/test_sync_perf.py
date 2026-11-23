@@ -56,7 +56,8 @@ def test_auto_certify_no_duplicates(monkeypatch):
     monkeypatch.setattr(engine, "certify_invoice", counting_certify)
     engine.auto_certify_invoices()
 
-    # 20 ventes + REF-0001 (CERTIFIE mais hors lookup mocke) + AV-0001 ; sans-ref et EN_COURS exclus
+    # 20 ventes + AV-0001 + AV-0002 (avoir sans parent = avoir sur compte).
+    # REF-0001 est deja CERTIFIE (ignore) et EN_COURS est exclu.
     assert len(seen) == 22, seen
     assert len(set(seen)) == len(seen), "doublons de certification !"
-    assert "0-7-AV2" not in seen and "0-6-ENC" not in seen
+    assert "0-7-AV2" in seen and "0-6-ENC" not in seen

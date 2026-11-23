@@ -576,6 +576,42 @@ exécutés en local avant livraison, jamais bloquants en CI.
 
 **Effort.** 2 j/h. **Risque.** Faible.
 
+**Mesuré le 2026-11-23 (branche `upgrade/qualite-code`) — aucune optimisation
+applicative.**
+
+Le banc `tests/perf` était inutilisable (exclu de la CI) : mocks périmés après
+le découpage et le correctif de reprise. Trois corrections de test :
+
+- `read_invoices_from_sage` mocké avec la signature actuelle
+  (`sage_pull_days`, `force_all`) ;
+- suppression du patch de `engine.mark_certification_failed`, qui n'existe
+  plus volontairement (les rejets définitifs passent par `mark_to_monitor`) ;
+- `dashboard._print_sage_lines` mocké : la page d'impression retombait sur une
+  lecture Sage réelle (~7,4 s de timeouts ODBC) au lieu de rester hors réseau ;
+- attente mise à jour : un avoir sans parent est désormais un avoir sur compte
+  (`creditNoteOnAccount`), donc `AV-0002` est certifié.
+
+Résultats (mocks en mémoire, 0 réseau, seuils dans `tests/perf/thresholds.json`) :
+
+| Mesure | Valeur | Seuil |
+|--------|--------|-------|
+| `full_sync` | ~274 ms | 60 s |
+| `sync_incremental` | ~4,0 s | 15 s |
+| `auto_certify` (199 factures) | ~451 ms | — |
+| TTFB `/billing` | ~10 ms (route) | 500 ms |
+| TTFB `/pos` | ~7 ms | 400 ms |
+| TTFB `/certified/<id>/print` | ~37 ms | 800 ms |
+| Requêtes SQLite / requête | sous seuil | 20 |
+| Usage des index | OK | — |
+
+Le temps de `sync_incremental` est dominé par le pacing volontaire de
+`auto_certify_invoices` (20 ms entre certifications parallèles, soit ~4 s pour
+199 factures). Ce délai protège SFEC des rafales (incident 409 en série) : il
+n'est **pas** supprimé. Aucun index SQLite supplémentaire n'est nécessaire :
+`test_index_usage` et le compteur de requêtes passent. Conclusion : pas
+d'optimisation sans preuve de régression, le LOT 8 reste clos sans changement
+fonctionnel.
+
 ---
 
 ## 6. Séquencement et effort

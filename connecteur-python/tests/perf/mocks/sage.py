@@ -112,7 +112,7 @@ def write_invoice_to_sage(invoice):
     return {"success": True, "numero": invoice.get("numero", "")}
 
 
-def read_invoices_from_sage():
+def read_invoices_from_sage(*_args, **_kwargs):
     return []
 
 
@@ -127,6 +127,7 @@ def write_contact_to_sage(contact):
 def start():
     import app.sync.engine as engine
     import app.sync.bidirectional as bidir
+    import app.web.routes.dashboard as dashboard
     targets = [
         (engine, "fetch_sales_invoices", fetch_sales_invoices),
         (engine, "fetch_purchase_invoices", fetch_purchase_invoices),
@@ -136,7 +137,6 @@ def start():
         (engine, "fetch_certified_invoices", fetch_certified_invoices),
         (engine, "mark_certifying", _noop),
         (engine, "mark_certified", _noop),
-        (engine, "mark_certification_failed", _noop),
         (engine, "mark_to_monitor", _noop),
         (engine, "write_sfec_to_invoice", write_sfec_to_invoice),
         (engine, "reset_stuck_en_cours", _noop),
@@ -145,6 +145,9 @@ def start():
         (bidir, "read_invoices_from_sage", read_invoices_from_sage),
         (bidir, "sync_sage_invoice_to_sqlite", sync_sage_invoice_to_sqlite),
         (bidir, "write_contact_to_sage", write_contact_to_sage),
+        # Impression : ne jamais retomber sur une lecture Sage réelle quand
+        # la pièce n'est pas en base locale.
+        (dashboard, "_print_sage_lines", lambda *a, **k: []),
     ]
     for module, name, func in targets:
         p = _patch.object(module, name, func)
