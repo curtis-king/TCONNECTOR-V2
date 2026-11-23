@@ -1,8 +1,8 @@
 import logging
 import threading
 import time
-from datetime import datetime
 from app.config.manager import get_sfec_api_key
+from app.core.timeutil import utcnow_iso
 from app.storage.db import compute_cent_tax, get_cursor, log_sync, row_to_dict, rows_to_list
 from app.integration.sage.database import _safe_float
 from app.integration.sage.writer import read_invoices_from_sage, sync_sage_invoice_to_sqlite, write_contact_to_sage, write_invoice_to_sage
@@ -312,7 +312,7 @@ def start_manual_sync(force_all=False):
         _manual_sync_state.update({
             "running": True,
             "mode": mode,
-            "started_at": datetime.utcnow().isoformat() + "Z",
+            "started_at": utcnow_iso(),
             "finished_at": None,
             "last_result": None,
             "last_error": None,
@@ -342,7 +342,7 @@ def _run_manual_sync(force_all):
         with _sync_lock:
             _sync_active = False
             _manual_sync_state["running"] = False
-            _manual_sync_state["finished_at"] = datetime.utcnow().isoformat() + "Z"
+            _manual_sync_state["finished_at"] = utcnow_iso()
 
 
 def push_invoice_to_sage(invoice_id):
@@ -610,7 +610,7 @@ def full_sync(force_all=False):
     pull_result = pull_from_sage(force_all=force_all)
 
     with _sync_lock:
-        _sync_stats["last_sync"] = datetime.utcnow().isoformat() + "Z"
+        _sync_stats["last_sync"] = utcnow_iso()
 
     total = {
         "pushed": push_result["pushed"],

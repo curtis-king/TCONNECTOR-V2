@@ -3,9 +3,9 @@ import logging
 import time
 import threading
 import traceback
-from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from app.config.manager import get_config, get_sfec_api_key
+from app.core.timeutil import utcnow_iso
 from app.integration.sage.database import (
     fetch_sales_invoices, fetch_purchase_invoices, fetch_contacts,
     fetch_tax_rates, fetch_ledger_accounts, fetch_certified_invoices,
@@ -50,7 +50,6 @@ _retry_lock = threading.Lock()
 
 _sfec_lookup_cache = {}
 _sfec_lookup_ts = 0
-_SFEC_LOOKUP_TTL = 300
 
 # Empeche deux passes de certification concurrentes : sync_all() relache
 # _lock avant d'appeler auto_certify_invoices().
@@ -59,10 +58,28 @@ _startup_reset_done = False
 
 # Le rejeu des ecritures Sage est une tache de fond independante du pull :
 # il doit s'executer meme quand la lecture Sage echoue. Throttle pour ne pas
-# multiplier les tentatives ODBC sur un intervalle de polling court.
-_FLUSH_MIN_INTERVAL_S = 30
+# multiplier les tentatives ODBC sur un intervalle de polling court
+# (`sfec.pending_flush_interval_s`, defaut 30 s).
 _flush_lock = threading.Lock()
 _last_flush_ts = None
+
+
+def _sfec_int(name, default, lo, hi):
+    """Entier de config `sfec.*` borne ; retombe sur le defaut si invalide."""
+    try:
+        raw = (get_config().get("sfec") or {}).get(name, default)
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(value, hi))
+
+
+def _flush_interval_s():
+    return _sfec_int("pending_flush_interval_s", 30, 5, 3600)
+
+
+def _sfec_lookup_ttl_s():
+    return _sfec_int("lookup_ttl_s", 300, 5, 3600)
 
 # Backoff en memoire des erreurs transitoires (reseau, verrou Sage, 502).
 # Aucune ecriture 'ERREUR' en base : une facture doit pouvoir reessayer.
@@ -227,11 +244,11 @@ def _flush_pending_writes(force=False):
     now = time.monotonic()
     with _flush_lock:
         if (not force and _last_flush_ts is not None
-                and (now - _last_flush_ts) < _FLUSH_MIN_INTERVAL_S):
+                and (now - _last_flush_ts) < _flush_interval_s()):
             return 0
         _last_flush_ts = now
     try:
-        return flush(limit=20, on_success=_pending_write_done)
+        return flush(on_success=_pending_write_done)
     except Exception as e:  # noqa: BLE001
         logger.warning("Rejeu des ecritures SFEC en attente echoue: %s", e)
         return 0
@@ -529,7 +546,7 @@ def _enqueue_for_retry(invoice):
             "numero": invoice.get("numero", ""),
             "nom_tiers": invoice.get("nom_tiers", ""),
             "montant_ttc": invoice.get("montant_ttc", 0),
-            "queued_at": datetime.utcnow().isoformat() + "Z",
+            "queued_at": utcnow_iso(),
             "attempts": 0,
         })
         count = len(_retry_queue)
@@ -772,7 +789,7 @@ def sync_all():
 
             _cache["db_connected"] = True
             _cache["last_error"] = None
-            _cache["last_sync_at"] = datetime.utcnow().isoformat() + "Z"
+            _cache["last_sync_at"] = utcnow_iso()
             _cache["sync_count"] += 1
 
             logger.info("Sync termine: %d factures vente, %d factures achat, %d contacts, %d taux TVA, %d comptes",
@@ -830,7 +847,7 @@ def sync_sfec_invoices():
         with _lock:
             _cache["sfec_invoices"] = all_invoices
             _cache["certified_count"] = len(all_invoices)
-            _cache["last_sfec_sync_at"] = datetime.utcnow().isoformat() + "Z"
+            _cache["last_sfec_sync_at"] = utcnow_iso()
         logger.info("Sync SFEC: %d factures certifiees recuperees", len(all_invoices))
     except NetworkOfflineError:
         logger.info("Sync SFEC interrompue: connexion internet perdue")
@@ -871,7 +888,7 @@ def sync_incremental():
 
             _cache["db_connected"] = True
             _cache["last_error"] = None
-            _cache["last_sync_at"] = datetime.utcnow().isoformat() + "Z"
+            _cache["last_sync_at"] = utcnow_iso()
             _cache["sync_count"] += 1
 
             logger.debug("Sync incrementale: +%d ventes, +%d achats",
@@ -893,7 +910,7 @@ def sync_incremental():
 def _build_sfec_lookup():
     global _sfec_lookup_cache, _sfec_lookup_ts
     now = time.time()
-    if _sfec_lookup_cache and (now - _sfec_lookup_ts) < _SFEC_LOOKUP_TTL:
+    if _sfec_lookup_cache and (now - _sfec_lookup_ts) < _sfec_lookup_ttl_s():
         return _sfec_lookup_cache
 
     lookup = {}

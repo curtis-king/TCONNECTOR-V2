@@ -3,7 +3,6 @@ import logging
 import math
 import re
 import sqlite3
-from datetime import datetime
 from app.storage.db import (
     get_cursor, generate_ticket_number, generate_invoice_number,
     recalc_ticket_totals, calc_line_ticket_totals,
@@ -11,6 +10,7 @@ from app.storage.db import (
 )
 from app.config.manager import get_config, get_sfec_api_key
 from app.core.utils import is_counter_customer
+from app.core.timeutil import utcnow_naive
 
 _MODE_PAIEMENT_TO_SFEC = {
     "especes": "cash",
@@ -274,7 +274,7 @@ def create_ticket(data):
 
     try:
         numero = data.get("numero") or generate_ticket_number()
-        date_ticket = data.get("date_ticket") or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        date_ticket = data.get("date_ticket") or utcnow_naive().strftime("%Y-%m-%d %H:%M:%S")
         vendeur_id = data.get("vendeur_id")
         if vendeur_id in ("", None):
             vendeur_id = None
@@ -355,7 +355,7 @@ def _create_invoice_for_ticket(ticket_id, data, totals):
     (comportement du module de saisie de caisse Sage)."""
     try:
         numero = generate_invoice_number()
-        date_ticket = data.get("date_ticket") or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        date_ticket = data.get("date_ticket") or utcnow_naive().strftime("%Y-%m-%d %H:%M:%S")
         date_facture = date_ticket[:10]
         tiers_nom = data.get("tiers_nom", "Client comptoir")
         mode_paiement = data.get("mode_paiement", "especes")

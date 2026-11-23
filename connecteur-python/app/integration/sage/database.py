@@ -7,6 +7,7 @@ import time
 from datetime import datetime
 from contextlib import contextmanager, nullcontext
 from app.config.manager import get_db_config
+from app.core.constants import CONNECT_RETRY_DELAYS_S
 
 
 def _safe_float(val, default=0.0):
@@ -123,7 +124,7 @@ def _connect_with_retry(attempts=None):
                 raise
             if i >= attempts - 1:
                 break
-            delay = (1, 3, 7)[min(i, 2)]
+            delay = CONNECT_RETRY_DELAYS_S[min(i, len(CONNECT_RETRY_DELAYS_S) - 1)]
             logger.warning(
                 "Pool Sage: connexion %d/%d echouee (%s), retry dans %ds",
                 i + 1, attempts, e, delay,

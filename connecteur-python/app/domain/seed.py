@@ -1,5 +1,8 @@
+import logging
 import random
 from app.storage import db as sqlite_db
+
+logger = logging.getLogger("t-connector.seed")
 
 FAMILLES = [
     "Electroménager", "Informatique", "Téléphonie", "Bijouterie",
@@ -114,7 +117,7 @@ def seed_products():
         cur.execute("SELECT COUNT(*) as c FROM products")
         existing = cur.fetchone()["c"]
         if existing >= 50:
-            print("Produits existants: {} (deja genere)".format(existing))
+            logger.info("Produits existants: %s (deja genere)", existing)
             return existing
 
         for famille, products in FAMILLE_PRODUCTS.items():
@@ -130,7 +133,7 @@ def seed_products():
                 """, (ref, barcode, designation, famille, prix_vente, prix_achat, tva_code, unite, stock))
                 if cur.rowcount > 0:
                     count += 1
-    print("Produits generes: {}".format(count))
+    logger.info("Produits generes: %s", count)
     return count
 
 
@@ -147,9 +150,9 @@ def seed_clients():
             if cur.rowcount > 0:
                 count += 1
     if count:
-        print("Clients/Fournisseurs generes ou mis a jour: {}".format(count))
+        logger.info("Clients/Fournisseurs generes ou mis a jour: %s", count)
     elif existing:
-        print("Contacts existants: {} (deja genere)".format(existing))
+        logger.info("Contacts existants: %s (deja genere)", existing)
     return count
 
 
@@ -168,11 +171,12 @@ def seed_vendeurs():
             """, (code, nom, prenom, email, role))
             if cur.rowcount > 0:
                 count += 1
-    print("Vendeurs generes: {}".format(count))
+    logger.info("Vendeurs generes: %s", count)
     return count
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     print("=== T-CONNECTOR SEED DATA ===")
     sqlite_db.init_database()
     seed_vendeurs()

@@ -114,6 +114,11 @@ def _defaults():
             "certify_status": "A COMPTABILISER",
             "counter_customer_codes": ["CLI-CPT"],
             "counter_name_keywords": ["COMPTOIR", "COMPTANT"],
+            "pending_flush_interval_s": 30,
+            "pending_flush_batch": 20,
+            "pending_log_every": 10,
+            "lookup_ttl_s": 300,
+            "lookup_max_pages": 500,
         },
         "company": {
             "name": "",

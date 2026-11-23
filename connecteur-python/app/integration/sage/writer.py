@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime, timedelta
+from app.core.timeutil import utcnow_naive
 from app.storage.db import (
     get_cursor as get_sqlite_cursor,
     get_pending_sfec_write,
@@ -165,7 +166,7 @@ def write_invoice_to_sage(invoice):
     try:
         date_val = datetime.strptime(date_str[:10], "%Y-%m-%d")
     except (ValueError, TypeError):
-        date_val = datetime.utcnow()
+        date_val = utcnow_naive()
 
     is_avoir = invoice.get("type_doc") == "avoir"
     doc_type = dc["avoir_type"] if is_avoir else dc["vente_type"]

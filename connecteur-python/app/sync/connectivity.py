@@ -3,6 +3,7 @@ import time
 import threading
 import logging
 from datetime import datetime
+from app.core.timeutil import utcnow_iso
 
 logger = logging.getLogger("t-connector.connectivity")
 
@@ -63,7 +64,7 @@ def _do_check():
 
         if online:
             _STATUS = "ONLINE"
-            _last_online_time = datetime.utcnow().isoformat() + "Z"
+            _last_online_time = utcnow_iso()
             if old_status == "OFFLINE" and _offline_since:
                 duration = now - _offline_since
                 logger.info("Internet RECONNECTE (offline pendant %.1fs)", duration)
@@ -72,7 +73,7 @@ def _do_check():
                 logger.info("Internet: EN LIGNE")
         else:
             _STATUS = "OFFLINE"
-            _last_offline_time = datetime.utcnow().isoformat() + "Z"
+            _last_offline_time = utcnow_iso()
             if _offline_since is None:
                 _offline_since = now
                 logger.warning("Internet: HORS LIGNE")

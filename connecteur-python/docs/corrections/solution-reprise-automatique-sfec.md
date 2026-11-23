@@ -230,5 +230,9 @@ route `POST /api/sfec/pending/flush`.
   écrire dans `sfec_pending_writes`.
 - Si SQLite est indisponible, `enqueue()` échoue et l'appelant conserve son
   chemin de retry classique (comportement inchangé).
-- Le throttle de 30 s est une constante ; il n'est pas encore exposé dans
-  `config.json`.
+- Le throttle et la taille des lots sont configurables depuis le
+  2026-11-23 : `sfec.pending_flush_interval_s` (30 s par défaut),
+  `sfec.pending_flush_batch` (20 lignes), `sfec.pending_log_every` (10 :
+  espacement des logs, **pas** un plafond de tentatives) et
+  `sfec.lookup_ttl_s` (300 s). Valeurs invalides → défaut, sans erreur au
+  démarrage.

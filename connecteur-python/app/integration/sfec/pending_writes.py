@@ -16,6 +16,7 @@ Deux natures d'echec sont distinguees :
 """
 import logging
 
+from app.config.manager import get_config
 from app.integration.sage.database import (
     write_sfec_to_invoice, mark_to_monitor, PermanentSfecWriteError,
 )
@@ -23,7 +24,29 @@ from app.storage.db import get_cursor
 
 logger = logging.getLogger("t-connector.sfec.pending")
 
-MAX_ATTEMPTS = 10
+
+def _config_int(section, name, default, lo, hi):
+    """Entier de config borné ; toute valeur invalide retombe sur le défaut."""
+    try:
+        raw = (get_config().get(section) or {}).get(name, default)
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(value, hi))
+
+
+def flush_batch():
+    """Nombre de lignes rejouées par cycle (`sfec.pending_flush_batch`)."""
+    return _config_int("sfec", "pending_flush_batch", 20, 1, 200)
+
+
+def pending_log_every():
+    """Espacement des logs d'échec transitoire (`sfec.pending_log_every`).
+
+    Ce n'est PAS un plafond de tentatives : une erreur transitoire reste
+    rejouable indéfiniment (seule une erreur définitive marque `blocked`).
+    """
+    return _config_int("sfec", "pending_log_every", 10, 1, 1000)
 
 # Erreurs qui condamnent tout le lot : inutile de tenter les 19 autres
 # lignes, elles echoueront de la meme facon (Sage injoignable).
@@ -111,21 +134,28 @@ def enqueue(invoice_id, certification_number, signature, qr_code,
     logger.info("Certification SFEC mise en file pour %s", invoice_id)
 
 
-def flush(limit=20, on_success=None):
+def flush(limit=None, on_success=None):
     """Rejoue les ecritures Sage en attente.
 
     Retourne le nombre d'ecritures reussies. Une certification SFEC valide
-    reste en file meme apres MAX_ATTEMPTS : un verrou Sage ne doit jamais
-    faire perdre la certification ni la transformer en anomalie. Une erreur
-    definitive marque la ligne `blocked` (plus de rejeu, ligne conservee).
+    reste en file : un verrou Sage ne doit jamais faire perdre la
+    certification ni la transformer en anomalie. Les echecs transitoires
+    sont donc rejoues indefiniment (seul `sfec.pending_log_every` espace
+    les logs) ; une erreur definitive marque la ligne `blocked` (plus de
+    rejeu, ligne conservee pour l'audit).
     `on_success(invoice_id, certification_number)` permet au moteur de
     remettre son cache a jour sans importer `app.sync.engine` ici.
     """
     init_pending_table()
-    try:
-        limit = max(1, int(limit))
-    except (TypeError, ValueError):
-        limit = 20
+    if limit is None:
+        limit = flush_batch()
+    else:
+        try:
+            limit = max(1, int(limit))
+        except (TypeError, ValueError):
+            limit = flush_batch()
+
+    log_every = pending_log_every()
 
     with get_cursor() as cur:
         cur.execute("""
@@ -175,13 +205,13 @@ def flush(limit=20, on_success=None):
                     SET attempts = ?, last_error = ?
                     WHERE invoice_id = ?
                 """, (attempts, str(e)[:300], invoice_id))
-            if attempts == MAX_ATTEMPTS:
+            if attempts == log_every:
                 logger.error(
                     "Ecriture SFEC toujours en attente pour %s apres %d "
                     "tentatives ; certification conservee: %s",
                     invoice_id, attempts, e,
                 )
-            elif attempts > MAX_ATTEMPTS and attempts % MAX_ATTEMPTS == 0:
+            elif attempts > log_every and attempts % log_every == 0:
                 logger.error(
                     "Ecriture SFEC toujours en attente pour %s (%d tentatives) "
                     "; certification conservee: %s",
@@ -189,7 +219,7 @@ def flush(limit=20, on_success=None):
                 )
             else:
                 logger.warning("Ecriture SFEC differee %s (%d/%d): %s",
-                               invoice_id, attempts, MAX_ATTEMPTS, e)
+                               invoice_id, attempts, log_every, e)
             if _is_connection_error(e):
                 # Sage injoignable : les lignes suivantes echoueraient a
                 # l'identique. On reprendra au prochain cycle.

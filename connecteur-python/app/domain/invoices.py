@@ -1,11 +1,11 @@
 import logging
 import math
 import re
-from datetime import datetime
 from app.storage.db import (
     get_cursor, generate_invoice_number, calc_line_totals,
     recalc_invoice_totals, log_sync, row_to_dict, rows_to_list
 )
+from app.core.timeutil import utcnow_naive
 
 class InvoiceIntegrityError(ValueError):
     """Levée quand les règles d'intégrité SFEC pour un avoir ne sont pas respectées."""
@@ -112,7 +112,7 @@ def create_invoice(data):
     numero = str(data.get("numero") or "").strip() or generate_invoice_number()
     if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,49}$", numero):
         raise InvoiceIntegrityError("Numero de facture invalide")
-    date_facture = data.get("date_facture") or datetime.utcnow().strftime("%Y-%m-%d")
+    date_facture = data.get("date_facture") or utcnow_naive().strftime("%Y-%m-%d")
     date_echeance = data.get("date_echeance", "")
     reference = data.get("reference", "")
     contact_id = data.get("contact_id")

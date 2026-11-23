@@ -8,13 +8,12 @@ import logging
 from datetime import datetime, timezone
 
 from app.config.manager import get_config, get_sfec_api_key
+from app.core.constants import MAX_MINUTES_WITHOUT_SFEC, MAX_PENDING_WRITES
 from app.storage import db as sqlite_db
 
 logger = logging.getLogger("t-connector.health")
 
-# Seuils de la proposition 09 (§6).
-MAX_PENDING_WRITES = 50
-MAX_MINUTES_WITHOUT_SFEC = 60
+# Seuils de la proposition 09 (§6) : cf. app/core/constants.py.
 
 
 def is_loopback(remote_addr):

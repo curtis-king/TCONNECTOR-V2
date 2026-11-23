@@ -7,6 +7,7 @@ import logging
 import threading
 from datetime import date, datetime, time as datetime_time, timezone
 from app.config.manager import get_company_config, get_config
+from app.core.timeutil import utcnow_iso
 from app.core.utils import is_counter_customer
 from app.domain.taxes import (
     ITEM_ROLES,
@@ -1099,7 +1100,7 @@ def record_certified_invoice(sage_invoice_id, sfec_inv):
         or sfec_inv.get("id")
         or ""
     ).strip()
-    now = datetime.utcnow().isoformat() + "Z"
+    now = utcnow_iso()
 
     with _certified_lock:
         existing = _load_certified()
@@ -1201,7 +1202,7 @@ def certify_invoice(invoice):
         "short_signature": cert_number[:50] if cert_number else "",
         "qr_code": qr,
         "sage_invoice_id": invoice.get("id", ""),
-        "certified_at": datetime.utcnow().isoformat() + "Z",
+        "certified_at": utcnow_iso(),
     }
 
     with _certified_lock:
